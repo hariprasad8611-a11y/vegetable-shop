@@ -29,16 +29,42 @@ st.markdown("<p style='text-align: center; color: green;'>Your Brother's Smart V
 conn = sqlite3.connect("shop.db", check_same_thread=False)
 c = conn.cursor()
 
-# Create tables
-tables = [
-    "CREATE TABLE IF NOT EXISTS inventory (vegetable TEXT PRIMARY KEY, quantity REAL, cost_price REAL, selling_price REAL, image_url TEXT)",
-    "CREATE TABLE IF NOT EXISTS purchases (date TEXT, vegetable TEXT, quantity REAL, amount REAL, supplier TEXT)",
-    "CREATE TABLE IF NOT EXISTS sales (date TEXT, vegetable TEXT, quantity_sold REAL, sale_price REAL, total REAL, customer TEXT)",
-    "CREATE TABLE IF NOT NOT EXISTS waste (date TEXT, vegetable TEXT, quantity REAL, reason TEXT)",
-    "CREATE TABLE IF NOT EXISTS customers (phone TEXT PRIMARY KEY, name TEXT, points INTEGER DEFAULT 0)"
-]
-for table in tables:
-    c.execute(table)
+# Create tables (fixed syntax)
+c.executescript('''
+    CREATE TABLE IF NOT EXISTS inventory (
+        vegetable TEXT PRIMARY KEY,
+        quantity REAL,
+        cost_price REAL,
+        selling_price REAL,
+        image_url TEXT
+    );
+    CREATE TABLE IF NOT EXISTS purchases (
+        date TEXT,
+        vegetable TEXT,
+        quantity REAL,
+        amount REAL,
+        supplier TEXT
+    );
+    CREATE TABLE IF NOT EXISTS sales (
+        date TEXT,
+        vegetable TEXT,
+        quantity_sold REAL,
+        sale_price REAL,
+        total REAL,
+        customer TEXT
+    );
+    CREATE TABLE IF NOT EXISTS waste (
+        date TEXT,
+        vegetable TEXT,
+        quantity REAL,
+        reason TEXT
+    );
+    CREATE TABLE IF NOT EXISTS customers (
+        phone TEXT PRIMARY KEY,
+        name TEXT,
+        points INTEGER DEFAULT 0
+    );
+''')
 
 # Add selling_price column if missing
 try:
@@ -171,7 +197,7 @@ elif menu == "Inventory":
         if st.button("Delete Item", type="secondary"):
             c.execute("DELETE FROM inventory WHERE vegetable = ?", (veg,))
             conn.commit()
-            st.success(f"Deleted {veg} from inventory")
+            st.success(f"Deleted {veg} from inventory 🎉")
             st.rerun()
     else:
         st.info("No inventory yet.")
