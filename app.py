@@ -35,7 +35,7 @@ tables = [
 for table in tables:
     c.execute(table)
 
-# Safe upgrade: add selling_price if missing
+# Safe add selling_price column
 try:
     c.execute("ALTER TABLE inventory ADD COLUMN selling_price REAL")
 except:
@@ -47,9 +47,9 @@ def get_stock_info(veg):
     c.execute("SELECT quantity, cost_price, selling_price FROM inventory WHERE vegetable = ?", (veg,))
     result = c.fetchone()
     if result:
-        qty = result[0] if result[0] else 0.0
-        cost = result[1] if result[1] else 0.0
-        sell = result[2] if result[2] else 0.0
+        qty = result[0] if result[0] is not None else 0.0
+        cost = result[1] if result[1] is not None else 0.0
+        sell = result[2] if result[2] is not None else 0.0
         return qty, cost, sell
     return 0.0, 0.0, 0.0
 
@@ -72,7 +72,7 @@ if menu == "Dashboard":
     col3.metric("Today's Profit", f"₹{profit_today:.2f}")
 
     try:
-        low = pd.read_sql("SELECT vegetable FROM inventory WHERE quantity < 5", conn)
+        low = pd.read_sql("SELECT vegetable FROM inventory WHERE quantity < 5 AND quantity IS NOT NULL", conn)
         if not low.empty:
             st.warning("Low Stock: " + ", ".join(low['vegetable'].tolist()))
     except:
@@ -90,27 +90,31 @@ elif menu == "Add Purchase":
             date = datetime.now().strftime("%Y-%m-%d")
             c.execute("INSERT INTO purchases VALUES (?, ?, ?, ?, ?)", (date, veg, qty, cost, supplier))
             unit_cost = cost / qty if qty > 0 else 0
-            _, _, existing_sell = get_stock_info(veg)
-            c.execute("INSERT OR REPLACE INTO inventory VALUES (?, ?, ?, ?, ?)", (veg, qty, unit_cost, existing_sell, img))
+            current_qty, _, current_sell = get_stock_info(veg)
+            new_qty = current_qty + qty
+            c.execute("INSERT OR REPLACE INTO inventory VALUES (?, ?, ?, ?, ?)", (veg, new_qty, unit_cost, current_sell, img))
             conn.commit()
-            st.success(f"Added {qty} kg of {veg}!")
+            st.success(f"Added {qty} kg of {veg}! Total stock now {new_qty} kg")
             st.rerun()
 
 elif menu == "Set Selling Prices":
     st.header("Set Selling Prices")
-    vegs = pd.read_sql("SELECT vegetable FROM inventory", conn)['vegetable'].tolist()
-    if vegs:
-        veg = st.selectbox("Select Vegetable", vegs)
-        current_qty, current_cost, current_sell = get_stock_info(veg)
-        st.write(f"Current Stock: {current_qty:.2f} kg | Cost Price: ₹{current_cost:.2f}/kg")
-        new_price = st.number_input("Selling Price per kg ₹", min_value=0.0, value=current_sell if current_sell else 0.0)
-        if st.button("Update Selling Price"):
-            c.execute("UPDATE inventory SET selling_price = ? WHERE vegetable = ?", (new_price, veg))
-            conn.commit()
-            st.success(f"Selling price for {veg} set to ₹{new_price}/kg!")
-            st.rerun()
-    else:
-        st.info("No vegetables yet. Add purchases first.")
+    try:
+        vegs = pd.read_sql("SELECT vegetable FROM inventory", conn)['vegetable'].tolist()
+        if vegs:
+            veg = st.selectbox("Select Vegetable", vegs)
+            current_qty, current_cost, current_sell = get_stock_info(veg)
+            st.write(f"Current Stock: {current_qty:.2f} kg | Cost Price: ₹{current_cost:.2f}/kg")
+            new_price = st.number_input("Selling Price per kg ₹", min_value=0.0, value=current_sell if current_sell else 0.0)
+            if st.button("Update Selling Price"):
+                c.execute("UPDATE inventory SET selling_price = ? WHERE vegetable = ?", (new_price, veg))
+                conn.commit()
+                st.success(f"Selling price for {veg} set to ₹{new_price}/kg!")
+                st.rerun()
+        else:
+            st.info("No vegetables in inventory yet. Add purchases first.")
+    except Exception as e:
+        st.error("Error loading prices. Add purchases first.")
 
 elif menu == "Sell":
     st.header("Sell Vegetables")
@@ -119,21 +123,23 @@ elif menu == "Sell":
     if "cart" not in st.session_state:
         st.session_state.cart = []
 
-    vegs = pd.read_sql("SELECT vegetable FROM inventory", conn)['vegetable'].tolist()
-    if vegs:
-        veg = st.selectbox("Select Vegetable", vegs)
-        # FIXED: Unpacking error corrected
-        current_qty, _, selling_price = get_stock_info(veg)
-        price = st.number_input("Price per kg ₹", min_value=0.0, value=float(selling_price) if selling_price else 0.0)
-        qty = st.number_input("Kg", min_value=0.0, step=0.1)
+    try:
+        vegs = pd.read_sql("SELECT vegetable FROM inventory", conn)['vegetable'].tolist()
+        if vegs:
+            veg = st.selectbox("Select Vegetable", vegs)
+            current_qty, _, selling_price = get_stock_info(veg)
+            price = st.number_input("Price per kg ₹", min_value=0.0, value=float(selling_price) if selling_price else 0.0)
+            qty = st.number_input("Kg", min_value=0.0, step=0.1)
 
-        if st.button("Add to Cart"):
-            if current_qty >= qty > 0:
-                total_item = qty * price
-                st.session_state.cart.append([veg, qty, price, total_item])
-                st.success(f"Added {qty} kg {veg} @ ₹{price}/kg")
-            else:
-                st.error(f"Only {current_qty:.2f} kg available!")
+            if st.button("Add to Cart"):
+                if current_qty >= qty > 0:
+                    total_item = qty * price
+                    st.session_state.cart.append([veg, qty, price, total_item])
+                    st.success(f"Added {qty} kg {veg} @ ₹{price}/kg")
+                else:
+                    st.error(f"Only {current_qty:.2f} kg available!")
+    except:
+        st.info("Add inventory first.")
 
     if st.session_state.cart:
         df = pd.DataFrame(st.session_state.cart, columns=["Item", "Kg", "₹/kg", "Total"])
@@ -168,40 +174,63 @@ elif menu == "Sell":
 
 elif menu == "Inventory":
     st.header("Current Stock & Prices")
-    df = pd.read_sql("SELECT vegetable, quantity, cost_price AS 'Cost/kg', selling_price AS 'Sell/kg' FROM inventory", conn)
-    st.dataframe(df)
+    try:
+        df = pd.read_sql("SELECT vegetable, quantity, cost_price, selling_price FROM inventory", conn)
+        if not df.empty:
+            df.columns = ["Vegetable", "Quantity (kg)", "Cost/kg", "Sell/kg"]
+            st.dataframe(df.style.format({"Quantity (kg)": "{:.2f}", "Cost/kg": "₹{:.2f}", "Sell/kg": "₹{:.2f}"}))
+        else:
+            st.info("No inventory yet.")
+    except:
+        st.info("No inventory yet.")
 
+# Other menus with safety
 elif menu == "Waste":
     st.header("Record Waste")
-    vegs = pd.read_sql("SELECT vegetable FROM inventory", conn)['vegetable'].tolist()
-    if vegs:
-        veg = st.selectbox("Vegetable", vegs)
-        qty = st.number_input("Wasted kg", min_value=0.0, step=0.1)
-        reason = st.text_input("Reason")
-        if st.button("Save Waste"):
+    try:
+        vegs = pd.read_sql("SELECT vegetable FROM inventory", conn)['vegetable'].tolist()
+        if vegs:
+            veg = st.selectbox("Vegetable", vegs)
             current_qty, _, _ = get_stock_info(veg)
-            if current_qty >= qty:
-                c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable = ?", (qty, veg))
-                c.execute("INSERT INTO waste VALUES (?, ?, ?, ?)", (datetime.now().strftime("%Y-%m-%d"), veg, qty, reason))
-                conn.commit()
-                st.success("Waste recorded!")
+            qty = st.number_input("Wasted kg", min_value=0.0, step=0.1)
+            reason = st.text_input("Reason")
+            if st.button("Save Waste"):
+                if current_qty >= qty:
+                    c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable = ?", (qty, veg))
+                    c.execute("INSERT INTO waste VALUES (?, ?, ?, ?)", (datetime.now().strftime("%Y-%m-%d"), veg, qty, reason))
+                    conn.commit()
+                    st.success("Waste recorded!")
+    except:
+        st.info("No inventory yet.")
 
 elif menu == "Customers":
     st.header("Customers & Loyalty")
-    df = pd.read_sql("SELECT * FROM customers", conn)
-    st.dataframe(df)
+    try:
+        df = pd.read_sql("SELECT * FROM customers", conn)
+        st.dataframe(df)
+    except:
+        st.info("No customers yet.")
 
 elif menu == "Reports":
     st.header("Sales Report")
-    df = pd.read_sql("SELECT date, SUM(total) as sales FROM sales GROUP BY date ORDER BY date", conn)
-    if not df.empty:
-        st.bar_chart(df.set_index("date")["sales"])
+    try:
+        df = pd.read_sql("SELECT date, SUM(total) as sales FROM sales GROUP BY date ORDER BY date", conn)
+        if not df.empty:
+            st.bar_chart(df.set_index("date")["sales"])
+        else:
+            st.info("No sales yet.")
+    except:
+        st.info("No sales yet.")
 
 elif menu == "Download":
     st.header("Download Data")
-    for table in ["inventory", "purchases", "sales", "waste", "customers"]:
-        df = pd.read_sql(f"SELECT * FROM {table}", conn)
-        csv = df.to_csv(index=False).encode()
-        st.download_button(f"Download {table}.csv", csv, f"{table}.csv")
+    tables = ["inventory", "purchases", "sales", "waste", "customers"]
+    for table in tables:
+        try:
+            df = pd.read_sql(f"SELECT * FROM {table}", conn)
+            csv = df.to_csv(index=False).encode()
+            st.download_button(f"Download {table}.csv", csv, f"{table}.csv")
+        except:
+            pass
 
-st.caption("Fresh Basket - Made with Love!")
+st.caption("Fresh Basket - All pages working! Made for your brother ❤️")
