@@ -252,10 +252,10 @@ elif menu == "Sell":
                 st.success("Sale completed")
                 st.balloons()
                 st.session_state.cart = []
-                st.experimental_rerun()
+                st.rerun()
             if col2.button("Clear Cart"):
                 st.session_state.cart = []
-                st.experimental_rerun()
+                st.rerun()
 
 # -------------------------- INVENTORY (EDITABLE) --------------------------
 elif menu == "Inventory":
