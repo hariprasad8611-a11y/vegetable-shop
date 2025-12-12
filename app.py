@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 from datetime import datetime, date
-import time
 
 # ========================== PAGE SETUP ==========================
 st.set_page_config(page_title="Fresh Basket", page_icon="🥕", layout="wide")
@@ -42,7 +41,7 @@ st.markdown("""
 st.markdown("""
 <div class="header-card">
     <h1>🥕 Fresh Basket</h1>
-    <h3 style="margin-top:10px;">Freshness You Can Feel</h3>
+    <h3 style="margin-top:10px;">Your Brother's Smart Vegetable Shop</h3>
 </div>
 """, unsafe_allow_html=True)
 
@@ -123,6 +122,187 @@ if "selected_date" not in st.session_state:
     st.session_state.selected_date = date.today()
 if "last_sale" not in st.session_state:
     st.session_state.last_sale = None
+
+# ========================== HELPER FUNCTIONS FOR SELL PAGE ==========================
+def add_to_cart(veg, qty, price):
+    """Add item to cart"""
+    if qty <= 0:
+        return
+    
+    # Check stock
+    stock, _, _ = get_stock(veg)
+    current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == veg)
+    
+    if current_in_cart + qty > stock:
+        st.error(f"Not enough stock! Available: {stock:.3f} kg")
+        return
+    
+    # Add to cart
+    found = False
+    for i, item in enumerate(st.session_state.cart):
+        if item[0] == veg:
+            st.session_state.cart[i][1] += qty
+            st.session_state.cart[i][3] = round(st.session_state.cart[i][1] * price, 2)
+            found = True
+            break
+    
+    if not found:
+        total = round(qty * price, 2)
+        st.session_state.cart.append([veg, qty, price, total])
+    
+    st.success(f"Added {qty:.3f} kg of {veg}")
+    st.rerun()
+
+def update_cart_item(idx, delta):
+    """Update cart item quantity"""
+    if 0 <= idx < len(st.session_state.cart):
+        veg = st.session_state.cart[idx][0]
+        price = st.session_state.cart[idx][2]
+        
+        # Check stock for increase
+        if delta > 0:
+            stock, _, _ = get_stock(veg)
+            total_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == veg)
+            if total_in_cart + delta > stock:
+                st.error(f"Not enough stock! Available: {stock:.3f} kg")
+                return
+        
+        new_qty = st.session_state.cart[idx][1] + delta
+        if new_qty <= 0:
+            st.session_state.cart.pop(idx)
+        else:
+            st.session_state.cart[idx][1] = new_qty
+            st.session_state.cart[idx][3] = round(new_qty * price, 2)
+        
+        st.rerun()
+
+def process_sale(cust_name, cust_phone, total_amount):
+    """Process the sale"""
+    # Validate stock
+    insufficient = []
+    for veg, qty, price, total in st.session_state.cart:
+        if veg == "DISCOUNT":
+            continue
+        stock, _, _ = get_stock(veg)
+        if qty > stock:
+            insufficient.append((veg, stock, qty))
+    
+    if insufficient:
+        for v, stock, q in insufficient:
+            st.error(f"Not enough {v}: available {stock:.3f} kg, requested {q:.3f} kg")
+        return
+    
+    # Process sale
+    d = st.session_state.selected_date.strftime("%Y-%m-%d")
+    cust = f"{cust_name} ({cust_phone})" if cust_phone else cust_name or "Guest"
+    
+    sale_details = []
+    for item in st.session_state.cart:
+        veg, qty, price, total = item
+        
+        if veg == "DISCOUNT":
+            # Skip discount from database insert
+            continue
+        
+        # Save to sales table
+        c.execute("INSERT INTO sales VALUES (?,?,?,?,?,?)", 
+                 (d, veg, qty, price, total, cust))
+        
+        # Update inventory
+        c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
+        
+        sale_details.append({
+            "item": veg,
+            "quantity": qty,
+            "price_per_kg": price,
+            "total": total
+        })
+    
+    # Update customer points
+    if cust_phone:
+        c.execute("INSERT OR IGNORE INTO customers (phone, name) VALUES (?,?)", 
+                 (cust_phone, cust_name))
+        points = int(total_amount // 10)
+        c.execute("UPDATE customers SET points = points + ? WHERE phone=?", 
+                 (points, cust_phone))
+    
+    conn.commit()
+    
+    # Store sale for receipt
+    st.session_state.last_sale = {
+        "date": d,
+        "customer": cust,
+        "items": sale_details,
+        "total": total_amount,
+        "phone": cust_phone
+    }
+    
+    # Clear cart
+    st.session_state.cart = []
+    st.rerun()
+
+def show_receipt():
+    """Display receipt after sale"""
+    sale = st.session_state.last_sale
+    if not sale:
+        return
+    
+    st.markdown("""
+    <div style="background: linear-gradient(90deg, #56ab2f 0%, #a8e063 100%); padding:20px; border-radius:15px; margin:20px 0;">
+        <h2 style="color:white; text-align:center;">✅ SALE COMPLETED!</h2>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Receipt
+    with st.container():
+        st.markdown("""
+        <div class="receipt-card">
+            <h2 style="text-align:center; color:#2c3e50;">🥕 FRESH BASKET</h2>
+            <p style="text-align:center; color:#7f8c8d;">Your Brother's Vegetable Shop</p>
+            <hr>
+        """, unsafe_allow_html=True)
+        
+        # Sale info
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"**Date:** {sale['date']}")
+            st.markdown(f"**Customer:** {sale['customer']}")
+        with col2:
+            st.markdown(f"**Time:** {datetime.now().strftime('%H:%M:%S')}")
+            if sale['phone']:
+                cust_points = pd.read_sql("SELECT points FROM customers WHERE phone=?", 
+                                         conn, params=(sale['phone'],)).iloc[0]['points']
+                st.markdown(f"**Loyalty Points:** {cust_points}")
+        
+        st.markdown("<hr>", unsafe_allow_html=True)
+        
+        # Items table
+        st.markdown("### Items Purchased")
+        items_df = pd.DataFrame(sale['items'])
+        items_df['Qty Display'] = items_df['quantity'].apply(convert_to_display)
+        items_display = items_df[['item', 'Qty Display', 'price_per_kg', 'total']]
+        items_display.columns = ['Item', 'Quantity', 'Price/kg', 'Total']
+        
+        st.dataframe(items_display, use_container_width=True, hide_index=True)
+        
+        # Total
+        st.markdown("<hr>", unsafe_allow_html=True)
+        st.markdown(f"<h2 style='text-align:right;'>Total Amount: ₹{sale['total']:.2f}</h2>", unsafe_allow_html=True)
+        
+        st.markdown("""
+        <hr>
+        <p style="text-align:center; color:#7f8c8d; font-size:0.9em;">
+            Thank you for your purchase!<br>
+            Visit again 🥕
+        </p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Print button
+    if st.button("🖨️ Print Receipt", use_container_width=True):
+        st.info("Receipt ready for printing")
+    
+    st.balloons()
 
 # ========================== SIDEBAR MENU ==========================
 with st.sidebar:
@@ -420,13 +600,13 @@ elif menu == "Sell":
                             btn_col1, btn_col2, btn_col3 = st.columns(3)
                             with btn_col1:
                                 if st.button(f"250g", key=f"q250_{veg}", use_container_width=True):
-                                    self.add_to_cart(veg, 0.250, price)
+                                    add_to_cart(veg, 0.250, price)
                             with btn_col2:
                                 if st.button(f"500g", key=f"q500_{veg}", use_container_width=True):
-                                    self.add_to_cart(veg, 0.500, price)
+                                    add_to_cart(veg, 0.500, price)
                             with btn_col3:
                                 if st.button(f"1kg", key=f"q1_{veg}", use_container_width=True):
-                                    self.add_to_cart(veg, 1.000, price)
+                                    add_to_cart(veg, 1.000, price)
                             
                             # Manual input
                             man_col1, man_col2 = st.columns(2)
@@ -439,7 +619,7 @@ elif menu == "Sell":
                             
                             manual_qty = manual_kg + (manual_g / 1000)
                             if manual_qty > 0 and st.button("➕ Add", key=f"add_{veg}", use_container_width=True):
-                                self.add_to_cart(veg, manual_qty, price)
+                                add_to_cart(veg, manual_qty, price)
                         
                         if current_in_cart > 0:
                             st.info(f"In cart: {current_in_cart:.3f} kg")
@@ -467,10 +647,10 @@ elif menu == "Sell":
                         col1, col2, col3 = st.columns(3)
                         with col1:
                             if st.button("➕", key=f"inc_{veg}_{idx}", help="Add 250g"):
-                                self.update_cart_item(idx, 0.250)
+                                update_cart_item(idx, 0.250)
                         with col2:
                             if st.button("➖", key=f"dec_{veg}_{idx}", help="Remove 250g"):
-                                self.update_cart_item(idx, -0.250)
+                                update_cart_item(idx, -0.250)
                         with col3:
                             if st.button("❌", key=f"rem_{veg}_{idx}", help="Remove item"):
                                 st.session_state.cart.pop(idx)
@@ -484,7 +664,7 @@ elif menu == "Sell":
                 
                 # Action buttons
                 if st.button("✅ COMPLETE SALE", type="primary", use_container_width=True):
-                    self.process_sale(cust_name, cust_phone, total_amount)
+                    process_sale(cust_name, cust_phone, total_amount)
                 
                 if st.button("🔄 CLEAR CART", type="secondary", use_container_width=True):
                     st.session_state.cart = []
@@ -508,189 +688,10 @@ elif menu == "Sell":
                     if st.button("₹20 Off", use_container_width=True):
                         st.session_state.cart.append(["DISCOUNT", 1, -20, -20])
                         st.rerun()
-
-# Helper methods for Sell page
-def add_to_cart(self, veg, qty, price):
-    """Add item to cart"""
-    if qty <= 0:
-        return
-    
-    # Check stock
-    stock, _, _ = get_stock(veg)
-    current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == veg)
-    
-    if current_in_cart + qty > stock:
-        st.error(f"Not enough stock! Available: {stock:.3f} kg")
-        return
-    
-    # Add to cart
-    found = False
-    for i, item in enumerate(st.session_state.cart):
-        if item[0] == veg:
-            st.session_state.cart[i][1] += qty
-            st.session_state.cart[i][3] = round(st.session_state.cart[i][1] * price, 2)
-            found = True
-            break
-    
-    if not found:
-        total = round(qty * price, 2)
-        st.session_state.cart.append([veg, qty, price, total])
-    
-    st.success(f"Added {qty:.3f} kg of {veg}")
-    st.rerun()
-
-def update_cart_item(self, idx, delta):
-    """Update cart item quantity"""
-    if 0 <= idx < len(st.session_state.cart):
-        veg = st.session_state.cart[idx][0]
-        price = st.session_state.cart[idx][2]
         
-        # Check stock for increase
-        if delta > 0:
-            stock, _, _ = get_stock(veg)
-            total_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == veg)
-            if total_in_cart + delta > stock:
-                st.error(f"Not enough stock! Available: {stock:.3f} kg")
-                return
-        
-        new_qty = st.session_state.cart[idx][1] + delta
-        if new_qty <= 0:
-            st.session_state.cart.pop(idx)
-        else:
-            st.session_state.cart[idx][1] = new_qty
-            st.session_state.cart[idx][3] = round(new_qty * price, 2)
-        
-        st.rerun()
-
-def process_sale(self, cust_name, cust_phone, total_amount):
-    """Process the sale"""
-    # Validate stock
-    insufficient = []
-    for veg, qty, price, total in st.session_state.cart:
-        if veg == "DISCOUNT":
-            continue
-        stock, _, _ = get_stock(veg)
-        if qty > stock:
-            insufficient.append((veg, stock, qty))
-    
-    if insufficient:
-        for v, stock, q in insufficient:
-            st.error(f"Not enough {v}: available {stock:.3f} kg, requested {q:.3f} kg")
-        return
-    
-    # Process sale
-    d = selected_date.strftime("%Y-%m-%d")
-    cust = f"{cust_name} ({cust_phone})" if cust_phone else cust_name or "Guest"
-    
-    sale_details = []
-    for item in st.session_state.cart:
-        veg, qty, price, total = item
-        
-        if veg == "DISCOUNT":
-            # Skip discount from database insert
-            continue
-        
-        # Save to sales table
-        c.execute("INSERT INTO sales VALUES (?,?,?,?,?,?)", 
-                 (d, veg, qty, price, total, cust))
-        
-        # Update inventory
-        c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
-        
-        sale_details.append({
-            "item": veg,
-            "quantity": qty,
-            "price_per_kg": price,
-            "total": total
-        })
-    
-    # Update customer points
-    if cust_phone:
-        c.execute("INSERT OR IGNORE INTO customers (phone, name) VALUES (?,?)", 
-                 (cust_phone, cust_name))
-        points = int(total_amount // 10)
-        c.execute("UPDATE customers SET points = points + ? WHERE phone=?", 
-                 (points, cust_phone))
-    
-    conn.commit()
-    
-    # Store sale for receipt
-    st.session_state.last_sale = {
-        "date": d,
-        "customer": cust,
-        "items": sale_details,
-        "total": total_amount,
-        "phone": cust_phone
-    }
-    
-    # Show receipt
-    show_receipt()
-    
-    # Clear cart
-    st.session_state.cart = []
-
-def show_receipt(self):
-    """Display receipt after sale"""
-    sale = st.session_state.last_sale
-    if not sale:
-        return
-    
-    st.markdown("""
-    <div style="background: linear-gradient(90deg, #56ab2f 0%, #a8e063 100%); padding:20px; border-radius:15px; margin:20px 0;">
-        <h2 style="color:white; text-align:center;">✅ SALE COMPLETED!</h2>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Receipt
-    with st.container():
-        st.markdown("""
-        <div class="receipt-card">
-            <h2 style="text-align:center; color:#2c3e50;">🥕 FRESH BASKET</h2>
-            <p style="text-align:center; color:#7f8c8d;">Your Brother's Vegetable Shop</p>
-            <hr>
-        """, unsafe_allow_html=True)
-        
-        # Sale info
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown(f"**Date:** {sale['date']}")
-            st.markdown(f"**Customer:** {sale['customer']}")
-        with col2:
-            st.markdown(f"**Time:** {datetime.now().strftime('%H:%M:%S')}")
-            if sale['phone']:
-                cust_points = pd.read_sql("SELECT points FROM customers WHERE phone=?", 
-                                         conn, params=(sale['phone'],)).iloc[0]['points']
-                st.markdown(f"**Loyalty Points:** {cust_points}")
-        
-        st.markdown("<hr>", unsafe_allow_html=True)
-        
-        # Items table
-        st.markdown("### Items Purchased")
-        items_df = pd.DataFrame(sale['items'])
-        items_df['Qty Display'] = items_df['quantity'].apply(convert_to_display)
-        items_display = items_df[['item', 'Qty Display', 'price_per_kg', 'total']]
-        items_display.columns = ['Item', 'Quantity', 'Price/kg', 'Total']
-        
-        st.dataframe(items_display, use_container_width=True, hide_index=True)
-        
-        # Total
-        st.markdown("<hr>", unsafe_allow_html=True)
-        st.markdown(f"<h2 style='text-align:right;'>Total Amount: ₹{sale['total']:.2f}</h2>", unsafe_allow_html=True)
-        
-        st.markdown("""
-        <hr>
-        <p style="text-align:center; color:#7f8c8d; font-size:0.9em;">
-            Thank you for your purchase!<br>
-            Visit again 🥕
-        </p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Print button
-    if st.button("🖨️ Print Receipt", use_container_width=True):
-        st.info("Receipt ready for printing")
-    
-    st.balloons()
+        # Show receipt if last sale exists
+        if st.session_state.last_sale:
+            show_receipt()
 
 # -------------------------- INVENTORY --------------------------
 elif menu == "Inventory":
