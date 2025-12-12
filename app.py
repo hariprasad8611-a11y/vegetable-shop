@@ -102,7 +102,7 @@ elif menu == "Add Purchase":
     cost = st.number_input("Total Cost ₹", min_value=0.0)
     supplier = st.text_input("Supplier")
 
-    if st.button("Save Purchase", key="purchase", help="", type="primary"):
+    if st.button("Save Purchase", key="purchase", type="primary"):
         d = datetime.now().strftime("%Y-%m-%d")
         c.execute("INSERT INTO purchases VALUES (?,?,?,?,?)", (d, veg, qty, cost, supplier))
         old_qty, old_cost, old_sell = get_stock(veg)
@@ -220,7 +220,11 @@ elif menu == "Waste":
 elif menu == "Customers":
     st.header("👤 Customers")
     df = pd.read_sql("SELECT * FROM customers", conn)
-    st.dataframe(df if not df.empty else "No customers yet")
+
+    if df.empty:
+        st.info("No customers yet")
+    else:
+        st.dataframe(df)
 
 # ========================== REPORTS ==========================
 elif menu == "Reports":
@@ -228,7 +232,11 @@ elif menu == "Reports":
     sel_date = st.date_input("Date", value=date.today())
     d = sel_date.strftime("%Y-%m-%d")
     df = pd.read_sql("SELECT * FROM sales WHERE date=?", conn, params=(d,))
-    st.dataframe(df if not df.empty else "No sales")
+
+    if df.empty:
+        st.info("No sales")
+    else:
+        st.dataframe(df)
 
 # ========================== DOWNLOAD ==========================
 elif menu == "Download":
