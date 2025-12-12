@@ -48,7 +48,7 @@ st.markdown("""
 st.markdown("""
 <div class="header-card">
     <h1>🥕 Fresh Basket</h1>
-    <h3 style="margin-top:10px;">Your Brother's Smart Vegetable Shop</h3>
+    <h3 style="margin-top:10px;">Freshness You Can Feel.</h3>
 </div>
 """, unsafe_allow_html=True)
 
