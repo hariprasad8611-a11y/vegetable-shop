@@ -14,6 +14,7 @@ st.markdown("""
     .secondary-btn {background:#d32f2f !important; color:white !important;}
     .muted {color:#6b7280; font-size:0.9rem;}
     .small {font-size:0.9rem}
+    .alert {background:#fff3cd; padding:12px; border-radius:8px; margin-bottom:8px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -26,9 +27,16 @@ DB_FILE = "shop.db"
 conn = sqlite3.connect(DB_FILE, check_same_thread=False)
 c = conn.cursor()
 
-# Create or migrate tables with expected schema (use rowid for edits)
-# Inventory with columns: vegetable, quantity, cost_price, selling_price, image_url
-c.execute("CREATE TABLE IF NOT EXISTS inventory (vegetable TEXT PRIMARY KEY, quantity REAL, cost_price REAL, selling_price REAL, image_url TEXT)")
+# create tables (keeps cost_price column but UI won't show/edit it)
+c.execute("""
+CREATE TABLE IF NOT EXISTS inventory (
+    vegetable TEXT PRIMARY KEY,
+    quantity REAL,
+    cost_price REAL,
+    selling_price REAL,
+    image_url TEXT
+)
+""")
 c.execute("CREATE TABLE IF NOT EXISTS purchases (date TEXT, vegetable TEXT, quantity REAL, amount REAL, supplier TEXT)")
 c.execute("CREATE TABLE IF NOT EXISTS sales (date TEXT, vegetable TEXT, quantity_sold REAL, sale_price REAL, total REAL, customer TEXT)")
 c.execute("CREATE TABLE IF NOT EXISTS waste (date TEXT, vegetable TEXT, quantity REAL, reason TEXT)")
@@ -37,58 +45,79 @@ conn.commit()
 
 # ========================== HELPERS ==========================
 def get_stock(veg):
-    """Return (quantity, cost_price, selling_price) for veg (or 0s)."""
+    """Return (quantity, cost_price, selling_price) for veg (or zeros)."""
     c.execute("SELECT quantity, cost_price, selling_price FROM inventory WHERE vegetable=?", (veg,))
     row = c.fetchone()
     if row:
-        qty = row[0] if row[0] is not None else 0.0
-        cost = row[1] if row[1] is not None else 0.0
-        sell = row[2] if row[2] is not None else 0.0
+        qty = row[0] or 0.0
+        cost = row[1] or 0.0
+        sell = row[2] or 0.0
         return qty, cost, sell
     return 0.0, 0.0, 0.0
 
 def fetch_table_with_rowid(table):
-    """Return DataFrame including rowid for editing/deleting."""
-    df = pd.read_sql(f"SELECT rowid, * FROM {table}", conn)
-    return df
+    return pd.read_sql(f"SELECT rowid, * FROM {table}", conn)
 
 def safe_round_df(df, cols):
-    for ccol in cols:
-        if ccol in df.columns:
+    for col in cols:
+        if col in df.columns:
             try:
-                df[ccol] = df[ccol].astype(float).round(2)
+                df[col] = df[col].astype(float).round(2)
             except Exception:
                 pass
     return df
 
+# ensure session state keys
+if "cart" not in st.session_state:
+    st.session_state.cart = []  # list of [veg, qty, price, total]
+if "shortage_threshold" not in st.session_state:
+    st.session_state.shortage_threshold = 5.0  # default threshold in kg
+
 # ========================== SIDEBAR MENU ==========================
 menu = st.sidebar.selectbox(
     "Menu",
-    ["Dashboard", "Add Purchase", "Set Selling Prices", "Sell", "Inventory", "Purchases", "Sales", "Expenses", "Customers", "Waste", "Reports", "Download"]
+    ["Dashboard", "Add Purchase", "Set Selling Prices", "Sell", "Inventory", "Purchases", "Sales", "Expenses", "Customers", "Waste", "Download", "Financials"]
 )
 
 # -------------------------- DASHBOARD --------------------------
 if menu == "Dashboard":
-    st.header("📊 Today's Summary")
-    sel_date = st.date_input("Choose Date", value=date.today())
-    d = sel_date.strftime("%Y-%m-%d")
+    st.header("📊 Dashboard — Vegetable Shortage Alerts")
+    st.markdown("This dashboard shows simple, human-friendly shortage alerts and suggested reorder quantities. Sales/Cost/Profit moved to **Financials** page.")
 
-    sales = pd.read_sql("SELECT COALESCE(SUM(total),0) AS total FROM sales WHERE date=?", conn, params=(d,))["total"].iloc[0]
-    cost  = pd.read_sql("SELECT COALESCE(SUM(amount),0) AS total FROM purchases WHERE date=?", conn, params=(d,))["total"].iloc[0]
-    profit = sales - cost
+    # threshold control
+    threshold = st.number_input("Shortage threshold (kg) — items below this are flagged", min_value=0.0, value=float(st.session_state.shortage_threshold), step=1.0)
+    st.session_state.shortage_threshold = threshold
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Sales", f"₹{sales:.2f}")
-    c2.metric("Cost", f"₹{cost:.2f}")
-    c3.metric("Profit", f"₹{profit:.2f}")
+    inv = pd.read_sql("SELECT vegetable, quantity, selling_price FROM inventory", conn)
+    if inv.empty:
+        st.info("No inventory available yet.")
+    else:
+        inv = inv.sort_values("quantity")
+        low = inv[(inv["quantity"] > 0) & (inv["quantity"] < threshold)]
+        zero = inv[inv["quantity"] <= 0]
+        if zero.empty and low.empty:
+            st.success("All good — no shortages right now 👍")
+        else:
+            st.markdown("### Shortage Alerts")
+            # first show items with zero stock (out of stock)
+            if not zero.empty:
+                for _, r in zero.iterrows():
+                    veg = r["vegetable"]
+                    st.markdown(f"<div class='alert'><b>{veg}</b> is <span style='color:#d9534f;'>out of stock</span>. Please reorder immediately. Suggested reorder: <b>10 kg</b>.</div>", unsafe_allow_html=True)
+            # then low stock items
+            if not low.empty:
+                for _, r in low.iterrows():
+                    veg = r["vegetable"]
+                    qty = r["quantity"]
+                    suggested = max(5.0, threshold * 2)  # simple rule: suggest at least 5 or twice threshold
+                    st.markdown(f"<div class='alert'><b>{veg}</b> running low — only <b>{qty:.2f} kg</b> left. Suggested reorder: <b>{suggested:.0f} kg</b>.</div>", unsafe_allow_html=True)
 
-    low = pd.read_sql("SELECT vegetable, quantity FROM inventory WHERE quantity>0 AND quantity<5", conn)
-    if not low.empty:
-        st.warning("⚠ Low Stock Alert")
-        try:
-            st.bar_chart(low.set_index("vegetable")["quantity"])
-        except Exception:
-            st.write(low)
+        # Helpful summary table
+        st.markdown("### Inventory Snapshot")
+        inv_display = inv.copy()
+        inv_display = safe_round_df(inv_display, ["quantity", "selling_price"])
+        inv_display = inv_display.rename(columns={"quantity":"Qty (kg)", "selling_price":"Sell/kg"})
+        st.dataframe(inv_display)
 
 # -------------------------- ADD PURCHASE --------------------------
 elif menu == "Add Purchase":
@@ -101,69 +130,36 @@ elif menu == "Add Purchase":
         submitted = st.form_submit_button("Save Purchase")
         if submitted:
             if not veg:
-                st.error("Enter vegetable name")
+                st.error("Please enter vegetable name.")
             elif qty <= 0:
-                st.error("Enter quantity > 0")
+                st.error("Quantity must be > 0.")
             else:
                 d = datetime.now().strftime("%Y-%m-%d")
                 c.execute("INSERT INTO purchases VALUES (?,?,?,?,?)", (d, veg, qty, amount, supplier))
-                # update inventory
+                # update inventory: keep cost_price in DB but UI won't show
                 old_qty, old_cost, old_sell = get_stock(veg)
                 new_qty = old_qty + qty
                 unit_cost = (amount / qty) if qty>0 else old_cost
-                # preserve existing image_url if any
-                c.execute("""
-                    INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url)
-                    VALUES (?, ?, ?, ?, COALESCE((SELECT image_url FROM inventory WHERE vegetable=?), ''))
-                    ON CONFLICT(vegetable) DO UPDATE SET
-                        quantity=excluded.quantity,
-                        cost_price=excluded.cost_price,
-                        selling_price=COALESCE((SELECT selling_price FROM inventory WHERE vegetable=?), excluded.selling_price)
-                """, (veg, new_qty, unit_cost, old_sell if old_sell else 0.0, veg, veg))
+                # insert or update inventory (preserve selling_price if present)
+                c.execute("SELECT selling_price, image_url FROM inventory WHERE vegetable=?", (veg,))
+                prev = c.fetchone()
+                prev_sell = prev[0] if prev else None
+                prev_img = prev[1] if prev else ""
+                if prev:
+                    c.execute("UPDATE inventory SET quantity=?, cost_price=? WHERE vegetable=?", (new_qty, unit_cost, veg))
+                else:
+                    c.execute("INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url) VALUES (?,?,?,?,?)", (veg, new_qty, unit_cost, prev_sell or 0.0, prev_img or ""))
                 conn.commit()
-                st.success(f"Saved purchase: {qty} kg {veg}")
+                st.success(f"Added {qty} kg of {veg} to purchases and inventory.")
 
     st.markdown("---")
-    st.subheader("Recent purchases")
-    df = fetch_table_with_rowid("purchases")
-    if df.empty:
+    st.subheader("Recent Purchases")
+    pur_df = fetch_table_with_rowid("purchases")
+    if pur_df.empty:
         st.info("No purchases yet")
     else:
-        df = safe_round_df(df, ["quantity", "amount"])
-        st.dataframe(df)
-
-        # Edit / Delete per row
-        st.markdown("Edit / Delete purchases")
-        for _, row in df.sort_values("rowid", ascending=False).head(10).iterrows():
-            cols = st.columns([2,1,1,1,1,1])
-            with cols[0]:
-                st.write(f"**{row['vegetable']}** — {row['quantity']} kg — ₹{row['amount']}")
-            with cols[4]:
-                if st.button("Edit", key=f"edit_pur_{int(row['rowid'])}"):
-                    # show form to edit
-                    with st.form(f"edit_pur_form_{int(row['rowid'])}"):
-                        new_date = st.date_input("Date", value=date.fromisoformat(row['date']))
-                        new_veg = st.text_input("Vegetable", value=row['vegetable'])
-                        new_qty = st.number_input("Quantity", value=float(row['quantity']))
-                        new_amount = st.number_input("Amount", value=float(row['amount']))
-                        new_supplier = st.text_input("Supplier", value=row['supplier'])
-                        if st.form_submit_button("Save changes"):
-                            c.execute("UPDATE purchases SET date=?, vegetable=?, quantity=?, amount=?, supplier=? WHERE rowid=?",
-                                      (new_date.strftime("%Y-%m-%d"), new_veg, new_qty, new_amount, new_supplier, int(row['rowid'])))
-                            # optionally update inventory (simple approach: adjust delta)
-                            delta = new_qty - row['quantity']
-                            c.execute("UPDATE inventory SET quantity = quantity + ? WHERE vegetable=?", (delta, new_veg))
-                            conn.commit()
-                            st.success("Purchase updated")
-                            st.experimental_rerun()
-            with cols[5]:
-                if st.button("Delete", key=f"del_pur_{int(row['rowid'])}"):
-                    # reduce inventory accordingly (safe: subtract qty)
-                    c.execute("DELETE FROM purchases WHERE rowid=?", (int(row['rowid']),))
-                    c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (row['quantity'], row['vegetable']))
-                    conn.commit()
-                    st.success("Deleted purchase")
-                    st.experimental_rerun()
+        pur_df = safe_round_df(pur_df, ["quantity", "amount"])
+        st.dataframe(pur_df.drop(columns=["rowid"]))
 
 # -------------------------- SET SELLING PRICES --------------------------
 elif menu == "Set Selling Prices":
@@ -174,144 +170,164 @@ elif menu == "Set Selling Prices":
     else:
         veg = st.selectbox("Choose Vegetable", items['vegetable'])
         qty, cost, sell = get_stock(veg)
-        st.info(f"Stock: {qty:.2f} kg | Cost: ₹{cost:.2f}/kg")
+        st.info(f"Current Stock: {qty:.2f} kg")
         new_price = st.number_input("Selling Price per kg ₹", value=float(sell or 0.0))
         if st.button("Update Price"):
             c.execute("UPDATE inventory SET selling_price=? WHERE vegetable=?", (new_price, veg))
             conn.commit()
-            st.success("Price updated")
+            st.success("Selling price updated")
 
-# -------------------------- SELL (MULTI-ITEM) --------------------------
+# -------------------------- SELL (multi via + button) --------------------------
 elif menu == "Sell":
-    st.header("💵 Sell Vegetables (Multi-item cart)")
+    st.header("💵 Sell Vegetables (Add with + button)")
+
     cust_name = st.text_input("Customer Name (optional)")
     cust_phone = st.text_input("Customer Phone (optional)")
 
-    items_df = pd.read_sql("SELECT vegetable, quantity, cost_price, selling_price FROM inventory", conn)
-    if items_df.empty:
+    inventory = pd.read_sql("SELECT vegetable, quantity, selling_price FROM inventory ORDER BY vegetable", conn)
+    if inventory.empty:
         st.info("No items in inventory")
     else:
-        veg_list = items_df["vegetable"].tolist()
-        selected = st.multiselect("Select vegetables to sell (multiple)", veg_list)
+        st.markdown("Click **＋** to add 1 kg of that vegetable to the cart. You can add multiple different vegetables.")
+        # Display inventory rows with + buttons
+        for _, row in inventory.iterrows():
+            veg = row["vegetable"]
+            stock = float(row["quantity"] or 0.0)
+            sell_price = float(row["selling_price"] or 0.0)
+            cols = st.columns([4,1,1])
+            with cols[0]:
+                st.write(f"**{veg}** — {stock:.2f} kg available — Sell/kg ₹{sell_price:.2f}")
+            # plus button column
+            with cols[1]:
+                if st.button("＋", key=f"plus_{veg}"):
+                    # add 1 kg to cart for this veg (or increase if already exists)
+                    # check stock
+                    current_qty_in_cart = 0.0
+                    for i, it in enumerate(st.session_state.cart):
+                        if it[0] == veg:
+                            current_qty_in_cart = st.session_state.cart[i][1]
+                            break
+                    if current_qty_in_cart + 1.0 > stock:
+                        st.error(f"Not enough stock for {veg} (available {stock:.2f} kg).")
+                    else:
+                        # either update existing cart row or append
+                        found = False
+                        for i, it in enumerate(st.session_state.cart):
+                            if it[0] == veg:
+                                st.session_state.cart[i][1] = round(st.session_state.cart[i][1] + 1.0, 2)
+                                st.session_state.cart[i][2] = sell_price
+                                st.session_state.cart[i][3] = round(st.session_state.cart[i][1] * sell_price, 2)
+                                found = True
+                                break
+                        if not found:
+                            st.session_state.cart.append([veg, 1.0, sell_price, round(1.0 * sell_price, 2)])
+                        st.success(f"Added 1 kg {veg} to cart")
+            # optional remove 1 kg button
+            with cols[2]:
+                if st.button("−", key=f"minus_{veg}"):
+                    # reduce 1 kg from cart if present
+                    for i, it in enumerate(st.session_state.cart):
+                        if it[0] == veg:
+                            if it[1] <= 1.0:
+                                st.session_state.cart.pop(i)
+                            else:
+                                st.session_state.cart[i][1] = round(st.session_state.cart[i][1] - 1.0, 2)
+                                st.session_state.cart[i][3] = round(st.session_state.cart[i][1] * st.session_state.cart[i][2], 2)
+                            st.success(f"Removed 1 kg from {veg} in cart")
+                            break
 
-        # per-selected input areas
-        cart = st.session_state.get("cart", [])
-        temp_entries = []
-        if selected:
-            st.markdown("Enter quantities and optionally adjust per-item price:")
-            for veg in selected:
-                qty_stock, cost_price, sell_price = get_stock(veg)
-                cols = st.columns([3,2,2])
-                with cols[0]:
-                    st.markdown(f"**{veg}** (Stock: {qty_stock:.2f} kg, Cost/kg: ₹{cost_price:.2f})")
-                with cols[1]:
-                    q = st.number_input(f"Qty — {veg}", min_value=0.0, step=0.1, key=f"sell_qty_{veg}")
-                with cols[2]:
-                    p = st.number_input(f"Price/kg — {veg}", min_value=0.0, value=float(sell_price or cost_price or 0.0), key=f"sell_price_{veg}")
-                if q and q>0:
-                    temp_entries.append([veg, q, p, round(q*p,2)])
-
-            if st.button("Add Selected to Cart"):
-                # validate stock and append
-                added = 0
-                for entry in temp_entries:
-                    veg, q, p, total = entry
-                    stock, _, _ = get_stock(veg)
-                    if q <= 0:
-                        st.warning(f"Zero qty skipped for {veg}")
-                        continue
-                    if q > stock:
-                        st.error(f"Not enough stock for {veg} (available {stock})")
-                        continue
-                    # append to session cart
-                    cart.append(entry)
-                    added += 1
-                st.session_state.cart = cart
-                st.rerun()
-
+        st.markdown("---")
         # show cart
-        if st.session_state.get("cart"):
-            st.markdown("### Cart")
-            cart_df = pd.DataFrame(st.session_state["cart"], columns=["Item","Kg","Price/kg","Total"])
+        if st.session_state.cart:
+            cart_df = pd.DataFrame(st.session_state.cart, columns=["Item","Kg","Price/kg","Total"])
+            st.subheader("Cart")
             st.table(cart_df)
             total_bill = cart_df["Total"].sum()
             st.markdown(f"**Total Bill: ₹{total_bill:.2f}**")
 
-            col1, col2 = st.columns(2)
-            if col1.button("Complete Sale"):
-                d = datetime.now().strftime("%Y-%m-%d")
-                cust = f"{cust_name} ({cust_phone})" if cust_phone else (cust_name or "Guest")
-                for v, q, p, t in st.session_state["cart"]:
-                    c.execute("INSERT INTO sales VALUES (?,?,?,?,?,?)", (d, v, q, p, t, cust))
-                    c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (q, v))
-                if cust_phone:
-                    c.execute("INSERT OR IGNORE INTO customers (phone, name) VALUES (?,?)", (cust_phone, cust_name))
-                    points = int(total_bill // 10)
-                    c.execute("UPDATE customers SET points = points + ? WHERE phone=?", (points, cust_phone))
-                conn.commit()
-                st.success("Sale completed")
-                st.balloons()
+            c1, c2 = st.columns(2)
+            if c1.button("Complete Sale"):
+                # validate stock again and commit sale
+                insufficient = []
+                for v, q, p, t in st.session_state.cart:
+                    stock, _, _ = get_stock(v)
+                    if q > stock:
+                        insufficient.append((v, stock, q))
+                if insufficient:
+                    for v, stock, q in insufficient:
+                        st.error(f"Not enough {v}: available {stock:.2f} kg, requested {q:.2f} kg")
+                else:
+                    d = datetime.now().strftime("%Y-%m-%d")
+                    cust = f"{cust_name} ({cust_phone})" if cust_phone else cust_name or "Guest"
+                    for v, q, p, t in st.session_state.cart:
+                        c.execute("INSERT INTO sales VALUES (?,?,?,?,?,?)", (d, v, q, p, t, cust))
+                        c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (q, v))
+                    if cust_phone:
+                        c.execute("INSERT OR IGNORE INTO customers (phone, name) VALUES (?,?)", (cust_phone, cust_name))
+                        points = int(total_bill // 10)
+                        c.execute("UPDATE customers SET points = points + ? WHERE phone=?", (points, cust_phone))
+                    conn.commit()
+                    st.success("Sale completed")
+                    st.balloons()
+                    st.session_state.cart = []
+                    st.rerun()
+            if c2.button("Clear Cart"):
                 st.session_state.cart = []
-                st.rerun()
-            if col2.button("Clear Cart"):
-                st.session_state.cart = []
-                st.rerun()
+                st.success("Cleared cart")
 
-# -------------------------- INVENTORY (EDITABLE) --------------------------
+# -------------------------- INVENTORY (editable but no cost/kg editing) --------------------------
 elif menu == "Inventory":
-    st.header("📦 Inventory")
-    df = pd.read_sql("SELECT rowid, vegetable, quantity, cost_price, selling_price, image_url FROM inventory", conn)
+    st.header("📦 Inventory (Cost/kg removed from UI)")
+    df = pd.read_sql("SELECT rowid, vegetable, quantity, selling_price, image_url FROM inventory", conn)
     if df.empty:
         st.info("No stock available")
     else:
         df_display = df.copy()
-        df_display = safe_round_df(df_display, ["quantity", "cost_price", "selling_price"])
-        df_display = df_display.rename(columns={"rowid":"rowid","vegetable":"Vegetable","quantity":"Qty (kg)","cost_price":"Cost/kg","selling_price":"Sell/kg","image_url":"Image URL"})
+        df_display = safe_round_df(df_display, ["quantity", "selling_price"])
+        df_display = df_display.rename(columns={"vegetable":"Vegetable","quantity":"Qty (kg)","selling_price":"Sell/kg","image_url":"Image URL"})
         st.dataframe(df_display.drop(columns=["rowid"]))
 
         st.markdown("### Edit / Delete Inventory Items")
         for _, row in df.sort_values("rowid", ascending=False).iterrows():
             cols = st.columns([3,1,1])
             with cols[0]:
-                st.write(f"**{row['vegetable']}** — {round(row['quantity'],2)} kg — Cost ₹{row['cost_price'] or 0:.2f} — Sell ₹{row['selling_price'] or 0:.2f}")
+                st.write(f"**{row['vegetable']}** — {round(row['quantity'],2)} kg — Sell ₹{row['selling_price'] or 0:.2f}")
             with cols[1]:
                 if st.button("Edit", key=f"edit_inv_{int(row['rowid'])}"):
                     with st.form(f"edit_inv_form_{int(row['rowid'])}"):
                         new_name = st.text_input("Vegetable", value=row['vegetable'])
                         new_qty = st.number_input("Quantity", value=float(row['quantity'] or 0.0))
-                        new_cost = st.number_input("Cost Price/kg", value=float(row['cost_price'] or 0.0))
                         new_sell = st.number_input("Selling Price/kg", value=float(row['selling_price'] or 0.0))
                         if st.form_submit_button("Save"):
-                            # If vegetable name changed, careful: update primary key by inserting/updating
+                            # update inventory; we do NOT expose cost_price in UI so we don't edit it here
                             if new_name != row['vegetable']:
-                                # remove old and add new to avoid PK conflict
+                                # delete old record then insert new (to avoid PK conflicts)
                                 c.execute("DELETE FROM inventory WHERE vegetable=?", (row['vegetable'],))
                                 c.execute("INSERT OR REPLACE INTO inventory (vegetable, quantity, cost_price, selling_price, image_url) VALUES (?,?,?,?,?)",
-                                          (new_name, new_qty, new_cost, new_sell, row['image_url']))
+                                          (new_name, new_qty, 0.0, new_sell, row['image_url']))
                             else:
-                                c.execute("UPDATE inventory SET quantity=?, cost_price=?, selling_price=? WHERE vegetable=?",
-                                          (new_qty, new_cost, new_sell, row['vegetable']))
+                                c.execute("UPDATE inventory SET quantity=?, selling_price=? WHERE vegetable=?", (new_qty, new_sell, row['vegetable']))
                             conn.commit()
                             st.success("Inventory updated")
-                            st.experimental_rerun()
+                            st.rerun()
             with cols[2]:
                 if st.button("Delete", key=f"del_inv_{int(row['rowid'])}"):
                     c.execute("DELETE FROM inventory WHERE rowid=?", (int(row['rowid']),))
                     conn.commit()
                     st.success("Deleted item")
-                    st.experimental_rerun()
+                    st.rerun()
 
-# -------------------------- PURCHASES (full editable) --------------------------
+# -------------------------- PURCHASES --------------------------
 elif menu == "Purchases":
     st.header("📋 Purchases")
-    df = fetch_table_with_rowid("purchases")
-    if df.empty:
+    pur_df = fetch_table_with_rowid("purchases")
+    if pur_df.empty:
         st.info("No purchases recorded")
     else:
-        df2 = safe_round_df(df.copy(), ["quantity", "amount"])
-        st.dataframe(df2.drop(columns=["rowid"]))
+        pur_df2 = safe_round_df(pur_df.copy(), ["quantity", "amount"])
+        st.dataframe(pur_df2.drop(columns=["rowid"]))
         st.markdown("Edit / Delete purchases")
-        for _, row in df.sort_values("rowid", ascending=False).iterrows():
+        for _, row in pur_df.sort_values("rowid", ascending=False).iterrows():
             cols = st.columns([3,1])
             with cols[0]:
                 st.write(f"{row['date']} — {row['vegetable']} — {row['quantity']} kg — ₹{row['amount']}")
@@ -326,27 +342,26 @@ elif menu == "Purchases":
                         if st.form_submit_button("Save"):
                             c.execute("UPDATE purchases SET date=?, vegetable=?, quantity=?, amount=?, supplier=? WHERE rowid=?",
                                       (nd.strftime("%Y-%m-%d"), nv, nq, na, ns, int(row['rowid'])))
-                            # adjust inventory delta: simple approach (not tracking original redo complexities)
                             conn.commit()
                             st.success("Updated purchase")
-                            st.experimental_rerun()
+                            st.rerun()
                 if st.button("Delete", key=f"del_pur2_{int(row['rowid'])}"):
                     c.execute("DELETE FROM purchases WHERE rowid=?", (int(row['rowid']),))
                     conn.commit()
                     st.success("Deleted")
-                    st.experimental_rerun()
+                    st.rerun()
 
-# -------------------------- SALES (editable) --------------------------
+# -------------------------- SALES --------------------------
 elif menu == "Sales":
     st.header("🧾 Sales")
-    df = fetch_table_with_rowid("sales")
-    if df.empty:
+    sales_df = fetch_table_with_rowid("sales")
+    if sales_df.empty:
         st.info("No sales recorded")
     else:
-        df2 = safe_round_df(df.copy(), ["quantity_sold", "sale_price", "total"])
-        st.dataframe(df2.drop(columns=["rowid"]))
+        sales_df2 = safe_round_df(sales_df.copy(), ["quantity_sold", "sale_price", "total"])
+        st.dataframe(sales_df2.drop(columns=["rowid"]))
         st.markdown("Edit / Delete sales")
-        for _, row in df.sort_values("rowid", ascending=False).iterrows():
+        for _, row in sales_df.sort_values("rowid", ascending=False).iterrows():
             cols = st.columns([3,1])
             with cols[0]:
                 st.write(f"{row['date']} — {row['vegetable']} — {row['quantity_sold']} kg — ₹{row['total']}")
@@ -363,24 +378,23 @@ elif menu == "Sales":
                                       (nd.strftime("%Y-%m-%d"), nv, nq, np, new_total, int(row['rowid'])))
                             conn.commit()
                             st.success("Sale updated")
-                            st.experimental_rerun()
+                            st.rerun()
                 if st.button("Delete", key=f"del_sale_{int(row['rowid'])}"):
-                    # optionally increase inventory back
                     c.execute("DELETE FROM sales WHERE rowid=?", (int(row['rowid']),))
                     conn.commit()
                     st.success("Deleted sale")
-                    st.experimental_rerun()
+                    st.rerun()
 
-# -------------------------- EXPENSES (editable) --------------------------
+# -------------------------- EXPENSES --------------------------
 elif menu == "Expenses":
     st.header("💸 Expenses")
-    df = fetch_table_with_rowid("expenses")
-    if df.empty:
+    exp_df = fetch_table_with_rowid("expenses")
+    if exp_df.empty:
         st.info("No expenses yet")
     else:
-        st.dataframe(df.drop(columns=["rowid"]))
+        st.dataframe(exp_df.drop(columns=["rowid"]))
         st.markdown("Edit / Delete expenses")
-        for _, row in df.sort_values("rowid", ascending=False).iterrows():
+        for _, row in exp_df.sort_values("rowid", ascending=False).iterrows():
             cols = st.columns([3,1])
             with cols[0]:
                 st.write(f"{row['date']} — {row['category']} — ₹{row['amount']}")
@@ -396,12 +410,12 @@ elif menu == "Expenses":
                                       (nd.strftime("%Y-%m-%d"), cat, amt, desc, int(row['rowid'])))
                             conn.commit()
                             st.success("Updated expense")
-                            st.experimental_rerun()
+                            st.rerun()
                 if st.button("Delete", key=f"del_exp_{int(row['rowid'])}"):
                     c.execute("DELETE FROM expenses WHERE rowid=?", (int(row['rowid']),))
                     conn.commit()
                     st.success("Deleted")
-                    st.experimental_rerun()
+                    st.rerun()
 
 # -------------------------- CUSTOMERS --------------------------
 elif menu == "Customers":
@@ -423,7 +437,6 @@ elif menu == "Customers":
                         phone = st.text_input("Phone", value=row['phone'])
                         points = st.number_input("Points", value=int(row['points'] or 0))
                         if st.form_submit_button("Save"):
-                            # phone PK: if changed, delete old and insert new
                             if phone != row['phone']:
                                 c.execute("DELETE FROM customers WHERE phone=?", (row['phone'],))
                                 c.execute("INSERT OR REPLACE INTO customers (phone,name,points) VALUES (?,?,?)", (phone, name, points))
@@ -431,12 +444,12 @@ elif menu == "Customers":
                                 c.execute("UPDATE customers SET name=?, points=? WHERE phone=?", (name, points, phone))
                             conn.commit()
                             st.success("Customer updated")
-                            st.experimental_rerun()
+                            st.rerun()
                 if st.button("Delete", key=f"del_cust_{row['phone']}"):
                     c.execute("DELETE FROM customers WHERE phone=?", (row['phone'],))
                     conn.commit()
                     st.success("Deleted customer")
-                    st.experimental_rerun()
+                    st.rerun()
 
 # -------------------------- WASTE --------------------------
 elif menu == "Waste":
@@ -459,39 +472,11 @@ elif menu == "Waste":
                 c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
                 conn.commit()
                 st.success("Waste recorded")
-
     df = fetch_table_with_rowid("waste")
     if df.empty:
         st.info("No waste recorded")
     else:
         st.dataframe(df.drop(columns=["rowid"]))
-
-# -------------------------- REPORTS --------------------------
-elif menu == "Reports":
-    st.header("📈 Reports")
-    choice = st.selectbox("Report type", ["Daily Sales (by date)", "Inventory Snapshot", "Customer Points"])
-    if choice == "Daily Sales (by date)":
-        sel = st.date_input("Pick date", value=date.today())
-        d = sel.strftime("%Y-%m-%d")
-        df = pd.read_sql("SELECT * FROM sales WHERE date=?", conn, params=(d,))
-        if df.empty:
-            st.info("No sales")
-        else:
-            st.dataframe(df)
-            st.download_button("Download CSV", df.to_csv(index=False).encode(), f"sales_{d}.csv")
-    elif choice == "Inventory Snapshot":
-        df = pd.read_sql("SELECT * FROM inventory", conn)
-        if df.empty:
-            st.info("No inventory")
-        else:
-            st.dataframe(safe_round_df(df, ["quantity", "cost_price", "selling_price"]))
-            st.download_button("Download Inventory CSV", df.to_csv(index=False).encode(), "inventory.csv")
-    else:
-        df = pd.read_sql("SELECT * FROM customers", conn)
-        if df.empty:
-            st.info("No customers yet")
-        else:
-            st.dataframe(df)
 
 # -------------------------- DOWNLOAD --------------------------
 elif menu == "Download":
@@ -503,4 +488,25 @@ elif menu == "Download":
         else:
             st.download_button(f"Download {t}.csv", df.to_csv(index=False).encode(), f"{t}.csv")
 
-st.caption("Fresh Basket — Enhanced: edit, delete, multi-item sell, and full CRUD support ✅")
+# -------------------------- FINANCIALS (moved from dashboard) --------------------------
+elif menu == "Financials":
+    st.header("💼 Financials — Sales, Cost & Profit")
+    sel_date = st.date_input("Choose Date", value=date.today())
+    d = sel_date.strftime("%Y-%m-%d")
+    sales = pd.read_sql("SELECT COALESCE(SUM(total),0) AS total FROM sales WHERE date=?", conn, params=(d,))["total"].iloc[0]
+    cost  = pd.read_sql("SELECT COALESCE(SUM(amount),0) AS total FROM purchases WHERE date=?", conn, params=(d,))["total"].iloc[0]
+    profit = sales - cost
+
+    st.metric("Sales", f"₹{sales:.2f}")
+    st.metric("Cost", f"₹{cost:.2f}")
+    st.metric("Profit", f"₹{profit:.2f}")
+
+    st.markdown("### Sales Records for selected date")
+    df = pd.read_sql("SELECT * FROM sales WHERE date=?", conn, params=(d,))
+    if df.empty:
+        st.info("No sales")
+    else:
+        st.dataframe(df)
+        st.download_button("Download sales CSV", df.to_csv(index=False).encode(), f"sales_{d}.csv")
+
+st.caption("Fresh Basket — Updated: +button cart, no cost/kg in inventory, financials moved to last page ✅")
