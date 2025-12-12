@@ -18,7 +18,6 @@ st.markdown("""
 
 st.image("https://source.unsplash.com/random/1200x300/?fresh-vegetables,market", use_column_width=True)
 st.markdown("<h1>🌿 Fresh Basket</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: green;'>Your Brother's Smart Vegetable Shop</p>", unsafe_allow_html=True)
 
 # Database
 conn = sqlite3.connect("shop.db", check_same_thread=False)
@@ -88,7 +87,8 @@ elif menu == "Add Purchase":
     if st.button("Save Purchase"):
         if veg and qty > 0:
             date = datetime.now().strftime("%Y-%m-%d")
-            c.execute("INSERT INTO purchases VALUES (?,?,"?, ?, ?, ?)", (date, veg, qty, cost, supplier))
+            # FIXED: Correct placeholders for 5 columns
+            c.execute("INSERT INTO purchases VALUES (?, ?, ?, ?, ?)", (date, veg, qty, cost, supplier))
             unit_cost = cost / qty if qty > 0 else 0
             # Keep existing selling_price if any
             _, _, existing_sell = get_stock_info(veg)
@@ -170,8 +170,6 @@ elif menu == "Inventory":
     st.header("Current Stock & Prices")
     df = pd.read_sql("SELECT vegetable, quantity, cost_price AS 'Cost/kg', selling_price AS 'Sell/kg' FROM inventory", conn)
     st.dataframe(df)
-
-# Other menus (Waste, Customers, Reports, Download) remain the same as before
 
 elif menu == "Waste":
     st.header("Record Waste")
