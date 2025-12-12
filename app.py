@@ -1,170 +1,153 @@
 import streamlit as st
+import sqlite3
 import pandas as pd
-import os
+from datetime import date
 
 st.set_page_config(page_title="Vegetable Shop", layout="wide")
 
 # ---------------------------
-# CSS STYLING
+# DB INITIALIZATION
 # ---------------------------
-def load_css():
-    css = """
-    <style>
-    body { font-family: sans-serif; }
-    .stButton>button {
-        background-color: #4CAF50;
-        color: white;
-        padding: 8px 20px;
-        border-radius: 5px;
-    }
-    </style>
-    """
-    st.markdown(css, unsafe_allow_html=True)
+conn = sqlite3.connect("shop.db", check_same_thread=False)
+c = conn.cursor()
 
-load_css()
+# Create tables
+c.execute("""CREATE TABLE IF NOT EXISTS sales(
+    date TEXT, item TEXT, qty REAL, price REAL, total REAL
+)""")
 
-# ---------------------------
-# DATA FILE INITIALIZATION
-# ---------------------------
-DATA_FILE = "data.xlsx"
+c.execute("""CREATE TABLE IF NOT EXISTS purchases(
+    date TEXT, item TEXT, qty REAL, price REAL, vendor TEXT, total REAL
+)""")
 
-def initialize_excel():
-    if not os.path.exists(DATA_FILE):
-        with pd.ExcelWriter(DATA_FILE) as writer:
-            pd.DataFrame(columns=["Date", "Item", "Quantity", "Price", "Total"])\
-                .to_excel(writer, sheet_name="Sales", index=False)
-            pd.DataFrame(columns=["Date", "Item", "Quantity", "Price", "Vendor", "Total"])\
-                .to_excel(writer, sheet_name="Purchases", index=False)
-            pd.DataFrame(columns=["Date", "Category", "Amount", "Description"])\
-                .to_excel(writer, sheet_name="Expenses", index=False)
-            pd.DataFrame(columns=["Item", "Stock"])\
-                .to_excel(writer, sheet_name="Inventory", index=False)
+c.execute("""CREATE TABLE IF NOT EXISTS expenses(
+    date TEXT, category TEXT, amount REAL, description TEXT
+)""")
 
-initialize_excel()
+c.execute("""CREATE TABLE IF NOT EXISTS inventory(
+    item TEXT PRIMARY KEY, stock REAL
+)""")
+
+conn.commit()
 
 # ---------------------------
-# UTILITIES
+# CSS
 # ---------------------------
-def load_sheet(sheet):
-    return pd.read_excel(DATA_FILE, sheet_name=sheet)
-
-def save_sheet(df, sheet):
-    with pd.ExcelWriter(DATA_FILE, mode="a", engine="openpyxl", if_sheet_exists="replace") as writer:
-        df.to_excel(writer, sheet_name=sheet, index=False)
+st.markdown("""
+<style>
+.stButton>button {
+    background-color:#2ecc71;
+    color:white;
+    padding:8px 20px;
+    border-radius:8px;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # ---------------------------
-# SIDEBAR MENU
+# MENU
 # ---------------------------
 menu = st.sidebar.radio(
-    "Navigation",
+    "Menu",
     ["Home", "Sales", "Purchases", "Expenses", "Inventory"]
 )
 
 # ---------------------------
-# HOME PAGE
+# HOME
 # ---------------------------
 if menu == "Home":
-    st.title("🥕 Vegetable Shop Management System")
-    st.write("Use the menu on the left to navigate across the app.")
+    st.title("🥕 Vegetable Shop Management")
+    st.write("Welcome! Use the menu to navigate.")
     st.image("https://cdn.pixabay.com/photo/2016/03/05/19/02/vegetables-1238252_1280.jpg")
 
 # ---------------------------
-# SALES PAGE
+# SALES
 # ---------------------------
 elif menu == "Sales":
     st.title("🧾 Sales Entry")
 
-    df = load_sheet("Sales")
-
-    col1, col2, col3 = st.columns(3)
-    date = col1.date_input("Date")
-    item = col2.text_input("Item")
-    qty = col3.number_input("Quantity", min_value=1)
-
-    price = st.number_input("Price", min_value=0)
+    sale_date = st.date_input("Date", date.today())
+    item = st.text_input("Item")
+    qty = st.number_input("Quantity", min_value=0.0)
+    price = st.number_input("Price", min_value=0.0)
     total = qty * price
 
     if st.button("Add Sale"):
-        new_row = pd.DataFrame([[date, item, qty, price, total]], columns=df.columns)
-        df = pd.concat([df, new_row], ignore_index=True)
-        save_sheet(df, "Sales")
-        st.success("Sale recorded!")
+        c.execute("INSERT INTO sales VALUES (?,?,?,?,?)",
+                  (str(sale_date), item, qty, price, total))
+        c.execute("UPDATE inventory SET stock = COALESCE(stock,0) - ? WHERE item=?",
+                  (qty, item))
+        conn.commit()
+        st.success("Sale added!")
 
-    st.subheader("📊 Sales Records")
+    df = pd.read_sql("SELECT * FROM sales", conn)
+    st.subheader("Sales Records")
     st.dataframe(df)
 
 # ---------------------------
-# PURCHASES PAGE
+# PURCHASES
 # ---------------------------
 elif menu == "Purchases":
-    st.title("📦 Purchases Entry")
+    st.title("📦 Purchases")
 
-    df = load_sheet("Purchases")
-
-    date = st.date_input("Date")
+    pur_date = st.date_input("Date", date.today())
     item = st.text_input("Item")
-    qty = st.number_input("Quantity", min_value=1)
-    price = st.number_input("Price", min_value=0)
+    qty = st.number_input("Quantity", min_value=0.0)
+    price = st.number_input("Price", min_value=0.0)
     vendor = st.text_input("Vendor")
-
     total = qty * price
 
     if st.button("Add Purchase"):
-        new_row = pd.DataFrame([[date, item, qty, price, vendor, total]], columns=df.columns)
-        df = pd.concat([df, new_row], ignore_index=True)
-        save_sheet(df, "Purchases")
+        c.execute("INSERT INTO purchases VALUES (?,?,?,?,?,?)",
+                  (str(pur_date), item, qty, price, vendor, total))
+
+        # Add to inventory
+        current = c.execute(
+            "SELECT stock FROM inventory WHERE item=?", (item,)
+        ).fetchone()
+
+        if current:
+            new_stock = current[0] + qty
+            c.execute("UPDATE inventory SET stock=? WHERE item=?",
+                      (new_stock, item))
+        else:
+            c.execute("INSERT INTO inventory VALUES (?,?)", (item, qty))
+
+        conn.commit()
         st.success("Purchase added!")
 
-    st.subheader("📋 Purchase Records")
+    df = pd.read_sql("SELECT * FROM purchases", conn)
+    st.subheader("Purchase Records")
     st.dataframe(df)
 
 # ---------------------------
-# EXPENSES PAGE
+# EXPENSES
 # ---------------------------
 elif menu == "Expenses":
     st.title("💰 Expenses")
 
-    df = load_sheet("Expenses")
-
-    date = st.date_input("Date")
+    exp_date = st.date_input("Date", date.today())
     category = st.text_input("Category")
-    amount = st.number_input("Amount", min_value=0)
+    amount = st.number_input("Amount", min_value=0.0)
     description = st.text_area("Description")
 
     if st.button("Add Expense"):
-        new_row = pd.DataFrame(
-            [[date, category, amount, description]], columns=df.columns)
-        df = pd.concat([df, new_row], ignore_index=True)
-        save_sheet(df, "Expenses")
+        c.execute("INSERT INTO expenses VALUES (?,?,?,?)",
+                  (str(exp_date), category, amount, description))
+        conn.commit()
         st.success("Expense added!")
 
-    st.subheader("📒 Expense Records")
+    df = pd.read_sql("SELECT * FROM expenses", conn)
+    st.subheader("Expense Records")
     st.dataframe(df)
 
 # ---------------------------
-# INVENTORY PAGE
+# INVENTORY
 # ---------------------------
 elif menu == "Inventory":
-    st.title("📦 Inventory Status")
+    st.title("📦 Inventory")
 
-    df_sales = load_sheet("Sales")
-    df_purchases = load_sheet("Purchases")
+    df = pd.read_sql("SELECT * FROM inventory", conn)
+    st.dataframe(df)
 
-    inventory = {}
-
-    # Add purchases
-    for _, r in df_purchases.iterrows():
-        inventory[r["Item"]] = inventory.get(r["Item"], 0) + r["Quantity"]
-
-    # Subtract sales
-    for _, r in df_sales.iterrows():
-        inventory[r["Item"]] = inventory.get(r["Item"], 0) - r["Quantity"]
-
-    df_inventory = pd.DataFrame(list(inventory.items()), columns=["Item", "Stock"])
-    df_inventory["Stock"] = df_inventory["Stock"].astype(int)
-
-    st.subheader("📦 Current Inventory")
-    st.dataframe(df_inventory)
-
-    # Save to file
-    save_sheet(df_inventory, "Inventory")
+    st.info("Inventory updates automatically after sales & purchases.")
