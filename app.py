@@ -18,12 +18,13 @@ st.markdown("""
 
 st.image("https://source.unsplash.com/random/1200x300/?fresh-vegetables,market", use_column_width=True)
 st.markdown("<h1>🌿 Fresh Basket</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: green;'>Your Brother's Smart Vegetable Shop</p>", unsafe_allow_html=True)
 
 # Database
 conn = sqlite3.connect("shop.db", check_same_thread=False)
 c = conn.cursor()
 
-# Updated tables (added selling_price)
+# Create tables
 tables = [
     "CREATE TABLE IF NOT EXISTS inventory (vegetable TEXT PRIMARY KEY, quantity REAL, cost_price REAL, selling_price REAL, image_url TEXT)",
     "CREATE TABLE IF NOT EXISTS purchases (date TEXT, vegetable TEXT, quantity REAL, amount REAL, supplier TEXT)",
@@ -34,14 +35,14 @@ tables = [
 for table in tables:
     c.execute(table)
 
-# Add selling_price column if not exists (safe upgrade)
+# Safe upgrade: add selling_price if missing
 try:
     c.execute("ALTER TABLE inventory ADD COLUMN selling_price REAL")
 except:
     pass
 conn.commit()
 
-# Helpers
+# Helper
 def get_stock_info(veg):
     c.execute("SELECT quantity, cost_price, selling_price FROM inventory WHERE vegetable = ?", (veg,))
     result = c.fetchone()
@@ -87,10 +88,8 @@ elif menu == "Add Purchase":
     if st.button("Save Purchase"):
         if veg and qty > 0:
             date = datetime.now().strftime("%Y-%m-%d")
-            # FIXED: Correct placeholders for 5 columns
             c.execute("INSERT INTO purchases VALUES (?, ?, ?, ?, ?)", (date, veg, qty, cost, supplier))
             unit_cost = cost / qty if qty > 0 else 0
-            # Keep existing selling_price if any
             _, _, existing_sell = get_stock_info(veg)
             c.execute("INSERT OR REPLACE INTO inventory VALUES (?, ?, ?, ?, ?)", (veg, qty, unit_cost, existing_sell, img))
             conn.commit()
@@ -103,15 +102,15 @@ elif menu == "Set Selling Prices":
     if vegs:
         veg = st.selectbox("Select Vegetable", vegs)
         current_qty, current_cost, current_sell = get_stock_info(veg)
-        st.write(f"Current Stock: {current_qty} kg | Cost Price: ₹{current_cost:.2f}/kg")
-        new_price = st.number_input("Selling Price per kg ₹", min_value=0.0, value=float(current_sell) if current_sell else 0.0)
+        st.write(f"Current Stock: {current_qty:.2f} kg | Cost Price: ₹{current_cost:.2f}/kg")
+        new_price = st.number_input("Selling Price per kg ₹", min_value=0.0, value=current_sell if current_sell else 0.0)
         if st.button("Update Selling Price"):
             c.execute("UPDATE inventory SET selling_price = ? WHERE vegetable = ?", (new_price, veg))
             conn.commit()
             st.success(f"Selling price for {veg} set to ₹{new_price}/kg!")
             st.rerun()
     else:
-        st.info("No vegetables in inventory yet. Add purchases first.")
+        st.info("No vegetables yet. Add purchases first.")
 
 elif menu == "Sell":
     st.header("Sell Vegetables")
@@ -123,6 +122,7 @@ elif menu == "Sell":
     vegs = pd.read_sql("SELECT vegetable FROM inventory", conn)['vegetable'].tolist()
     if vegs:
         veg = st.selectbox("Select Vegetable", vegs)
+        # FIXED: Unpacking error corrected
         current_qty, _, selling_price = get_stock_info(veg)
         price = st.number_input("Price per kg ₹", min_value=0.0, value=float(selling_price) if selling_price else 0.0)
         qty = st.number_input("Kg", min_value=0.0, step=0.1)
@@ -131,9 +131,9 @@ elif menu == "Sell":
             if current_qty >= qty > 0:
                 total_item = qty * price
                 st.session_state.cart.append([veg, qty, price, total_item])
-                st.success(f"Added {qty} kg {veg} @ ₹{price}/kg = ₹{total_item}")
+                st.success(f"Added {qty} kg {veg} @ ₹{price}/kg")
             else:
-                st.error(f"Only {current_qty} kg available or invalid qty!")
+                st.error(f"Only {current_qty:.2f} kg available!")
 
     if st.session_state.cart:
         df = pd.DataFrame(st.session_state.cart, columns=["Item", "Kg", "₹/kg", "Total"])
@@ -204,4 +204,4 @@ elif menu == "Download":
         csv = df.to_csv(index=False).encode()
         st.download_button(f"Download {table}.csv", csv, f"{table}.csv")
 
-st.caption("Fresh Basket - Perfect for daily shop use!")
+st.caption("Fresh Basket - Made with Love!")
