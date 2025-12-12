@@ -5,7 +5,7 @@ from datetime import datetime, date
 import random
 
 # ========================== PAGE SETUP ==========================
-st.set_page_config(page_title="Fresh Basket", page_icon="🥕", layout="wide")
+st.set_page_config(page_title="Fresh Basket", page_icon="🥦", layout="wide")
 
 # Custom CSS for beautiful UI
 st.markdown("""
@@ -26,8 +26,8 @@ st.markdown("""
     }
     
     /* Headers */
-    h1 {text-align:center; color:#2c3e50; font-size:2.8em; margin-bottom:10px;}
-    .subtitle {text-align:center; color:#7f8c8d; font-size:1.2em; margin-bottom:30px;}
+    h1 {text-align:center; color:#2c3e50; font-size:2.8em; margin-bottom:5px;}
+    .subtitle {text-align:center; color:#27ae60; font-size:1.2em; margin-bottom:30px; font-weight:500;}
     
     /* Buttons */
     .stButton>button {
@@ -43,11 +43,11 @@ st.markdown("""
         box-shadow: 0 6px 12px rgba(0,0,0,0.15) !important;
     }
     
-    .primary-btn {background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important; color:white !important;}
-    .secondary-btn {background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%) !important; color:white !important;}
-    .success-btn {background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%) !important; color:white !important;}
-    .warning-btn {background: linear-gradient(135deg, #fa709a 0%, #fee140 100%) !important; color:black !important;}
-    .info-btn {background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%) !important; color:#2c3e50 !important;}
+    .primary-btn {background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%) !important; color:white !important;}
+    .secondary-btn {background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%) !important; color:white !important;}
+    .success-btn {background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%) !important; color:white !important;}
+    .warning-btn {background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%) !important; color:white !important;}
+    .info-btn {background: linear-gradient(135deg, #3498db 0%, #2980b9 100%) !important; color:white !important;}
     
     /* Cards */
     .card {
@@ -65,40 +65,40 @@ st.markdown("""
     }
     
     .metric-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%);
         padding: 25px;
         border-radius: 15px;
         margin: 10px;
         color: white;
         text-align: center;
-        box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
+        box-shadow: 0 8px 25px rgba(39, 174, 96, 0.3);
     }
     
     .inventory-card {
-        background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);
+        background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
         padding: 20px;
         border-radius: 15px;
         margin: 10px;
         color: white;
-        box-shadow: 0 8px 25px rgba(67, 233, 123, 0.3);
+        box-shadow: 0 8px 25px rgba(52, 152, 219, 0.3);
     }
     
     .sales-card {
-        background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+        background: linear-gradient(135deg, #9b59b6 0%, #8e44ad 100%);
         padding: 20px;
         border-radius: 15px;
         margin: 10px;
         color: white;
-        box-shadow: 0 8px 25px rgba(250, 112, 154, 0.3);
+        box-shadow: 0 8px 25px rgba(155, 89, 182, 0.3);
     }
     
     .purchase-card {
-        background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
+        background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%);
         padding: 20px;
         border-radius: 15px;
         margin: 10px;
-        color: #2c3e50;
-        box-shadow: 0 8px 25px rgba(168, 237, 234, 0.3);
+        color: white;
+        box-shadow: 0 8px 25px rgba(243, 156, 18, 0.3);
     }
     
     /* Tables */
@@ -128,13 +128,13 @@ st.markdown("""
         font-weight: 500;
     }
     .stTabs [aria-selected="true"] {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+        background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%) !important;
         color: white !important;
     }
     
     /* Sidebar */
     .css-1d391kg {
-        background: linear-gradient(135deg, #2c3e50 0%, #4a6491 100%) !important;
+        background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%) !important;
     }
     
     /* Receipt */
@@ -143,7 +143,7 @@ st.markdown("""
         padding: 30px;
         border-radius: 20px;
         box-shadow: 0 15px 35px rgba(0,0,0,0.1);
-        border: 2px solid #667eea;
+        border: 2px solid #27ae60;
         max-width: 500px;
         margin: 20px auto;
     }
@@ -183,7 +183,7 @@ st.markdown("""
         margin: 10px 0;
         border-radius: 12px;
         box-shadow: 0 4px 8px rgba(0,0,0,0.05);
-        border-left: 4px solid #667eea;
+        border-left: 4px solid #27ae60;
         transition: all 0.3s ease;
     }
     .cart-item:hover {
@@ -200,14 +200,31 @@ st.markdown("""
         border-top: 1px solid #e0e0e0;
         font-size: 0.9em;
     }
+    
+    /* Vegetable selection */
+    .veg-select-card {
+        background: white;
+        padding: 15px;
+        border-radius: 15px;
+        margin: 10px 0;
+        box-shadow: 0 5px 15px rgba(0,0,0,0.05);
+        border: 1px solid #e0e0e0;
+    }
+    
+    /* Print button */
+    .print-btn {
+        background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%) !important;
+        color: white !important;
+        font-weight: bold !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # Header
 st.markdown("""
 <div style="text-align:center; margin-bottom:30px;">
-    <h1>🥕 Fresh Basket</h1>
-    <div class="subtitle">Your Brother's Smart Vegetable Shop Management</div>
+    <h1>🥦 Fresh Basket</h1>
+    <div class="subtitle">Freshness You Can Feel</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -292,18 +309,23 @@ if "guest_counter" not in st.session_state:
     st.session_state.guest_counter = 1
 
 # ========================== HELPER FUNCTIONS FOR SELL PAGE ==========================
-def add_to_cart(veg, qty, price):
-    """Add item to cart"""
+def add_to_cart_simple(veg, qty):
+    """Add item to cart with quantity validation"""
     if qty <= 0:
-        return
+        return False
+    
+    # Get price
+    stock, _, price = get_stock(veg)
+    if stock == 0:
+        st.error(f"{veg} is out of stock!")
+        return False
     
     # Check stock
-    stock, _, _ = get_stock(veg)
     current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == veg)
     
     if current_in_cart + qty > stock:
         st.error(f"Not enough stock! Available: {stock:.3f} kg")
-        return
+        return False
     
     # Add to cart
     found = False
@@ -318,39 +340,43 @@ def add_to_cart(veg, qty, price):
         total = round(qty * price, 2)
         st.session_state.cart.append([veg, qty, price, total])
     
-    st.success(f"✅ Added {qty:.3f} kg of {veg}")
-    st.rerun()
+    return True
 
-def update_cart_item(idx, delta):
+def remove_from_cart(veg):
+    """Remove item from cart"""
+    for i, item in enumerate(st.session_state.cart):
+        if item[0] == veg:
+            st.session_state.cart.pop(i)
+            return True
+    return False
+
+def update_cart_qty(veg, new_qty):
     """Update cart item quantity"""
-    if 0 <= idx < len(st.session_state.cart):
-        veg = st.session_state.cart[idx][0]
-        price = st.session_state.cart[idx][2]
-        
-        # Check stock for increase
-        if delta > 0:
-            stock, _, _ = get_stock(veg)
-            total_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == veg)
-            if total_in_cart + delta > stock:
-                st.error(f"Not enough stock! Available: {stock:.3f} kg")
-                return
-        
-        new_qty = st.session_state.cart[idx][1] + delta
-        if new_qty <= 0:
-            st.session_state.cart.pop(idx)
-        else:
-            st.session_state.cart[idx][1] = new_qty
-            st.session_state.cart[idx][3] = round(new_qty * price, 2)
-        
-        st.rerun()
+    if new_qty <= 0:
+        remove_from_cart(veg)
+        return True
+    
+    stock, _, price = get_stock(veg)
+    if new_qty > stock:
+        st.error(f"Not enough stock! Available: {stock:.3f} kg")
+        return False
+    
+    for i, item in enumerate(st.session_state.cart):
+        if item[0] == veg:
+            st.session_state.cart[i][1] = new_qty
+            st.session_state.cart[i][3] = round(new_qty * price, 2)
+            return True
+    return False
 
-def process_sale(cust_name, cust_phone, total_amount):
-    """Process the sale"""
+def process_sale_simple(cust_name, cust_phone):
+    """Process the sale with simplified logic"""
+    if not st.session_state.cart:
+        st.error("Cart is empty!")
+        return
+    
     # Validate stock
     insufficient = []
     for veg, qty, price, total in st.session_state.cart:
-        if veg == "DISCOUNT":
-            continue
         stock, _, _ = get_stock(veg)
         if qty > stock:
             insufficient.append((veg, stock, qty))
@@ -374,10 +400,6 @@ def process_sale(cust_name, cust_phone, total_amount):
     for item in st.session_state.cart:
         veg, qty, price, total = item
         
-        if veg == "DISCOUNT":
-            # Skip discount from database insert
-            continue
-        
         # Save to sales table
         c.execute("INSERT INTO sales VALUES (?,?,?,?,?,?)", 
                  (d, veg, qty, price, total, cust))
@@ -394,6 +416,7 @@ def process_sale(cust_name, cust_phone, total_amount):
     
     # Update customer points
     if cust_phone and cust_phone.strip() != "":
+        total_amount = sum(item[3] for item in st.session_state.cart)
         c.execute("INSERT OR IGNORE INTO customers (phone, name) VALUES (?,?)", 
                  (cust_phone, cust_name))
         points = int(total_amount // 10)
@@ -407,15 +430,17 @@ def process_sale(cust_name, cust_phone, total_amount):
         "date": d,
         "customer": cust,
         "items": sale_details,
-        "total": total_amount,
-        "phone": cust_phone
+        "total": sum(item[3] for item in st.session_state.cart),
+        "phone": cust_phone,
+        "time": datetime.now().strftime("%H:%M:%S"),
+        "bill_no": datetime.now().strftime("%Y%m%d%H%M%S")
     }
     
     # Clear cart
     st.session_state.cart = []
-    st.rerun()
+    return True
 
-def show_receipt():
+def show_receipt_simple():
     """Display receipt after sale"""
     sale = st.session_state.last_sale
     if not sale:
@@ -423,31 +448,31 @@ def show_receipt():
     
     st.markdown("""
     <div style="text-align:center; margin:30px 0;">
-        <h2 style="color:#667eea;">✅ Sale Completed Successfully!</h2>
+        <h2 style="color:#27ae60;">✅ Sale Completed Successfully!</h2>
     </div>
     """, unsafe_allow_html=True)
     
     # Receipt
     with st.container():
-        st.markdown("""
+        st.markdown(f"""
         <div class="receipt">
             <div style="text-align:center; margin-bottom:20px;">
-                <h2 style="color:#2c3e50;">🥕 FRESH BASKET</h2>
-                <p style="color:#7f8c8d; margin:5px 0;">Your Brother's Vegetable Shop</p>
-                <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">📍 Shop Address</p>
-                <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">📞 Contact: 9876543210</p>
+                <h2 style="color:#2c3e50;">🥦 FRESH BASKET</h2>
+                <p style="color:#27ae60; margin:5px 0; font-weight:bold;">Freshness You Can Feel</p>
+                <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">Bill No: {sale['bill_no']}</p>
             </div>
-            <hr style="border:none; height:2px; background: linear-gradient(90deg, #667eea, #764ba2); margin:15px 0;">
+            <hr style="border:none; height:2px; background: linear-gradient(90deg, #27ae60, #2ecc71); margin:15px 0;">
         """, unsafe_allow_html=True)
         
         # Sale info
         col1, col2 = st.columns(2)
         with col1:
             st.markdown(f"**📅 Date:** {sale['date']}")
-            st.markdown(f"**👤 Customer:** {sale['customer']}")
+            st.markdown(f"**⏰ Time:** {sale['time']}")
         with col2:
-            st.markdown(f"**⏰ Time:** {datetime.now().strftime('%H:%M:%S')}")
-            st.markdown(f"**📋 Bill No:** {datetime.now().strftime('%Y%m%d%H%M%S')}")
+            st.markdown(f"**👤 Customer:** {sale['customer']}")
+            if sale['phone']:
+                st.markdown(f"**📱 Phone:** {sale['phone']}")
         
         st.markdown("<hr style='border:none; height:1px; background:#e0e0e0; margin:15px 0;'>", unsafe_allow_html=True)
         
@@ -459,12 +484,15 @@ def show_receipt():
         items_display = items_df[['item', 'Qty Display', 'price_per_kg', 'total']]
         items_display.columns = ['Item', 'Quantity', 'Price/kg', 'Total']
         
+        # Calculate subtotal
+        subtotal = items_df['total'].sum()
+        
         # Apply styling to the dataframe
         st.dataframe(
             items_display.style
             .set_properties(**{'background-color': '#f8f9fa', 'color': '#2c3e50'})
             .set_table_styles([
-                {'selector': 'th', 'props': [('background', '#667eea'), ('color', 'white'), 
+                {'selector': 'th', 'props': [('background', '#27ae60'), ('color', 'white'), 
                                             ('font-weight', 'bold'), ('text-align', 'center')]},
                 {'selector': 'td', 'props': [('text-align', 'center')]}
             ]),
@@ -473,44 +501,57 @@ def show_receipt():
         )
         
         # Total
-        st.markdown("<hr style='border:none; height:2px; background: linear-gradient(90deg, #667eea, #764ba2); margin:20px 0;'>", unsafe_allow_html=True)
+        st.markdown("<hr style='border:none; height:2px; background: linear-gradient(90deg, #27ae60, #2ecc71); margin:20px 0;'>", unsafe_allow_html=True)
         
         col1, col2 = st.columns([3, 1])
         with col2:
-            st.markdown(f"<h3 style='text-align:right; color:#2c3e50;'>Total: ₹{sale['total']:.2f}</h3>", unsafe_allow_html=True)
+            st.markdown(f"<h3 style='text-align:right; color:#2c3e50;'>Total: ₹{subtotal:.2f}</h3>", unsafe_allow_html=True)
         
         st.markdown("""
         <hr style='border:none; height:1px; background:#e0e0e0; margin:20px 0;'>
         <div style="text-align:center; margin-top:20px;">
             <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">
-                Thank you for your purchase! 🥕
+                Thank you for your purchase! 🥦
             </p>
             <p style="color:#7f8c8d; font-size:0.8em; margin:5px 0;">
-                Bring this receipt for any queries
+                Quality Vegetables • Fresh Every Day
             </p>
         </div>
         </div>
         """, unsafe_allow_html=True)
     
-    # Action buttons
+    # Print button with JavaScript for printing
+    st.markdown("""
+    <script>
+    function printReceipt() {
+        window.print();
+    }
+    </script>
+    """, unsafe_allow_html=True)
+    
     col1, col2, col3 = st.columns(3)
     with col1:
-        if st.button("🖨️ Print Receipt", use_container_width=True, type="primary"):
-            st.success("Receipt ready for printing! Press Ctrl+P to print.")
+        if st.button("🖨️ Print Bill", use_container_width=True, type="primary"):
+            st.success("Ready to print! Press Ctrl+P or use browser print option.")
+            # Add JavaScript to trigger print
+            st.markdown("""
+            <script>
+            window.print();
+            </script>
+            """, unsafe_allow_html=True)
     with col2:
-        if st.button("📱 Share Receipt", use_container_width=True):
-            st.info("Receipt sharing feature coming soon!")
-    with col3:
-        if st.button("🔄 New Sale", use_container_width=True):
+        if st.button("📋 New Bill", use_container_width=True):
             st.session_state.last_sale = None
             st.rerun()
-    
-    st.balloons()
+    with col3:
+        if st.button("🏠 Main Menu", use_container_width=True):
+            st.session_state.last_sale = None
+            st.rerun()
 
 # ========================== SIDEBAR MENU ==========================
 with st.sidebar:
     st.markdown("""
-    <div style="background: linear-gradient(135deg, #2c3e50 0%, #4a6491 100%); padding:20px; border-radius:15px; margin-bottom:20px;">
+    <div style="background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%); padding:20px; border-radius:15px; margin-bottom:20px;">
         <h2 style="color:white; text-align:center;">📋 Navigation</h2>
     </div>
     """, unsafe_allow_html=True)
@@ -532,7 +573,7 @@ with st.sidebar:
     
     st.markdown(f"""
     <div class="card" style="margin-top:15px; padding:15px; text-align:center;">
-        <h4 style="color:#667eea;">Selected Date</h4>
+        <h4 style="color:#27ae60;">Selected Date</h4>
         <h3 style="color:#2c3e50;">{selected_date.strftime('%d %B %Y')}</h3>
     </div>
     """, unsafe_allow_html=True)
@@ -554,7 +595,7 @@ if menu == "📊 Dashboard":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>📊 Dashboard Overview</h2>
-        <p class="subtitle">Real-time insights and stock overview</p>
+        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -675,7 +716,7 @@ elif menu == "🛒 Add Purchase":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>🛒 Add Purchase</h2>
-        <p class="subtitle">Add new stock purchases easily</p>
+        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -846,7 +887,7 @@ elif menu == "🏷 Set Prices":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>🏷 Set Selling Prices</h2>
-        <p class="subtitle">Update vegetable selling prices</p>
+        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -901,13 +942,44 @@ elif menu == "🏷 Set Prices":
             
             conn.commit()
             st.success(f"✅ {changes} prices updated successfully!")
+        
+        st.markdown("---")
+        
+        # Individual price update
+        st.markdown("### ✏️ Individual Price Update")
+        
+        # Get all vegetables for selection
+        all_vegetables = pd.read_sql("SELECT vegetable FROM inventory ORDER BY vegetable", conn)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            selected_veg = st.selectbox("Select Vegetable", all_vegetables['vegetable'])
+            
+            # Get current price
+            current_price = pd.read_sql("SELECT selling_price FROM inventory WHERE vegetable=?", 
+                                       conn, params=(selected_veg,)).iloc[0]['selling_price']
+            
+            st.info(f"**Current Price:** ₹{current_price:.2f}/kg")
+            
+            # Get current stock
+            stock, _, _ = get_stock(selected_veg)
+            st.info(f"**Current Stock:** {stock:.2f} kg")
+        
+        with col2:
+            new_price = st.number_input("New Price/kg ₹", value=float(current_price or 0.0), min_value=0.0, step=1.0)
+            
+            if st.button("💾 Update Price", type="primary", use_container_width=True):
+                c.execute("UPDATE inventory SET selling_price=? WHERE vegetable=?", (new_price, selected_veg))
+                conn.commit()
+                st.success(f"✅ Price updated for {selected_veg}: ₹{new_price:.2f}/kg")
 
 # ========================== QUICK SELL ==========================
 elif menu == "💵 Quick Sell":
     st.markdown("""
     <div style="text-align:center; margin-bottom:20px;">
         <h2>💵 Quick Selling</h2>
-        <p class="subtitle">Fast and easy billing for multiple customers</p>
+        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -927,200 +999,202 @@ elif menu == "💵 Quick Sell":
         </div>
         """, unsafe_allow_html=True)
     else:
-        # Customer info - Simple and clean
-        st.markdown("### 👤 Customer Information")
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            cust_name = st.text_input("Customer Name", placeholder="Leave empty for Guest", key="cust_name")
-            if cust_name and cust_name.strip():
-                cust_phone = st.text_input("Phone Number", placeholder="Optional", key="cust_phone")
-            else:
-                cust_phone = ""
-        
-        with col2:
-            st.markdown("### Quick Actions")
-            if st.button("🔄 Clear All", use_container_width=True, type="secondary"):
-                st.session_state.cart = []
-                st.rerun()
-            
-            if st.session_state.cart:
-                total_amount = sum(item[3] for item in st.session_state.cart)
-                st.markdown(f"""
-                <div class="card" style="text-align:center; padding:15px; margin-top:10px;">
-                    <h4 style="color:#667eea;">Cart Total</h4>
-                    <h3 style="color:#2c3e50;">₹{total_amount:.2f}</h3>
-                    <p style="color:#7f8c8d; font-size:0.9em;">{len(st.session_state.cart)} items</p>
-                </div>
-                """, unsafe_allow_html=True)
-        
-        st.markdown("---")
-        
-        # Main selling interface - SIMPLE 2-COLUMN LAYOUT
+        # SIMPLE SELLING INTERFACE - Dropdown based
         col1, col2 = st.columns([3, 2])
         
         with col1:
             st.markdown("### 🥬 Select Vegetables")
             
-            # Simple search and filter
-            search_term = st.text_input("🔍 Search vegetable", placeholder="Type to filter...")
+            # Customer info - Simple and clean
+            with st.expander("👤 Customer Information", expanded=True):
+                cust_col1, cust_col2 = st.columns(2)
+                with cust_col1:
+                    cust_name = st.text_input("Customer Name", placeholder="Leave empty for Guest")
+                with cust_col2:
+                    cust_phone = st.text_input("Phone Number", placeholder="Optional")
             
-            # Filter vegetables based on search
-            if search_term:
-                filtered_veg = available_veg[available_veg['vegetable'].str.contains(search_term, case=False, na=False)]
-            else:
-                filtered_veg = available_veg
+            # Vegetable selection with dropdown
+            st.markdown("### Add Items to Bill")
             
-            # Display vegetables in a simple list
-            for _, row in filtered_veg.iterrows():
-                veg = row['vegetable']
-                stock = row['quantity']
-                price = row['selling_price']
+            # Create a form for adding items
+            with st.form("add_item_form", clear_on_submit=True):
+                col_a, col_b, col_c = st.columns([3, 2, 1])
                 
-                # Calculate current in cart
-                current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == veg)
-                available = stock - current_in_cart
-                
-                # Create a card for each vegetable
-                with st.container():
-                    st.markdown(f"""
-                    <div class="card" style="padding:15px; margin-bottom:10px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div>
-                                <h4 style="margin:0; color:#2c3e50;">{veg}</h4>
-                                <p style="margin:5px 0 0 0; color:#7f8c8d; font-size:0.9em;">
-                                    Stock: {stock:.2f} kg | Price: ₹{price:.2f}/kg
-                                </p>
-                                {f'<p style="margin:5px 0 0 0; color:#667eea; font-size:0.9em;">In cart: {current_in_cart:.2f} kg</p>' if current_in_cart > 0 else ''}
-                            </div>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                with col_a:
+                    # Vegetable dropdown with stock info
+                    veg_options = []
+                    for _, row in available_veg.iterrows():
+                        display_text = f"{row['vegetable']} (Stock: {row['quantity']:.2f} kg, ₹{row['selling_price']:.2f}/kg)"
+                        veg_options.append((row['vegetable'], display_text, row['quantity'], row['selling_price']))
                     
-                    # Quantity controls
-                    if available > 0:
-                        col_a, col_b, col_c, col_d, col_e = st.columns([2, 1, 1, 1, 1])
-                        
-                        with col_a:
-                            # Manual input
-                            manual_input = st.number_input(
-                                "Quantity (kg)",
-                                min_value=0.0,
-                                max_value=min(available, 10.0),
-                                value=0.0,
-                                step=0.1,
-                                key=f"manual_{veg}"
-                            )
-                        
-                        with col_b:
-                            if st.button("➕ 250g", key=f"btn_250_{veg}", use_container_width=True):
-                                add_to_cart(veg, 0.250, price)
-                        
-                        with col_c:
-                            if st.button("➕ 500g", key=f"btn_500_{veg}", use_container_width=True):
-                                add_to_cart(veg, 0.500, price)
-                        
-                        with col_d:
-                            if st.button("➕ 1kg", key=f"btn_1_{veg}", use_container_width=True):
-                                add_to_cart(veg, 1.000, price)
-                        
-                        with col_e:
-                            if manual_input > 0 and st.button("➕ Add", key=f"add_manual_{veg}", use_container_width=True):
-                                add_to_cart(veg, manual_input, price)
-                    else:
-                        st.warning("Out of stock", icon="⚠️")
+                    selected_display = st.selectbox(
+                        "Select Vegetable",
+                        options=[v[1] for v in veg_options],
+                        key="veg_select"
+                    )
+                    
+                    # Get selected vegetable details
+                    selected_veg_data = next(v for v in veg_options if v[1] == selected_display)
+                    selected_veg = selected_veg_data[0]
+                    selected_price = selected_veg_data[3]
+                    selected_stock = selected_veg_data[2]
+                
+                with col_b:
+                    # Quantity input with kg and grams
+                    qty_col1, qty_col2 = st.columns(2)
+                    with qty_col1:
+                        qty_kg = st.number_input("Kilograms", min_value=0.0, max_value=min(selected_stock, 50.0), 
+                                                step=0.5, value=1.0, key="qty_kg")
+                    with qty_col2:
+                        qty_g = st.number_input("Grams", min_value=0, max_value=999, step=100, 
+                                               value=0, key="qty_g")
+                    
+                    total_qty = qty_kg + (qty_g / 1000)
+                    total_price = total_qty * selected_price
+                    
+                    st.info(f"Total: ₹{total_price:.2f}")
+                
+                with col_c:
+                    st.write("")  # Spacer
+                    st.write("")  # Spacer
+                    if st.form_submit_button("➕ Add to Bill", use_container_width=True, type="primary"):
+                        if total_qty <= 0:
+                            st.error("Enter quantity > 0")
+                        else:
+                            if add_to_cart_simple(selected_veg, total_qty):
+                                st.success(f"Added {total_qty:.3f} kg of {selected_veg}")
+            
+            # Manual vegetable entry
+            st.markdown("---")
+            st.markdown("#### 🔤 Manual Vegetable Entry")
+            
+            with st.form("manual_veg_form", clear_on_submit=True):
+                man_col1, man_col2, man_col3 = st.columns([3, 2, 1])
+                
+                with man_col1:
+                    manual_veg = st.text_input("Vegetable Name", placeholder="Enter vegetable name manually")
+                    
+                    # Check if vegetable exists
+                    if manual_veg:
+                        stock, _, price = get_stock(manual_veg)
+                        if stock == 0:
+                            st.warning(f"{manual_veg} not in stock or doesn't exist")
+                        else:
+                            st.info(f"Price: ₹{price:.2f}/kg, Stock: {stock:.2f} kg")
+                
+                with man_col2:
+                    man_qty_kg = st.number_input("Kg", min_value=0.0, step=0.5, value=1.0, key="man_kg")
+                    man_qty_g = st.number_input("Grams", min_value=0, step=100, value=0, key="man_g")
+                    man_qty = man_qty_kg + (man_qty_g / 1000)
+                
+                with man_col3:
+                    st.write("")  # Spacer
+                    st.write("")  # Spacer
+                    if st.form_submit_button("➕ Add Manual", use_container_width=True):
+                        if manual_veg and man_qty > 0:
+                            if add_to_cart_simple(manual_veg, man_qty):
+                                st.success(f"Added {man_qty:.3f} kg of {manual_veg}")
         
         with col2:
-            st.markdown("### 🛒 Current Cart")
+            st.markdown("### 🛒 Current Bill")
             
             if not st.session_state.cart:
                 st.info("""
                 <div style="text-align:center; padding:40px;">
-                    <h3 style="color:#7f8c8d;">🛒 Cart is Empty</h3>
-                    <p style="color:#95a5a6;">Select vegetables from the left</p>
+                    <h3 style="color:#7f8c8d;">🛒 Bill is Empty</h3>
+                    <p style="color:#95a5a6;">Add items from the left</p>
                 </div>
                 """, unsafe_allow_html=True)
             else:
-                # Display cart items
+                # Display cart items in a clean table
+                st.markdown("#### Items in Bill")
+                
+                # Create a dataframe for display
+                cart_data = []
                 total_amount = 0
                 
-                for idx, item in enumerate(st.session_state.cart):
-                    veg, qty, price, total = item
-                    
-                    with st.container():
-                        st.markdown(f"""
-                        <div class="cart-item">
-                            <div style="display: flex; justify-content: space-between; align-items: start;">
-                                <div>
-                                    <strong>{veg}</strong><br>
-                                    <small>{qty:.3f} kg × ₹{price:.2f}</small>
-                                </div>
-                                <div style="text-align:right;">
-                                    <strong>₹{total:.2f}</strong>
-                                </div>
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                        # Quick edit buttons
-                        edit_col1, edit_col2, edit_col3 = st.columns(3)
-                        with edit_col1:
-                            if st.button("➕ 100g", key=f"inc_small_{veg}_{idx}", use_container_width=True):
-                                update_cart_item(idx, 0.100)
-                        with edit_col2:
-                            if st.button("➖ 100g", key=f"dec_small_{veg}_{idx}", use_container_width=True):
-                                update_cart_item(idx, -0.100)
-                        with edit_col3:
-                            if st.button("❌ Remove", key=f"rem_{veg}_{idx}", use_container_width=True, type="secondary"):
-                                st.session_state.cart.pop(idx)
-                                st.rerun()
-                    
-                    total_amount += total
+                for veg, qty, price, item_total in st.session_state.cart:
+                    cart_data.append({
+                        "Vegetable": veg,
+                        "Quantity (kg)": f"{qty:.3f}",
+                        "Price/kg": f"₹{price:.2f}",
+                        "Total": f"₹{item_total:.2f}"
+                    })
+                    total_amount += item_total
                 
-                # Cart summary
+                # Display as dataframe
+                cart_df = pd.DataFrame(cart_data)
+                st.dataframe(cart_df, use_container_width=True, hide_index=True)
+                
+                # Quick remove option
+                st.markdown("#### Quick Remove")
+                remove_col1, remove_col2 = st.columns(2)
+                
+                with remove_col1:
+                    veg_to_remove = st.selectbox(
+                        "Select item to remove",
+                        options=[item[0] for item in st.session_state.cart],
+                        key="remove_select"
+                    )
+                
+                with remove_col2:
+                    if st.button("❌ Remove Item", use_container_width=True, type="secondary"):
+                        remove_from_cart(veg_to_remove)
+                        st.success(f"Removed {veg_to_remove}")
+                        st.rerun()
+                
+                # Bill summary
                 st.markdown("---")
-                
-                # Discount options
-                st.markdown("#### 🎁 Apply Discount")
-                disc_col1, disc_col2, disc_col3 = st.columns(3)
-                with disc_col1:
-                    if st.button("5% OFF", use_container_width=True):
-                        discount = total_amount * 0.05
-                        st.session_state.cart.append(["DISCOUNT", 1, -discount, -discount])
-                        st.rerun()
-                with disc_col2:
-                    if st.button("10% OFF", use_container_width=True):
-                        discount = total_amount * 0.10
-                        st.session_state.cart.append(["DISCOUNT", 1, -discount, -discount])
-                        st.rerun()
-                with disc_col3:
-                    if st.button("₹20 OFF", use_container_width=True):
-                        st.session_state.cart.append(["DISCOUNT", 1, -20, -20])
-                        st.rerun()
-                
-                # Final total
-                final_total = sum(item[3] for item in st.session_state.cart)
                 st.markdown(f"""
-                <div class="card" style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); color:white; text-align:center; padding:20px;">
-                    <h3 style="margin:0;">Total Amount</h3>
-                    <h1 style="margin:10px 0;">₹{final_total:.2f}</h1>
+                <div class="card" style="background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%); color:white; text-align:center; padding:20px;">
+                    <h3 style="margin:0;">Bill Total</h3>
+                    <h1 style="margin:10px 0;">₹{total_amount:.2f}</h1>
+                    <p style="margin:0; font-size:0.9em;">{len(st.session_state.cart)} items</p>
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Complete sale button - FIXED: Removed duplicate use_container_width
-                if st.button("✅ COMPLETE SALE & PRINT BILL", type="primary", use_container_width=True):
-                    process_sale(cust_name, cust_phone, final_total)
+                # Action buttons
+                st.markdown("---")
+                col_a, col_b, col_c = st.columns(3)
+                
+                with col_a:
+                    if st.button("🔄 Clear Bill", use_container_width=True, type="secondary"):
+                        st.session_state.cart = []
+                        st.success("Bill cleared")
+                        st.rerun()
+                
+                with col_b:
+                    if st.button("✏️ Edit Quantity", use_container_width=True):
+                        # Show edit interface
+                        st.markdown("#### Edit Item Quantities")
+                        for idx, (veg, qty, price, item_total) in enumerate(st.session_state.cart):
+                            edit_col1, edit_col2 = st.columns([3, 1])
+                            with edit_col1:
+                                st.write(f"**{veg}** - Current: {qty:.3f} kg")
+                            with edit_col2:
+                                new_qty = st.number_input(f"New Qty (kg)", min_value=0.0, value=float(qty), 
+                                                        step=0.1, key=f"edit_{veg}_{idx}")
+                                if new_qty != qty:
+                                    if st.button("Update", key=f"update_{veg}_{idx}"):
+                                        update_cart_qty(veg, new_qty)
+                                        st.success(f"Updated {veg}")
+                                        st.rerun()
+                
+                with col_c:
+                    if st.button("✅ Complete Bill", type="primary", use_container_width=True):
+                        if process_sale_simple(cust_name, cust_phone):
+                            st.success("✅ Bill completed successfully!")
         
         # Show receipt if last sale exists
         if st.session_state.last_sale:
-            show_receipt()
+            show_receipt_simple()
 
 # ========================== INVENTORY ==========================
 elif menu == "📦 Inventory":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>📦 Inventory Management</h2>
-        <p class="subtitle">Manage vegetable stock and edit inventory</p>
+        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1221,7 +1295,7 @@ elif menu == "📋 Purchases":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>📋 Purchase Records</h2>
-        <p class="subtitle">View and manage purchase history</p>
+        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1269,7 +1343,7 @@ elif menu == "🧾 Sales":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>🧾 Sales Records</h2>
-        <p class="subtitle">View sales history and transactions</p>
+        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1318,7 +1392,7 @@ elif menu == "💸 Expenses":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>💸 Expense Management</h2>
-        <p class="subtitle">Record and track shop expenses</p>
+        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1362,27 +1436,30 @@ elif menu == "👥 Customers":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>👥 Customer Management</h2>
-        <p class="subtitle">View customer details and loyalty points</p>
+        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
-    customers_df = pd.read_sql("SELECT * FROM customers ORDER BY points DESC", conn)
+    # Get all sales to count customers properly
+    sales_df = pd.read_sql("SELECT DISTINCT customer FROM sales", conn)
     
-    # Calculate customer counts
-    total_customers = len(customers_df)
-    
-    # Count named customers (excluding guests)
-    named_customers = len(customers_df[~customers_df['name'].str.contains('Guest', na=False)])
-    
-    # Count guest customers
-    guest_customers = len(customers_df[customers_df['name'].str.contains('Guest', na=False)])
-    
-    if customers_df.empty:
+    if sales_df.empty:
         st.info("No customers yet")
     else:
-        # Summary metrics
-        total_points = customers_df['points'].sum()
+        # Count customers properly
+        total_customers = len(sales_df)
         
+        # Count named customers (not starting with Guest)
+        named_customers = len(sales_df[~sales_df['customer'].str.startswith('Guest', na=False)])
+        
+        # Count guest customers (starting with Guest)
+        guest_customers = len(sales_df[sales_df['customer'].str.startswith('Guest', na=False)])
+        
+        # Get customer details from customers table
+        customers_df = pd.read_sql("SELECT * FROM customers ORDER BY points DESC", conn)
+        total_points = customers_df['points'].sum() if not customers_df.empty else 0
+        
+        # Display metrics
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Total Customers", total_customers)
@@ -1393,37 +1470,55 @@ elif menu == "👥 Customers":
         with col4:
             st.metric("Total Points", total_points)
         
-        # Top customers
-        st.markdown("### 🏆 Top 5 Customers")
-        top_5 = customers_df.head(5)
-        for idx, row in top_5.iterrows():
-            st.markdown(f"""
-            <div class="card" style="padding:15px; margin-bottom:10px;">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div>
-                        <h4 style="margin:0; color:#2c3e50;">{row['name']}</h4>
-                        <p style="margin:5px 0 0 0; color:#7f8c8d; font-size:0.9em;">{row['phone']}</p>
-                    </div>
-                    <div style="text-align:right;">
-                        <span style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-                                    color:white; padding:5px 15px; border-radius:20px; font-weight:bold;">
-                            {row['points']} pts
-                        </span>
+        # Show all customers from sales
+        st.markdown("### All Customers (from sales)")
+        
+        # Create a better display of customers
+        customer_summary = []
+        for customer in sales_df['customer'].unique():
+            # Get total purchases for this customer
+            customer_sales = pd.read_sql("SELECT SUM(total) as total_spent FROM sales WHERE customer=?", 
+                                        conn, params=(customer,)).iloc[0]['total_spent'] or 0
+            
+            # Check if it's a guest
+            is_guest = customer.startswith('Guest')
+            
+            customer_summary.append({
+                "Customer": customer,
+                "Type": "Guest" if is_guest else "Regular",
+                "Total Spent": f"₹{customer_sales:.2f}"
+            })
+        
+        customer_summary_df = pd.DataFrame(customer_summary)
+        st.dataframe(customer_summary_df, use_container_width=True)
+        
+        # Show loyalty customers
+        if not customers_df.empty:
+            st.markdown("### 🏆 Loyalty Customers")
+            for idx, row in customers_df.head(10).iterrows():
+                st.markdown(f"""
+                <div class="card" style="padding:15px; margin-bottom:10px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <h4 style="margin:0; color:#2c3e50;">{row['name']}</h4>
+                            <p style="margin:5px 0 0 0; color:#7f8c8d; font-size:0.9em;">{row['phone']}</p>
+                        </div>
+                        <div style="text-align:right;">
+                            <span style="background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%); 
+                                        color:white; padding:5px 15px; border-radius:20px; font-weight:bold;">
+                                {row['points']} pts
+                            </span>
+                        </div>
                     </div>
                 </div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        # All customers table
-        st.markdown("### All Customers")
-        st.dataframe(customers_df, use_container_width=True)
+                """, unsafe_allow_html=True)
 
 # ========================== WASTE ==========================
 elif menu == "🗑 Waste":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>🗑 Waste Management</h2>
-        <p class="subtitle">Record and track vegetable waste</p>
+        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1470,7 +1565,7 @@ elif menu == "⬇ Download":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>⬇ Download Records</h2>
-        <p class="subtitle">Export data for backup or analysis</p>
+        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1510,7 +1605,7 @@ elif menu == "💰 Financials":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>💰 Financial Summary</h2>
-        <p class="subtitle">Daily sales, costs, and profit analysis</p>
+        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1557,7 +1652,7 @@ elif menu == "💰 Financials":
         """, unsafe_allow_html=True)
     
     with col4:
-        profit_bg = "#43e97b" if profit >= 0 else "#fa709a"
+        profit_bg = "#27ae60" if profit >= 0 else "#e74c3c"
         profit_text = "Profit" if profit >= 0 else "Loss"
         profit_icon = "📈" if profit >= 0 else "📉"
         
@@ -1613,7 +1708,7 @@ elif menu == "💰 Financials":
 st.markdown("---")
 st.markdown("""
 <div class="footer">
-    <p>🥕 Fresh Basket — Smart Vegetable Shop Management System | Designed for efficiency and ease of use ✅</p>
-    <p style="font-size:0.8em; color:#95a5a6;">© 2024 Your Brother's Shop. All features working perfectly.</p>
+    <p>🥦 Fresh Basket — Freshness You Can Feel | Quality Vegetables Daily ✅</p>
+    <p style="font-size:0.8em; color:#95a5a6;">© 2024 Fresh Basket. All features working perfectly.</p>
 </div>
 """, unsafe_allow_html=True)
