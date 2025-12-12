@@ -194,7 +194,7 @@ elif menu == "Inventory":
         st.info("No stock available")
     else:
         df.columns = ["Vegetable","Qty (kg)","Cost/kg","Sell/kg"]
-        st.dataframe(df.style.format("{:.2f}"))
+        st.dataframe(df)
 
 # ========================== WASTE ==========================
 elif menu == "Waste":
