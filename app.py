@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 from datetime import datetime, date
-import random
 
 # ========================== PAGE SETUP ==========================
 st.set_page_config(page_title="Fresh Basket", page_icon="🥦", layout="wide")
@@ -372,7 +371,7 @@ def process_sale_simple(cust_name, cust_phone):
     """Process the sale with simplified logic"""
     if not st.session_state.cart:
         st.error("Cart is empty!")
-        return
+        return False
     
     # Validate stock
     insufficient = []
@@ -384,7 +383,7 @@ def process_sale_simple(cust_name, cust_phone):
     if insufficient:
         for v, stock, q in insufficient:
             st.error(f"Not enough {v}: available {stock:.3f} kg, requested {q:.3f} kg")
-        return
+        return False
     
     # Process sale
     d = st.session_state.selected_date.strftime("%Y-%m-%d")
@@ -454,15 +453,15 @@ def show_receipt_simple():
     
     # Receipt
     with st.container():
-        st.markdown(f"""
+        st.markdown("""
         <div class="receipt">
             <div style="text-align:center; margin-bottom:20px;">
                 <h2 style="color:#2c3e50;">🥦 FRESH BASKET</h2>
                 <p style="color:#27ae60; margin:5px 0; font-weight:bold;">Freshness You Can Feel</p>
-                <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">Bill No: {sale['bill_no']}</p>
+                <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">Bill No: {bill_no}</p>
             </div>
             <hr style="border:none; height:2px; background: linear-gradient(90deg, #27ae60, #2ecc71); margin:15px 0;">
-        """, unsafe_allow_html=True)
+        """.format(bill_no=sale['bill_no']), unsafe_allow_html=True)
         
         # Sale info
         col1, col2 = st.columns(2)
@@ -521,30 +520,23 @@ def show_receipt_simple():
         """, unsafe_allow_html=True)
     
     # Print button with JavaScript for printing
-    st.markdown("""
-    <script>
-    function printReceipt() {
-        window.print();
-    }
-    </script>
-    """, unsafe_allow_html=True)
-    
     col1, col2, col3 = st.columns(3)
     with col1:
-        if st.button("🖨️ Print Bill", use_container_width=True, type="primary"):
-            st.success("Ready to print! Press Ctrl+P or use browser print option.")
-            # Add JavaScript to trigger print
-            st.markdown("""
+        if st.button("🖨️ Print Bill", use_container_width=True, type="primary", key="print_bill"):
+            # JavaScript to trigger print
+            js = """
             <script>
             window.print();
             </script>
-            """, unsafe_allow_html=True)
+            """
+            st.components.v1.html(js, height=0)
+            st.success("Print dialog opened!")
     with col2:
-        if st.button("📋 New Bill", use_container_width=True):
+        if st.button("📋 New Bill", use_container_width=True, key="new_bill"):
             st.session_state.last_sale = None
             st.rerun()
     with col3:
-        if st.button("🏠 Main Menu", use_container_width=True):
+        if st.button("🏠 Main Menu", use_container_width=True, key="main_menu"):
             st.session_state.last_sale = None
             st.rerun()
 
@@ -816,7 +808,9 @@ elif menu == "🛒 Add Purchase":
                     unit_price = amount / total_qty if total_qty > 0 else 0
                     st.info(f"Unit Price: ₹{unit_price:.2f}/kg")
                 
-                if st.form_submit_button("💾 Save Purchase", type="primary", use_container_width=True):
+                # FIXED: Added submit button properly
+                submitted = st.form_submit_button("💾 Save Purchase", type="primary", use_container_width=True)
+                if submitted:
                     if total_qty <= 0:
                         st.error("Enter quantity > 0")
                     elif amount <= 0:
@@ -903,7 +897,8 @@ elif menu == "🏷 Set Prices":
             new_veg = st.text_input("New Vegetable Name")
             new_price = st.number_input("Initial Selling Price/kg ₹", min_value=0.0, step=1.0, value=0.0)
             
-            if st.form_submit_button("➕ Add Vegetable", use_container_width=True):
+            submitted = st.form_submit_button("➕ Add Vegetable", use_container_width=True)
+            if submitted:
                 if new_veg and new_veg.strip():
                     c.execute("INSERT OR IGNORE INTO inventory (vegetable, quantity, cost_price, selling_price) VALUES (?, 0, 0, ?)", 
                              (new_veg.strip(), new_price))
@@ -1009,9 +1004,9 @@ elif menu == "💵 Quick Sell":
             with st.expander("👤 Customer Information", expanded=True):
                 cust_col1, cust_col2 = st.columns(2)
                 with cust_col1:
-                    cust_name = st.text_input("Customer Name", placeholder="Leave empty for Guest")
+                    cust_name = st.text_input("Customer Name", placeholder="Leave empty for Guest", key="cust_name_sell")
                 with cust_col2:
-                    cust_phone = st.text_input("Phone Number", placeholder="Optional")
+                    cust_phone = st.text_input("Phone Number", placeholder="Optional", key="cust_phone_sell")
             
             # Vegetable selection with dropdown
             st.markdown("### Add Items to Bill")
@@ -1030,7 +1025,7 @@ elif menu == "💵 Quick Sell":
                     selected_display = st.selectbox(
                         "Select Vegetable",
                         options=[v[1] for v in veg_options],
-                        key="veg_select"
+                        key="veg_select_sell"
                     )
                     
                     # Get selected vegetable details
@@ -1040,14 +1035,15 @@ elif menu == "💵 Quick Sell":
                     selected_stock = selected_veg_data[2]
                 
                 with col_b:
-                    # Quantity input with kg and grams
+                    # Quantity input with kg and grams - FIXED: Handle max_value when stock is 0
+                    max_kg = max(0.1, min(selected_stock, 50.0)) if selected_stock > 0 else 0.1
                     qty_col1, qty_col2 = st.columns(2)
                     with qty_col1:
-                        qty_kg = st.number_input("Kilograms", min_value=0.0, max_value=min(selected_stock, 50.0), 
-                                                step=0.5, value=1.0, key="qty_kg")
+                        qty_kg = st.number_input("Kilograms", min_value=0.0, max_value=max_kg, 
+                                                step=0.5, value=0.5, key="qty_kg_sell")
                     with qty_col2:
                         qty_g = st.number_input("Grams", min_value=0, max_value=999, step=100, 
-                                               value=0, key="qty_g")
+                                               value=0, key="qty_g_sell")
                     
                     total_qty = qty_kg + (qty_g / 1000)
                     total_price = total_qty * selected_price
@@ -1057,7 +1053,9 @@ elif menu == "💵 Quick Sell":
                 with col_c:
                     st.write("")  # Spacer
                     st.write("")  # Spacer
-                    if st.form_submit_button("➕ Add to Bill", use_container_width=True, type="primary"):
+                    # FIXED: Added submit button properly
+                    submitted = st.form_submit_button("➕ Add to Bill", use_container_width=True, type="primary")
+                    if submitted:
                         if total_qty <= 0:
                             st.error("Enter quantity > 0")
                         else:
@@ -1072,7 +1070,7 @@ elif menu == "💵 Quick Sell":
                 man_col1, man_col2, man_col3 = st.columns([3, 2, 1])
                 
                 with man_col1:
-                    manual_veg = st.text_input("Vegetable Name", placeholder="Enter vegetable name manually")
+                    manual_veg = st.text_input("Vegetable Name", placeholder="Enter vegetable name manually", key="manual_veg")
                     
                     # Check if vegetable exists
                     if manual_veg:
@@ -1083,14 +1081,16 @@ elif menu == "💵 Quick Sell":
                             st.info(f"Price: ₹{price:.2f}/kg, Stock: {stock:.2f} kg")
                 
                 with man_col2:
-                    man_qty_kg = st.number_input("Kg", min_value=0.0, step=0.5, value=1.0, key="man_kg")
-                    man_qty_g = st.number_input("Grams", min_value=0, step=100, value=0, key="man_g")
+                    man_qty_kg = st.number_input("Kg", min_value=0.0, step=0.5, value=0.5, key="man_kg_sell")
+                    man_qty_g = st.number_input("Grams", min_value=0, step=100, value=0, key="man_g_sell")
                     man_qty = man_qty_kg + (man_qty_g / 1000)
                 
                 with man_col3:
                     st.write("")  # Spacer
                     st.write("")  # Spacer
-                    if st.form_submit_button("➕ Add Manual", use_container_width=True):
+                    # FIXED: Added submit button properly
+                    submitted_manual = st.form_submit_button("➕ Add Manual", use_container_width=True)
+                    if submitted_manual:
                         if manual_veg and man_qty > 0:
                             if add_to_cart_simple(manual_veg, man_qty):
                                 st.success(f"Added {man_qty:.3f} kg of {manual_veg}")
@@ -1134,11 +1134,11 @@ elif menu == "💵 Quick Sell":
                     veg_to_remove = st.selectbox(
                         "Select item to remove",
                         options=[item[0] for item in st.session_state.cart],
-                        key="remove_select"
+                        key="remove_select_sell"
                     )
                 
                 with remove_col2:
-                    if st.button("❌ Remove Item", use_container_width=True, type="secondary"):
+                    if st.button("❌ Remove Item", use_container_width=True, type="secondary", key="remove_btn"):
                         remove_from_cart(veg_to_remove)
                         st.success(f"Removed {veg_to_remove}")
                         st.rerun()
@@ -1158,13 +1158,13 @@ elif menu == "💵 Quick Sell":
                 col_a, col_b, col_c = st.columns(3)
                 
                 with col_a:
-                    if st.button("🔄 Clear Bill", use_container_width=True, type="secondary"):
+                    if st.button("🔄 Clear Bill", use_container_width=True, type="secondary", key="clear_bill"):
                         st.session_state.cart = []
                         st.success("Bill cleared")
                         st.rerun()
                 
                 with col_b:
-                    if st.button("✏️ Edit Quantity", use_container_width=True):
+                    if st.button("✏️ Edit Quantity", use_container_width=True, key="edit_qty"):
                         # Show edit interface
                         st.markdown("#### Edit Item Quantities")
                         for idx, (veg, qty, price, item_total) in enumerate(st.session_state.cart):
@@ -1181,7 +1181,7 @@ elif menu == "💵 Quick Sell":
                                         st.rerun()
                 
                 with col_c:
-                    if st.button("✅ Complete Bill", type="primary", use_container_width=True):
+                    if st.button("✅ Complete Bill", type="primary", use_container_width=True, key="complete_bill"):
                         if process_sale_simple(cust_name, cust_phone):
                             st.success("✅ Bill completed successfully!")
         
@@ -1206,11 +1206,11 @@ elif menu == "📦 Inventory":
         with col1:
             # Add new vegetable
             st.markdown("#### ➕ Add New Vegetable")
-            new_veg_name = st.text_input("Vegetable Name")
-            initial_qty = st.number_input("Initial Quantity (kg)", min_value=0.0, step=0.5, value=0.0)
-            initial_price = st.number_input("Initial Price/kg ₹", min_value=0.0, step=1.0, value=0.0)
+            new_veg_name = st.text_input("Vegetable Name", key="new_veg_name")
+            initial_qty = st.number_input("Initial Quantity (kg)", min_value=0.0, step=0.5, value=0.0, key="initial_qty")
+            initial_price = st.number_input("Initial Price/kg ₹", min_value=0.0, step=1.0, value=0.0, key="initial_price")
             
-            if st.button("Add to Inventory", use_container_width=True):
+            if st.button("Add to Inventory", use_container_width=True, key="add_veg_btn"):
                 if new_veg_name and new_veg_name.strip():
                     c.execute("INSERT OR REPLACE INTO inventory (vegetable, quantity, cost_price, selling_price) VALUES (?,?,?,?)", 
                              (new_veg_name.strip(), initial_qty, 0.0, initial_price))
@@ -1224,10 +1224,10 @@ elif menu == "📦 Inventory":
             all_veg = pd.read_sql("SELECT vegetable FROM inventory ORDER BY vegetable", conn)
             
             if not all_veg.empty:
-                veg_to_remove = st.selectbox("Select vegetable to remove", all_veg['vegetable'])
-                confirm = st.checkbox("I confirm I want to remove this vegetable")
+                veg_to_remove = st.selectbox("Select vegetable to remove", all_veg['vegetable'], key="veg_to_remove")
+                confirm = st.checkbox("I confirm I want to remove this vegetable", key="confirm_remove")
                 
-                if st.button("Remove from Inventory", use_container_width=True, type="secondary", disabled=not confirm):
+                if st.button("Remove from Inventory", use_container_width=True, type="secondary", disabled=not confirm, key="remove_veg_btn"):
                     # Check if vegetable has stock
                     stock, _, _ = get_stock(veg_to_remove)
                     if stock > 0:
@@ -1252,11 +1252,11 @@ elif menu == "📦 Inventory":
         
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Total Items", len(inv_df))
+            st.metric("Total Items", len(inv_df), key="total_items_metric")
         with col2:
-            st.metric("In Stock", in_stock)
+            st.metric("In Stock", in_stock, key="in_stock_metric")
         with col3:
-            st.metric("Out of Stock", out_of_stock)
+            st.metric("Out of Stock", out_of_stock, key="out_stock_metric")
         
         # Editable inventory table
         st.markdown("#### ✏️ Edit Inventory Quantities")
@@ -1280,10 +1280,11 @@ elif menu == "📦 Inventory":
             },
             use_container_width=True,
             num_rows="dynamic",
-            hide_index=True
+            hide_index=True,
+            key="inventory_editor"
         )
         
-        if st.button("💾 Save Inventory Changes", type="primary", use_container_width=True):
+        if st.button("💾 Save Inventory Changes", type="primary", use_container_width=True, key="save_inv_changes"):
             for _, row in edited_inv.iterrows():
                 c.execute("UPDATE inventory SET quantity=?, selling_price=? WHERE vegetable=?", 
                          (row['quantity'], row['selling_price'], row['vegetable']))
@@ -1302,9 +1303,9 @@ elif menu == "📋 Purchases":
     # Date filter
     col1, col2 = st.columns(2)
     with col1:
-        view_date = st.date_input("View purchases for date", value=selected_date)
+        view_date = st.date_input("View purchases for date", value=selected_date, key="purchases_date")
     with col2:
-        show_all = st.checkbox("Show all dates")
+        show_all = st.checkbox("Show all dates", key="show_all_purchases")
     
     # Get purchases data
     if show_all:
@@ -1323,11 +1324,11 @@ elif menu == "📋 Purchases":
         
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("💰 Total Amount", f"₹{total_amount:.2f}")
+            st.metric("💰 Total Amount", f"₹{total_amount:.2f}", key="purchases_amount")
         with col2:
-            st.metric("⚖️ Total Quantity", f"{total_qty:.1f} kg")
+            st.metric("⚖️ Total Quantity", f"{total_qty:.1f} kg", key="purchases_qty")
         with col3:
-            st.metric("🥬 Vegetables Bought", veg_count)
+            st.metric("🥬 Vegetables Bought", veg_count, key="purchases_count")
         
         # Display table
         st.dataframe(
@@ -1335,7 +1336,8 @@ elif menu == "📋 Purchases":
                 "quantity": "{:.2f}",
                 "amount": "₹{:.2f}"
             }),
-            use_container_width=True
+            use_container_width=True,
+            key="purchases_table"
         )
 
 # ========================== SALES ==========================
@@ -1350,9 +1352,9 @@ elif menu == "🧾 Sales":
     # Date filter
     col1, col2 = st.columns(2)
     with col1:
-        view_date = st.date_input("View sales for date", value=selected_date, key="sales_date")
+        view_date = st.date_input("View sales for date", value=selected_date, key="sales_date_view")
     with col2:
-        show_all_sales = st.checkbox("Show all dates", key="show_all_sales")
+        show_all_sales = st.checkbox("Show all dates", key="show_all_sales_view")
     
     # Get sales data
     if show_all_sales:
@@ -1371,11 +1373,11 @@ elif menu == "🧾 Sales":
         
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("💰 Total Sales", f"₹{total_sales:.2f}")
+            st.metric("💰 Total Sales", f"₹{total_sales:.2f}", key="sales_total")
         with col2:
-            st.metric("⚖️ Quantity Sold", f"{total_qty:.1f} kg")
+            st.metric("⚖️ Quantity Sold", f"{total_qty:.1f} kg", key="sales_qty")
         with col3:
-            st.metric("👥 Customers", customer_count)
+            st.metric("👥 Customers", customer_count, key="sales_customers")
         
         # Display table
         st.dataframe(
@@ -1384,7 +1386,8 @@ elif menu == "🧾 Sales":
                 "sale_price": "₹{:.2f}",
                 "total": "₹{:.2f}"
             }),
-            use_container_width=True
+            use_container_width=True,
+            key="sales_table"
         )
 
 # ========================== EXPENSES ==========================
@@ -1402,12 +1405,15 @@ elif menu == "💸 Expenses":
         with col1:
             category = st.selectbox("Category", 
                                    ["Rent", "Electricity", "Water", "Transport", "Labor", 
-                                    "Packaging", "Maintenance", "Miscellaneous"])
-            amount = st.number_input("Amount ₹", min_value=0.0, step=10.0, value=0.0)
+                                    "Packaging", "Maintenance", "Miscellaneous"],
+                                   key="expense_category")
+            amount = st.number_input("Amount ₹", min_value=0.0, step=10.0, value=0.0, key="expense_amount")
         with col2:
-            description = st.text_input("Description", placeholder="What was this expense for?")
+            description = st.text_input("Description", placeholder="What was this expense for?", key="expense_desc")
         
-        if st.form_submit_button("💾 Save Expense", type="primary", use_container_width=True):
+        # FIXED: Added submit button properly
+        submitted = st.form_submit_button("💾 Save Expense", type="primary", use_container_width=True)
+        if submitted:
             if amount <= 0:
                 st.error("Enter amount > 0")
             elif not description:
@@ -1462,13 +1468,13 @@ elif menu == "👥 Customers":
         # Display metrics
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("Total Customers", total_customers)
+            st.metric("Total Customers", total_customers, key="total_customers_metric")
         with col2:
-            st.metric("Named Customers", named_customers)
+            st.metric("Named Customers", named_customers, key="named_customers_metric")
         with col3:
-            st.metric("Guest Customers", guest_customers)
+            st.metric("Guest Customers", guest_customers, key="guest_customers_metric")
         with col4:
-            st.metric("Total Points", total_points)
+            st.metric("Total Points", total_points, key="total_points_metric")
         
         # Show all customers from sales
         st.markdown("### All Customers (from sales)")
@@ -1490,7 +1496,7 @@ elif menu == "👥 Customers":
             })
         
         customer_summary_df = pd.DataFrame(customer_summary)
-        st.dataframe(customer_summary_df, use_container_width=True)
+        st.dataframe(customer_summary_df, use_container_width=True, key="customers_table")
         
         # Show loyalty customers
         if not customers_df.empty:
@@ -1526,15 +1532,18 @@ elif menu == "🗑 Waste":
     with st.form("waste_form"):
         col1, col2, col3 = st.columns(3)
         with col1:
-            veg = st.selectbox("Vegetable", default_vegetables)
-            qty = st.number_input("Quantity (kg)", min_value=0.0, step=0.1, value=0.0)
+            veg = st.selectbox("Vegetable", default_vegetables, key="waste_veg")
+            qty = st.number_input("Quantity (kg)", min_value=0.0, step=0.1, value=0.0, key="waste_qty")
         with col2:
             reason = st.selectbox("Reason", 
-                                 ["Spoiled", "Damaged", "Expired", "Overstock", "Other"])
-            description = st.text_input("Details")
+                                 ["Spoiled", "Damaged", "Expired", "Overstock", "Other"],
+                                 key="waste_reason")
+            description = st.text_input("Details", key="waste_desc")
         
         with col3:
-            if st.form_submit_button("Record Waste", use_container_width=True, type="primary"):
+            # FIXED: Added submit button properly
+            submitted = st.form_submit_button("Record Waste", use_container_width=True, type="primary")
+            if submitted:
                 if qty <= 0:
                     st.error("Enter quantity > 0")
                 else:
