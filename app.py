@@ -46,7 +46,7 @@ st.markdown("""
     .primary-btn {background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important; color:white !important;}
     .secondary-btn {background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%) !important; color:white !important;}
     .success-btn {background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%) !important; color:white !important;}
-    .warning-btn {background: linear-gradient(135deg, #fa709a 0%, #fee140 100%) !important; color:white !important;}
+    .warning-btn {background: linear-gradient(135deg, #fa709a 0%, #fee140 100%) !important; color:black !important;}
     .info-btn {background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%) !important; color:#2c3e50 !important;}
     
     /* Cards */
@@ -1107,9 +1107,8 @@ elif menu == "💵 Quick Sell":
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Complete sale button
-                if st.button("✅ COMPLETE SALE & PRINT BILL", type="primary", use_container_width=True, 
-                           use_container_width=True):
+                # Complete sale button - FIXED: Removed duplicate use_container_width
+                if st.button("✅ COMPLETE SALE & PRINT BILL", type="primary", use_container_width=True):
                     process_sale(cust_name, cust_phone, final_total)
         
         # Show receipt if last sale exists
