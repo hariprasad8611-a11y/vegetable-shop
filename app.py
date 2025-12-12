@@ -227,7 +227,7 @@ elif menu == "Sell":
                     cart.append(entry)
                     added += 1
                 st.session_state.cart = cart
-                st.experimental_rerun()
+                st.rerun()
 
         # show cart
         if st.session_state.get("cart"):
