@@ -1594,7 +1594,7 @@ elif menu == "💵 Quick Sell":
                 if st.button("🏠 Main Menu", use_container_width=True, key="main_menu"):
                     st.session_state.last_sale = None
                     st.rerun()
-
+                    
 # ========================== INVENTORY ==========================
 elif menu == "📦 Inventory":
     st.markdown("""
