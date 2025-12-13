@@ -244,9 +244,11 @@ if table_exists:
     
     if 'unit_type' not in columns:
         # Add unit_type column if it doesn't exist
-        c.execute("ALTER TABLE inventory ADD COLUMN unit_type TEXT DEFAULT 'kg'")
-        conn.commit()
-        st.info("Updated database schema: Added unit_type column")
+        try:
+            c.execute("ALTER TABLE inventory ADD COLUMN unit_type TEXT DEFAULT 'kg'")
+            conn.commit()
+        except Exception as e:
+            st.info(f"Note: {e}")
 else:
     # Create tables if they don't exist
     c.execute("""
@@ -352,25 +354,38 @@ for veg, unit_type in default_vegetables:
     c.execute("SELECT vegetable FROM inventory WHERE vegetable=?", (veg,))
     if not c.fetchone():
         # Insert new vegetable with unit_type
-        c.execute("INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type) VALUES (?, 0, 0, 0, '', ?)", 
-                 (veg, unit_type))
+        try:
+            c.execute("INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type) VALUES (?, 0, 0, 0, '', ?)", 
+                     (veg, unit_type))
+        except Exception as e:
+            # If insertion fails, try to update existing
+            try:
+                c.execute("UPDATE inventory SET unit_type=? WHERE vegetable=?", (unit_type, veg))
+            except:
+                pass
     else:
         # Update existing vegetable with unit_type if needed
-        c.execute("UPDATE inventory SET unit_type=? WHERE vegetable=?", (unit_type, veg))
+        try:
+            c.execute("UPDATE inventory SET unit_type=? WHERE vegetable=?", (unit_type, veg))
+        except:
+            pass
 
 conn.commit()
 
 # ========================== HELPERS ==========================
 def get_stock(veg):
     """Return (quantity, cost_price, selling_price, unit_type) for veg (or zeros)."""
-    c.execute("SELECT quantity, cost_price, selling_price, unit_type FROM inventory WHERE vegetable=?", (veg,))
-    row = c.fetchone()
-    if row:
-        qty = row[0] or 0.0
-        cost = row[1] or 0.0
-        sell = row[2] or 0.0
-        unit_type = row[3] or 'kg'  # Default to 'kg' if None
-        return qty, cost, sell, unit_type
+    try:
+        c.execute("SELECT quantity, cost_price, selling_price, unit_type FROM inventory WHERE vegetable=?", (veg,))
+        row = c.fetchone()
+        if row:
+            qty = row[0] if row[0] is not None else 0.0
+            cost = row[1] if row[1] is not None else 0.0
+            sell = row[2] if row[2] is not None else 0.0
+            unit_type = row[3] if row[3] is not None else 'kg'
+            return qty, cost, sell, unit_type
+    except Exception as e:
+        pass
     return 0.0, 0.0, 0.0, 'kg'
 
 def fetch_table_with_rowid(table):
@@ -807,37 +822,18 @@ if menu == "📊 Dashboard":
             "unit_type": "📏 Unit"
         })
         
-        # Apply color coding based on stock levels
-        def highlight_stock(val, unit_type):
-            if unit_type == 'piece':
-                # For pieces, use different threshold
-                piece_threshold = 10  # Adjust as needed
-                if val < piece_threshold:
-                    return 'background-color: #ffcccc; color: #d63031; font-weight: bold'
-                elif val < piece_threshold * 2:
-                    return 'background-color: #fff3cd; color: #856404'
-                else:
-                    return 'background-color: #d4edda; color: #155724'
-            else:
-                # For kg
-                if val < threshold:
-                    return 'background-color: #ffcccc; color: #d63031; font-weight: bold'
-                elif val < threshold * 2:
-                    return 'background-color: #fff3cd; color: #856404'
-                else:
-                    return 'background-color: #d4edda; color: #155724'
-        
         # Display the table
         display_df = inv_display[['🥬 Vegetable', '⚖️ Stock', '💰 Price', '📏 Unit']].copy()
         
         # Format price based on unit type
         def format_price(row):
+            price_val = row['💰 Price'] if isinstance(row['💰 Price'], (int, float)) else 0.0
             if row['📏 Unit'] == 'kg':
-                return f"₹{row['💰 Price']:.2f}/kg"
+                return f"₹{price_val:.2f}/kg"
             elif row['📏 Unit'] == 'piece':
-                return f"₹{row['💰 Price']:.2f}/piece"
+                return f"₹{price_val:.2f}/piece"
             else:
-                return f"₹{row['💰 Price']:.2f}"
+                return f"₹{price_val:.2f}"
         
         display_df['💰 Price'] = display_df.apply(format_price, axis=1)
         
@@ -955,12 +951,20 @@ elif menu == "🛒 Add Purchase":
                                                 help="Select how this vegetable is sold")
                     else:
                         veg = veg_choice
-                        # Get unit type for existing vegetable
-                        unit_type_row = all_veg_df[all_veg_df['vegetable'] == veg].iloc[0]
-                        unit_type = unit_type_row['unit_type']
-                        st.info(f"**Unit Type:** {unit_type}")
+                        # Get unit type for existing vegetable - FIXED
+                        try:
+                            unit_type_row = all_veg_df[all_veg_df['vegetable'] == veg]
+                            if not unit_type_row.empty:
+                                unit_type = unit_type_row.iloc[0]['unit_type']
+                                st.info(f"**Unit Type:** {unit_type}")
+                            else:
+                                unit_type = 'kg'  # Default
+                                st.info(f"**Unit Type:** {unit_type} (default)")
+                        except:
+                            unit_type = 'kg'
+                            st.info(f"**Unit Type:** {unit_type} (default)")
                     
-                    # Quantity based on unit type
+                    # Quantity based on unit type - FIXED
                     if unit_type == 'kg':
                         q_col1, q_col2 = st.columns(2)
                         with q_col1:
@@ -1134,25 +1138,30 @@ elif menu == "🏷 Set Prices":
         with col1:
             selected_veg = st.selectbox("Select Vegetable", all_vegetables['vegetable'])
             
-            # Get current price and unit type
-            current_data = pd.read_sql("SELECT selling_price, unit_type FROM inventory WHERE vegetable=?", 
-                                      conn, params=(selected_veg,)).iloc[0]
-            current_price = current_data['selling_price']
-            current_unit = current_data['unit_type']
-            
-            if current_unit == 'kg':
-                st.info(f"**Current Price:** ₹{current_price:.2f}/kg")
-            elif current_unit == 'piece':
-                st.info(f"**Current Price:** ₹{current_price:.2f}/piece")
-            else:
-                st.info(f"**Current Price:** ₹{current_price:.2f} per {current_unit}")
-            
-            # Get current stock
-            stock, _, _, _ = get_stock(selected_veg)
-            st.info(f"**Current Stock:** {stock:.2f} {current_unit}")
+            # Get current price and unit type - FIXED
+            try:
+                current_data = pd.read_sql("SELECT selling_price, unit_type FROM inventory WHERE vegetable=?", 
+                                          conn, params=(selected_veg,)).iloc[0]
+                current_price = float(current_data['selling_price']) if current_data['selling_price'] is not None else 0.0
+                current_unit = current_data['unit_type'] if current_data['unit_type'] is not None else 'kg'
+                
+                if current_unit == 'kg':
+                    st.info(f"**Current Price:** ₹{current_price:.2f}/kg")
+                elif current_unit == 'piece':
+                    st.info(f"**Current Price:** ₹{current_price:.2f}/piece")
+                else:
+                    st.info(f"**Current Price:** ₹{current_price:.2f} per {current_unit}")
+                
+                # Get current stock
+                stock, _, _, _ = get_stock(selected_veg)
+                st.info(f"**Current Stock:** {stock:.2f} {current_unit}")
+            except Exception as e:
+                st.warning(f"Could not load vegetable data: {e}")
+                current_price = 0.0
+                current_unit = 'kg'
         
         with col2:
-            new_price = st.number_input("New Price ₹", value=float(current_price or 0.0), min_value=0.0, step=1.0)
+            new_price = st.number_input("New Price ₹", value=current_price, min_value=0.0, step=1.0)
             
             if st.button("💾 Update Price", type="primary", use_container_width=True):
                 c.execute("UPDATE inventory SET selling_price=? WHERE vegetable=?", (new_price, selected_veg))
@@ -1173,7 +1182,7 @@ elif menu == "💵 Quick Sell":
     </div>
     """, unsafe_allow_html=True)
     
-    # Get available vegetables with stock
+    # Get available vegetables with stock - FIXED query
     available_veg = pd.read_sql("""
         SELECT vegetable, quantity, selling_price, unit_type 
         FROM inventory 
@@ -1214,51 +1223,74 @@ elif menu == "💵 Quick Sell":
                     # Vegetable dropdown with stock info
                     veg_options = []
                     for _, row in available_veg.iterrows():
-                        unit_display = row['unit_type']
-                        price_display = f"₹{row['selling_price']:.2f}/kg" if unit_display == 'kg' else f"₹{row['selling_price']:.2f}/piece"
-                        display_text = f"{row['vegetable']} (Stock: {row['quantity']:.0f} {unit_display}, {price_display})"
-                        veg_options.append((row['vegetable'], display_text, row['quantity'], row['selling_price'], row['unit_type']))
+                        try:
+                            unit_display = str(row['unit_type']) if row['unit_type'] is not None else 'kg'
+                            price_val = float(row['selling_price']) if row['selling_price'] is not None else 0.0
+                            quantity_val = float(row['quantity']) if row['quantity'] is not None else 0.0
+                            
+                            price_display = f"₹{price_val:.2f}/kg" if unit_display == 'kg' else f"₹{price_val:.2f}/piece"
+                            display_text = f"{row['vegetable']} (Stock: {quantity_val:.0f} {unit_display}, {price_display})"
+                            veg_options.append((row['vegetable'], display_text, quantity_val, price_val, unit_display))
+                        except Exception as e:
+                            continue
                     
-                    selected_display = st.selectbox(
-                        "Select Vegetable",
-                        options=[v[1] for v in veg_options],
-                        key="veg_select_sell"
-                    )
-                    
-                    # Get selected vegetable details
-                    selected_veg_data = next(v for v in veg_options if v[1] == selected_display)
-                    selected_veg = selected_veg_data[0]
-                    selected_price = selected_veg_data[3]
-                    selected_stock = selected_veg_data[2]
-                    selected_unit = selected_veg_data[4]
+                    if veg_options:
+                        selected_display = st.selectbox(
+                            "Select Vegetable",
+                            options=[v[1] for v in veg_options],
+                            key="veg_select_sell"
+                        )
+                        
+                        # Get selected vegetable details
+                        try:
+                            selected_veg_data = next(v for v in veg_options if v[1] == selected_display)
+                            selected_veg = selected_veg_data[0]
+                            selected_price = selected_veg_data[3]
+                            selected_stock = selected_veg_data[2]
+                            selected_unit = selected_veg_data[4]
+                        except:
+                            selected_veg = ""
+                            selected_price = 0.0
+                            selected_stock = 0.0
+                            selected_unit = 'kg'
+                    else:
+                        st.warning("No vegetables available")
+                        selected_veg = ""
+                        selected_price = 0.0
+                        selected_stock = 0.0
+                        selected_unit = 'kg'
                 
                 with col_b:
-                    # Quantity input based on unit type - FIXED: Handle max_value properly
-                    if selected_unit == 'kg':
-                        max_kg = max(0.1, min(selected_stock, 50.0)) if selected_stock > 0 else 0.1
-                        qty_col1, qty_col2 = st.columns(2)
-                        with qty_col1:
-                            qty_kg = st.number_input("Kilograms", min_value=0.0, max_value=float(max_kg), 
-                                                    step=0.5, value=0.5, key="qty_kg_sell")
-                        with qty_col2:
-                            max_g = min(999, int((max_kg - qty_kg) * 1000)) if max_kg > qty_kg else 0
-                            qty_g = st.number_input("Grams", min_value=0, max_value=int(max_g), step=100, 
-                                                   value=0, key="qty_g_sell")
+                    # Quantity input based on unit type
+                    if selected_veg:
+                        if selected_unit == 'kg':
+                            max_kg = max(0.1, min(selected_stock, 50.0)) if selected_stock > 0 else 0.1
+                            qty_col1, qty_col2 = st.columns(2)
+                            with qty_col1:
+                                qty_kg = st.number_input("Kilograms", min_value=0.0, max_value=float(max_kg), 
+                                                        step=0.5, value=0.5, key="qty_kg_sell")
+                            with qty_col2:
+                                max_g = min(999, int((max_kg - qty_kg) * 1000)) if max_kg > qty_kg else 0
+                                qty_g = st.number_input("Grams", min_value=0, max_value=int(max_g), step=100, 
+                                                       value=0, key="qty_g_sell")
+                            
+                            total_qty = qty_kg + (qty_g / 1000)
+                        elif selected_unit == 'piece':
+                            max_pieces = min(int(selected_stock), 100) if selected_stock > 0 else 1
+                            total_qty = st.number_input("Pieces", min_value=1, max_value=int(max_pieces), 
+                                                       step=1, value=1, key="qty_pieces_sell")
+                        else:
+                            max_qty = min(selected_stock, 100.0) if selected_stock > 0 else 1.0
+                            total_qty = st.number_input(f"Quantity ({selected_unit})", min_value=0.1, 
+                                                       max_value=float(max_qty), step=1.0, value=1.0, 
+                                                       key=f"qty_{selected_unit}_sell")
                         
-                        total_qty = qty_kg + (qty_g / 1000)
-                    elif selected_unit == 'piece':
-                        max_pieces = min(int(selected_stock), 100) if selected_stock > 0 else 1
-                        total_qty = st.number_input("Pieces", min_value=1, max_value=int(max_pieces), 
-                                                   step=1, value=1, key="qty_pieces_sell")
+                        total_price = total_qty * selected_price
+                        
+                        st.info(f"Total: ₹{total_price:.2f}")
                     else:
-                        max_qty = min(selected_stock, 100.0) if selected_stock > 0 else 1.0
-                        total_qty = st.number_input(f"Quantity ({selected_unit})", min_value=0.1, 
-                                                   max_value=float(max_qty), step=1.0, value=1.0, 
-                                                   key=f"qty_{selected_unit}_sell")
-                    
-                    total_price = total_qty * selected_price
-                    
-                    st.info(f"Total: ₹{total_price:.2f}")
+                        total_qty = 0
+                        total_price = 0
                 
                 with col_c:
                     st.write("")  # Spacer
@@ -1268,6 +1300,8 @@ elif menu == "💵 Quick Sell":
                     if submitted:
                         if total_qty <= 0:
                             st.error("Enter quantity > 0")
+                        elif not selected_veg:
+                            st.error("Select a vegetable")
                         else:
                             if add_to_cart_simple(selected_veg, total_qty):
                                 unit_display = selected_unit if selected_unit != 'kg' else 'kg'
@@ -1533,11 +1567,23 @@ elif menu == "📦 Inventory":
         )
         
         if st.button("💾 Save Inventory Changes", type="primary", use_container_width=True, key="save_inv_changes"):
+            changes_made = 0
             for _, row in edited_inv.iterrows():
-                c.execute("UPDATE inventory SET quantity=?, selling_price=? WHERE vegetable=?", 
-                         (row['quantity'], row['selling_price'], row['vegetable']))
-            conn.commit()
-            st.success("✅ Inventory updated successfully!")
+                try:
+                    c.execute("UPDATE inventory SET quantity=?, selling_price=? WHERE vegetable=?", 
+                             (row['quantity'], row['selling_price'], row['vegetable']))
+                    changes_made += 1
+                except Exception as e:
+                    st.error(f"Error updating {row['vegetable']}: {e}")
+            
+            try:
+                conn.commit()
+                if changes_made > 0:
+                    st.success(f"✅ {changes_made} inventory items updated successfully!")
+                else:
+                    st.info("No changes were made to inventory.")
+            except Exception as e:
+                st.error(f"Error committing changes: {e}")
 
 # ========================== PURCHASES ==========================
 elif menu == "📋 Purchases":
