@@ -1193,6 +1193,12 @@ elif menu == "💵 Quick Sell":
     if available_veg.empty:
         st.warning("⚠️ No vegetables available for sale! Please add purchases and set prices first.")
     else:
+        # Initialize session state for selected vegetable
+        if 'selected_veg_name' not in st.session_state:
+            st.session_state.selected_veg_name = ""
+        if 'selected_veg_unit' not in st.session_state:
+            st.session_state.selected_veg_unit = "kg"
+        
         # SIMPLE SELLING INTERFACE
         col1, col2 = st.columns([3, 2])
         
@@ -1207,20 +1213,17 @@ elif menu == "💵 Quick Sell":
                 with cust_col2:
                     cust_phone = st.text_input("Phone Number", placeholder="Optional", key="cust_phone_sell")
             
-            # Initialize session state for selected vegetable unit type
-            if 'selected_unit_for_qty' not in st.session_state:
-                st.session_state.selected_unit_for_qty = 'kg'
-            
             # Vegetable selection with dropdown
             st.markdown("### Add Items to Bill")
             
-            # Create a form for adding items
-            with st.form("add_item_form", clear_on_submit=True):
-                col_a, col_b, col_c = st.columns([3, 2, 1])
+            # Create a form for vegetable selection
+            with st.form("veg_selection_form"):
+                col_a, col_b = st.columns([3, 1])
                 
                 with col_a:
                     # Vegetable dropdown with stock info
                     veg_options = []
+                    veg_dict = {}
                     for _, row in available_veg.iterrows():
                         try:
                             unit_display = str(row['unit_type']) if row['unit_type'] is not None else 'kg'
@@ -1229,103 +1232,115 @@ elif menu == "💵 Quick Sell":
                             
                             price_display = f"₹{price_val:.2f}/kg" if unit_display == 'kg' else f"₹{price_val:.2f}/piece"
                             display_text = f"{row['vegetable']} (Stock: {quantity_val:.0f} {unit_display}, {price_display})"
-                            veg_options.append((row['vegetable'], display_text, quantity_val, price_val, unit_display))
+                            veg_options.append(display_text)
+                            veg_dict[display_text] = {
+                                'name': row['vegetable'],
+                                'unit': unit_display,
+                                'price': price_val,
+                                'stock': quantity_val
+                            }
                         except Exception as e:
                             continue
                     
                     if veg_options:
                         selected_display = st.selectbox(
                             "Select Vegetable",
-                            options=[v[1] for v in veg_options],
-                            key="veg_select_sell"
+                            options=veg_options,
+                            key="veg_select_sell_dropdown"
                         )
-                        
-                        # Get selected vegetable details
-                        try:
-                            selected_veg_data = next(v for v in veg_options if v[1] == selected_display)
-                            selected_veg = selected_veg_data[0]
-                            selected_price = selected_veg_data[3]
-                            selected_stock = selected_veg_data[2]
-                            selected_unit = selected_veg_data[4]
-                            
-                            # Update session state with selected unit type
-                            st.session_state.selected_unit_for_qty = selected_unit
-                        except:
-                            selected_veg = ""
-                            selected_price = 0.0
-                            selected_stock = 0.0
-                            selected_unit = 'kg'
-                            st.session_state.selected_unit_for_qty = 'kg'
                     else:
+                        selected_display = ""
                         st.warning("No vegetables available")
-                        selected_veg = ""
-                        selected_price = 0.0
-                        selected_stock = 0.0
-                        selected_unit = 'kg'
-                        st.session_state.selected_unit_for_qty = 'kg'
                 
                 with col_b:
-                    # Quantity input based on unit type - FIXED: Use session state unit
-                    current_unit = st.session_state.selected_unit_for_qty
-                    
-                    if selected_veg:
-                        if current_unit == 'kg':
-                            max_kg = max(0.1, min(selected_stock, 50.0)) if selected_stock > 0 else 0.1
+                    st.write("")
+                    st.write("")
+                    # Button to select vegetable
+                    select_button = st.form_submit_button("📝 Select", use_container_width=True)
+                    if select_button and selected_display:
+                        veg_info = veg_dict.get(selected_display)
+                        if veg_info:
+                            st.session_state.selected_veg_name = veg_info['name']
+                            st.session_state.selected_veg_unit = veg_info['unit']
+                            st.success(f"Selected: {veg_info['name']} ({veg_info['unit']})")
+            
+            # Show selected vegetable and quantity input
+            if st.session_state.selected_veg_name:
+                st.markdown(f"**Selected Vegetable:** {st.session_state.selected_veg_name}")
+                st.markdown(f"**Unit Type:** {st.session_state.selected_veg_unit}")
+                
+                # Get vegetable details
+                veg_info = None
+                for _, row in available_veg.iterrows():
+                    if row['vegetable'] == st.session_state.selected_veg_name:
+                        veg_info = {
+                            'name': row['vegetable'],
+                            'unit': row['unit_type'],
+                            'price': float(row['selling_price']),
+                            'stock': float(row['quantity'])
+                        }
+                        break
+                
+                if veg_info:
+                    # Quantity input based on unit type
+                    with st.form("quantity_form", clear_on_submit=True):
+                        st.markdown("### Enter Quantity")
+                        
+                        if st.session_state.selected_veg_unit == 'kg':
+                            max_kg = max(0.1, min(veg_info['stock'], 50.0)) if veg_info['stock'] > 0 else 0.1
                             qty_col1, qty_col2 = st.columns(2)
                             with qty_col1:
                                 qty_kg = st.number_input("Kilograms", min_value=0.0, max_value=float(max_kg), 
-                                                        step=0.5, value=0.5, key="qty_kg_sell_dynamic")
+                                                        step=0.5, value=0.5, key="qty_kg_input")
                             with qty_col2:
                                 max_g = min(999, int((max_kg - qty_kg) * 1000)) if max_kg > qty_kg else 0
                                 qty_g = st.number_input("Grams", min_value=0, max_value=int(max_g), step=100, 
-                                                       value=0, key="qty_g_sell_dynamic")
+                                                       value=0, key="qty_g_input")
                             
                             total_qty = qty_kg + (qty_g / 1000)
-                        elif current_unit == 'piece':
-                            max_pieces = min(int(selected_stock), 100) if selected_stock > 0 else 1
+                        elif st.session_state.selected_veg_unit == 'piece':
+                            max_pieces = min(int(veg_info['stock']), 100) if veg_info['stock'] > 0 else 1
                             total_qty = st.number_input("Pieces", min_value=1, max_value=int(max_pieces), 
-                                                       step=1, value=1, key="qty_pieces_sell_dynamic")
+                                                       step=1, value=1, key="qty_pieces_input")
                         else:
-                            max_qty = min(selected_stock, 100.0) if selected_stock > 0 else 1.0
-                            total_qty = st.number_input(f"Quantity ({current_unit})", min_value=0.1, 
-                                                       max_value=float(max_qty), step=1.0, value=1.0, 
-                                                       key=f"qty_{current_unit}_sell_dynamic")
+                            max_qty = min(veg_info['stock'], 100.0) if veg_info['stock'] > 0 else 1.0
+                            total_qty = st.number_input(f"Quantity ({st.session_state.selected_veg_unit})", 
+                                                       min_value=0.1, max_value=float(max_qty), 
+                                                       step=1.0, value=1.0, key=f"qty_{st.session_state.selected_veg_unit}_input")
                         
-                        total_price = total_qty * selected_price
+                        total_price = total_qty * veg_info['price']
+                        st.info(f"**Total Price:** ₹{total_price:.2f}")
                         
-                        st.info(f"Total: ₹{total_price:.2f}")
-                    else:
-                        total_qty = 0
-                        total_price = 0
-                
-                with col_c:
-                    st.write("")  # Spacer
-                    st.write("")  # Spacer
-                    # Submit button
-                    submitted = st.form_submit_button("➕ Add to Bill", use_container_width=True, type="primary")
-                    if submitted:
-                        if total_qty <= 0:
-                            st.error("Enter quantity > 0")
-                        elif not selected_veg:
-                            st.error("Select a vegetable")
-                        else:
-                            if add_to_cart_simple(selected_veg, total_qty):
-                                unit_display = current_unit if current_unit != 'kg' else 'kg'
-                                st.success(f"Added {total_qty:.2f} {unit_display} of {selected_veg}")
+                        # Submit button
+                        col1, col2 = st.columns([1, 1])
+                        with col1:
+                            submit_qty = st.form_submit_button("➕ Add to Bill", use_container_width=True, type="primary")
+                        with col2:
+                            clear_selection = st.form_submit_button("❌ Clear Selection", use_container_width=True, type="secondary")
+                        
+                        if submit_qty:
+                            if total_qty <= 0:
+                                st.error("Enter quantity > 0")
+                            else:
+                                if add_to_cart_simple(st.session_state.selected_veg_name, total_qty):
+                                    unit_display = st.session_state.selected_veg_unit if st.session_state.selected_veg_unit != 'kg' else 'kg'
+                                    st.success(f"Added {total_qty:.2f} {unit_display} of {st.session_state.selected_veg_name}")
+                                    # Keep the selection for adding more
+                        
+                        if clear_selection:
+                            st.session_state.selected_veg_name = ""
+                            st.session_state.selected_veg_unit = "kg"
+                            st.rerun()
             
             # Manual vegetable entry
             st.markdown("---")
             st.markdown("#### 🔤 Manual Vegetable Entry")
             
-            # Initialize session state for manual entry
-            if 'manual_unit_for_qty' not in st.session_state:
-                st.session_state.manual_unit_for_qty = 'kg'
-            
             with st.form("manual_veg_form", clear_on_submit=True):
                 man_col1, man_col2, man_col3 = st.columns([3, 2, 1])
                 
                 with man_col1:
-                    manual_veg = st.text_input("Vegetable Name", placeholder="Enter vegetable name manually", key="manual_veg")
+                    manual_veg = st.text_input("Vegetable Name", placeholder="Enter vegetable name manually", key="manual_veg_input")
                     
                     # Check if vegetable exists
                     if manual_veg:
@@ -1333,30 +1348,24 @@ elif menu == "💵 Quick Sell":
                         if stock == 0:
                             st.warning(f"{manual_veg} not in stock or doesn't exist")
                         else:
-                            # Update session state with manual veg unit type
-                            st.session_state.manual_unit_for_qty = unit_type
                             if unit_type == 'kg':
                                 st.info(f"Price: ₹{price:.2f}/kg, Stock: {stock:.2f} kg")
                             elif unit_type == 'piece':
                                 st.info(f"Price: ₹{price:.2f}/piece, Stock: {stock:.0f} pieces")
                             else:
                                 st.info(f"Price: ₹{price:.2f} per {unit_type}, Stock: {stock:.2f} {unit_type}")
-                    else:
-                        unit_type = 'kg'
-                        st.session_state.manual_unit_for_qty = 'kg'
                 
                 with man_col2:
-                    manual_unit = st.session_state.manual_unit_for_qty
                     if manual_veg:
-                        stock, _, _, _ = get_stock(manual_veg)
-                        if manual_unit == 'kg':
-                            man_qty_kg = st.number_input("Kg", min_value=0.0, step=0.5, value=0.5, key="man_kg_sell_dynamic")
-                            man_qty_g = st.number_input("Grams", min_value=0, step=100, value=0, key="man_g_sell_dynamic")
+                        stock, _, _, unit_type = get_stock(manual_veg)
+                        if unit_type == 'kg':
+                            man_qty_kg = st.number_input("Kg", min_value=0.0, step=0.5, value=0.5, key="man_kg_input")
+                            man_qty_g = st.number_input("Grams", min_value=0, step=100, value=0, key="man_g_input")
                             man_qty = man_qty_kg + (man_qty_g / 1000)
-                        elif manual_unit == 'piece':
-                            man_qty = st.number_input("Pieces", min_value=1, step=1, value=1, key="man_pieces_sell_dynamic")
+                        elif unit_type == 'piece':
+                            man_qty = st.number_input("Pieces", min_value=1, step=1, value=1, key="man_pieces_input")
                         else:
-                            man_qty = st.number_input(f"Quantity ({manual_unit})", min_value=0.1, step=1.0, value=1.0, key=f"man_{manual_unit}_sell_dynamic")
+                            man_qty = st.number_input(f"Quantity ({unit_type})", min_value=0.1, step=1.0, value=1.0, key=f"man_{unit_type}_input")
                     else:
                         man_qty = 0
                 
@@ -1568,7 +1577,7 @@ elif menu == "💵 Quick Sell":
                 """, unsafe_allow_html=True)
             
             # Print button with JavaScript for printing
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col_c = st.columns(3)
             with col1:
                 if st.button("🖨️ Print Bill", use_container_width=True, type="primary", key="print_bill"):
                     # JavaScript to trigger print
@@ -1583,7 +1592,7 @@ elif menu == "💵 Quick Sell":
                 if st.button("📋 New Bill", use_container_width=True, key="new_bill"):
                     st.session_state.last_sale = None
                     st.rerun()
-            with col3:
+            with col_c:
                 if st.button("🏠 Main Menu", use_container_width=True, key="main_menu"):
                     st.session_state.last_sale = None
                     st.rerun()
