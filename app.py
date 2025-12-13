@@ -1240,99 +1240,98 @@ elif menu == "💵 Quick Sell":
             
             # Create a form for adding items
             with st.form("add_item_form", clear_on_submit=True):
-                # Initialize variables
-                kg_total_qty = 0
-                piece_total_qty = 0
-                selected_kg_display = ""
-                selected_piece_display = ""
+                # Two columns for KG and Piece vegetables side by side
+                col_a, col_b = st.columns(2)
                 
-                # First: KG Vegetables dropdown and quantity input
-                st.markdown("#### ⚖️ KG Vegetables")
-                if kg_vegetables:
-                    # KG Vegetables dropdown
-                    kg_options = [""] + [veg['display'] for veg in kg_vegetables]
-                    kg_dict = {veg['display']: veg for veg in kg_vegetables}
-                    
-                    selected_kg_display = st.selectbox(
-                        "Select KG Vegetable",
-                        options=kg_options,
-                        key="kg_veg_select_main",
-                        index=0
-                    )
-                    
-                    if selected_kg_display:
-                        selected_kg = kg_dict[selected_kg_display]
+                # Left column: KG Vegetables
+                with col_a:
+                    st.markdown("#### ⚖️ KG Vegetables")
+                    if kg_vegetables:
+                        # KG Vegetables dropdown
+                        kg_options = [""] + [veg['display'] for veg in kg_vegetables]
+                        kg_dict = {veg['display']: veg for veg in kg_vegetables}
                         
-                        # KG Quantity input - ALWAYS SHOW
-                        max_kg = max(0.1, min(selected_kg['stock'], 50.0)) if selected_kg['stock'] > 0 else 0.1
-                        qty_col1, qty_col2 = st.columns(2)
-                        with qty_col1:
-                            qty_kg = st.number_input("Kilograms", min_value=0.0, max_value=float(max_kg), 
-                                                    step=0.5, value=0.5, key="qty_kg_input_main")
-                        with qty_col2:
-                            max_g = min(999, int((max_kg - qty_kg) * 1000)) if max_kg > qty_kg else 0
-                            qty_g = st.number_input("Grams", min_value=0, max_value=int(max_g), step=100, 
-                                                   value=0, key="qty_g_input_main")
+                        selected_kg_display = st.selectbox(
+                            "Select KG Vegetable",
+                            options=kg_options,
+                            key="kg_veg_select_main",
+                            index=0
+                        )
                         
-                        kg_total_qty = qty_kg + (qty_g / 1000)
-                        kg_total_price = kg_total_qty * selected_kg['price']
-                        
-                        st.info(f"**Total:** ₹{kg_total_price:.2f}")
+                        if selected_kg_display:
+                            selected_kg = kg_dict[selected_kg_display]
+                            
+                            # KG Quantity input
+                            max_kg = max(0.1, min(selected_kg['stock'], 50.0)) if selected_kg['stock'] > 0 else 0.1
+                            qty_col1, qty_col2 = st.columns(2)
+                            with qty_col1:
+                                qty_kg = st.number_input("Kilograms", min_value=0.0, max_value=float(max_kg), 
+                                                        step=0.5, value=0.5, key="qty_kg_input_main")
+                            with qty_col2:
+                                max_g = min(999, int((max_kg - qty_kg) * 1000)) if max_kg > qty_kg else 0
+                                qty_g = st.number_input("Grams", min_value=0, max_value=int(max_g), step=100, 
+                                                       value=0, key="qty_g_input_main")
+                            
+                            kg_total_qty = qty_kg + (qty_g / 1000)
+                            kg_total_price = kg_total_qty * selected_kg['price']
+                            
+                            st.info(f"**Total:** ₹{kg_total_price:.2f}")
                     else:
-                        # Show kg quantity input even when no vegetable selected (but disabled)
-                        st.info("Select a KG vegetable to enter quantity")
-                else:
-                    st.info("No KG vegetables available")
+                        st.info("No KG vegetables available")
+                        kg_total_qty = 0
                 
-                # Second: Piece Vegetables dropdown and quantity input
-                st.markdown("#### 🧩 Piece Vegetables")
-                if piece_vegetables:
-                    # Piece Vegetables dropdown
-                    piece_options = [""] + [veg['display'] for veg in piece_vegetables]
-                    piece_dict = {veg['display']: veg for veg in piece_vegetables}
-                    
-                    selected_piece_display = st.selectbox(
-                        "Select Piece Vegetable",
-                        options=piece_options,
-                        key="piece_veg_select_main",
-                        index=0
-                    )
-                    
-                    if selected_piece_display:
-                        selected_piece = piece_dict[selected_piece_display]
+                # Right column: Piece Vegetables
+                with col_b:
+                    st.markdown("#### 🧩 Piece Vegetables")
+                    if piece_vegetables:
+                        # Piece Vegetables dropdown
+                        piece_options = [""] + [veg['display'] for veg in piece_vegetables]
+                        piece_dict = {veg['display']: veg for veg in piece_vegetables}
                         
-                        # Piece Quantity input - ALWAYS SHOW
-                        max_pieces = min(int(selected_piece['stock']), 100) if selected_piece['stock'] > 0 else 1
-                        piece_total_qty = st.number_input("Pieces", min_value=1, max_value=int(max_pieces), 
-                                                         step=1, value=1, key="qty_pieces_input_main")
+                        selected_piece_display = st.selectbox(
+                            "Select Piece Vegetable",
+                            options=piece_options,
+                            key="piece_veg_select_main",
+                            index=0
+                        )
                         
-                        piece_total_price = piece_total_qty * selected_piece['price']
-                        
-                        st.info(f"**Total:** ₹{piece_total_price:.2f}")
+                        if selected_piece_display:
+                            selected_piece = piece_dict[selected_piece_display]
+                            
+                            # Piece Quantity input
+                            max_pieces = min(int(selected_piece['stock']), 100) if selected_piece['stock'] > 0 else 1
+                            piece_total_qty = st.number_input("Pieces", min_value=1, max_value=int(max_pieces), 
+                                                             step=1, value=1, key="qty_pieces_input_main")
+                            
+                            piece_total_price = piece_total_qty * selected_piece['price']
+                            
+                            st.info(f"**Total:** ₹{piece_total_price:.2f}")
                     else:
-                        # Show piece quantity input even when no vegetable selected (but disabled)
-                        st.info("Select a Piece vegetable to enter quantity")
-                else:
-                    st.info("No Piece vegetables available")
+                        st.info("No Piece vegetables available")
+                        piece_total_qty = 0
                 
-                # Single submit button for both
-                submit_both = st.form_submit_button("➕ Add Selected Items", use_container_width=True, type="primary")
+                # Submit button for both
+                col_c, col_d = st.columns(2)
+                with col_c:
+                    submit_kg = st.form_submit_button("➕ Add KG Item", use_container_width=True, type="primary")
+                with col_d:
+                    submit_piece = st.form_submit_button("➕ Add Piece Item", use_container_width=True, type="primary")
                 
-                # Handle submissions
-                if submit_both:
-                    # Handle KG item
+                # Handle KG submission
+                if submit_kg:
                     if selected_kg_display and kg_total_qty > 0:
                         if add_to_cart_simple(selected_kg['name'], kg_total_qty):
                             st.success(f"Added {kg_total_qty:.2f} kg of {selected_kg['name']}")
-                    
-                    # Handle Piece item
+                    else:
+                        st.error("Please select a KG vegetable and enter quantity > 0")
+                
+                # Handle Piece submission
+                if submit_piece:
                     if selected_piece_display and piece_total_qty > 0:
                         if add_to_cart_simple(selected_piece['name'], piece_total_qty):
                             st.success(f"Added {piece_total_qty:.0f} pieces of {selected_piece['name']}")
-                    
-                    # Show message if nothing selected
-                    if not selected_kg_display and not selected_piece_display:
-                        st.error("Please select at least one vegetable and enter quantity > 0")
+                    else:
+                        st.error("Please select a Piece vegetable and enter quantity > 0")
             
             # Manual vegetable entry
             st.markdown("---")
