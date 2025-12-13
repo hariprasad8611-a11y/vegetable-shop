@@ -1182,7 +1182,7 @@ elif menu == "💵 Quick Sell":
     </div>
     """, unsafe_allow_html=True)
     
-    # Get available vegetables with stock - FIXED query
+    # Get available vegetables with stock
     available_veg = pd.read_sql("""
         SELECT vegetable, quantity, selling_price, unit_type 
         FROM inventory 
@@ -1191,10 +1191,9 @@ elif menu == "💵 Quick Sell":
     """, conn)
     
     if available_veg.empty:
-        # FIXED: Using regular st.warning instead of HTML string
         st.warning("⚠️ No vegetables available for sale! Please add purchases and set prices first.")
     else:
-        # SIMPLE SELLING INTERFACE - Dropdown based
+        # SIMPLE SELLING INTERFACE
         col1, col2 = st.columns([3, 2])
         
         with col1:
@@ -1244,22 +1243,30 @@ elif menu == "💵 Quick Sell":
                             selected_price = selected_veg_data[3]
                             selected_stock = selected_veg_data[2]
                             selected_unit = selected_veg_data[4]
+                            
+                            # Store in session state to use in the quantity input
+                            st.session_state.selected_unit_type = selected_unit
                         except:
                             selected_veg = ""
                             selected_price = 0.0
                             selected_stock = 0.0
                             selected_unit = 'kg'
+                            st.session_state.selected_unit_type = 'kg'
                     else:
                         st.warning("No vegetables available")
                         selected_veg = ""
                         selected_price = 0.0
                         selected_stock = 0.0
                         selected_unit = 'kg'
+                        st.session_state.selected_unit_type = 'kg'
                 
                 with col_b:
-                    # Quantity input based on unit type
+                    # Quantity input based on unit type - FIXED: Dynamically change based on selected vegetable
                     if selected_veg:
-                        if selected_unit == 'kg':
+                        # Get current unit type from session state or selected data
+                        current_unit = getattr(st.session_state, 'selected_unit_type', selected_unit)
+                        
+                        if current_unit == 'kg':
                             max_kg = max(0.1, min(selected_stock, 50.0)) if selected_stock > 0 else 0.1
                             qty_col1, qty_col2 = st.columns(2)
                             with qty_col1:
@@ -1271,15 +1278,15 @@ elif menu == "💵 Quick Sell":
                                                        value=0, key="qty_g_sell")
                             
                             total_qty = qty_kg + (qty_g / 1000)
-                        elif selected_unit == 'piece':
+                        elif current_unit == 'piece':
                             max_pieces = min(int(selected_stock), 100) if selected_stock > 0 else 1
                             total_qty = st.number_input("Pieces", min_value=1, max_value=int(max_pieces), 
                                                        step=1, value=1, key="qty_pieces_sell")
                         else:
                             max_qty = min(selected_stock, 100.0) if selected_stock > 0 else 1.0
-                            total_qty = st.number_input(f"Quantity ({selected_unit})", min_value=0.1, 
+                            total_qty = st.number_input(f"Quantity ({current_unit})", min_value=0.1, 
                                                        max_value=float(max_qty), step=1.0, value=1.0, 
-                                                       key=f"qty_{selected_unit}_sell")
+                                                       key=f"qty_{current_unit}_sell")
                         
                         total_price = total_qty * selected_price
                         
@@ -1330,13 +1337,13 @@ elif menu == "💵 Quick Sell":
                     if manual_veg:
                         stock, _, _, unit_type = get_stock(manual_veg)
                         if unit_type == 'kg':
-                            man_qty_kg = st.number_input("Kg", min_value=0.0, step=0.5, value=0.5, key="man_kg_sell")
-                            man_qty_g = st.number_input("Grams", min_value=0, step=100, value=0, key="man_g_sell")
+                            man_qty_kg = st.number_input("Kg", min_value=0.0, step=0.5, value=0.5, key="man_kg_sell_2")
+                            man_qty_g = st.number_input("Grams", min_value=0, step=100, value=0, key="man_g_sell_2")
                             man_qty = man_qty_kg + (man_qty_g / 1000)
                         elif unit_type == 'piece':
-                            man_qty = st.number_input("Pieces", min_value=1, step=1, value=1, key="man_pieces_sell")
+                            man_qty = st.number_input("Pieces", min_value=1, step=1, value=1, key="man_pieces_sell_2")
                         else:
-                            man_qty = st.number_input(f"Quantity ({unit_type})", min_value=0.1, step=1.0, value=1.0, key=f"man_{unit_type}_sell")
+                            man_qty = st.number_input(f"Quantity ({unit_type})", min_value=0.1, step=1.0, value=1.0, key=f"man_{unit_type}_sell_2")
                     else:
                         man_qty = 0
                 
@@ -1356,10 +1363,9 @@ elif menu == "💵 Quick Sell":
             st.markdown("### 🛒 Current Bill")
             
             if not st.session_state.cart:
-                # FIXED: Using regular st.info instead of HTML string
                 st.info("🛒 Bill is Empty - Add items from the left")
             else:
-                # Display cart items in a clean table
+                # Display cart items in a clean table - FIXED: Unified price column
                 st.markdown("#### Items in Bill")
                 
                 # Create a dataframe for display
@@ -1367,27 +1373,26 @@ elif menu == "💵 Quick Sell":
                 total_amount = 0
                 
                 for veg, qty, price, item_total, unit_type in st.session_state.cart:
+                    # Determine unit display and price label
                     if unit_type == 'kg':
-                        cart_data.append({
-                            "Vegetable": veg,
-                            "Quantity": f"{qty:.3f} kg",
-                            "Price/kg": f"₹{price:.2f}",
-                            "Total": f"₹{item_total:.2f}"
-                        })
+                        quantity_display = f"{qty:.3f} kg"
+                        price_label = "Price"
+                        price_display = f"₹{price:.2f}/kg"
                     elif unit_type == 'piece':
-                        cart_data.append({
-                            "Vegetable": veg,
-                            "Quantity": f"{qty:.0f} pieces",
-                            "Price/piece": f"₹{price:.2f}",
-                            "Total": f"₹{item_total:.2f}"
-                        })
+                        quantity_display = f"{qty:.0f} pieces"
+                        price_label = "Price"
+                        price_display = f"₹{price:.2f}/piece"
                     else:
-                        cart_data.append({
-                            "Vegetable": veg,
-                            "Quantity": f"{qty:.2f} {unit_type}",
-                            f"Price/{unit_type}": f"₹{price:.2f}",
-                            "Total": f"₹{item_total:.2f}"
-                        })
+                        quantity_display = f"{qty:.2f} {unit_type}"
+                        price_label = "Price"
+                        price_display = f"₹{price:.2f}/{unit_type}"
+                    
+                    cart_data.append({
+                        "Vegetable": veg,
+                        "Quantity": quantity_display,
+                        price_label: price_display,
+                        "Total": f"₹{item_total:.2f}"
+                    })
                     total_amount += item_total
                 
                 # Display as dataframe
@@ -1456,9 +1461,119 @@ elif menu == "💵 Quick Sell":
                         if process_sale_simple(cust_name, cust_phone):
                             st.success("✅ Bill completed successfully!")
         
-        # Show receipt if last sale exists
+        # Show receipt if last sale exists - FIXED: Remove customer name from bill
         if st.session_state.last_sale:
-            show_receipt_simple()
+            sale = st.session_state.last_sale
+            
+            st.markdown("""
+            <div style="text-align:center; margin:30px 0;">
+                <h2 style="color:#27ae60;">✅ Sale Completed Successfully!</h2>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Receipt
+            with st.container():
+                st.markdown(f"""
+                <div class="receipt">
+                    <div style="text-align:center; margin-bottom:20px;">
+                        <h2 style="color:#2c3e50;">🥦 FRESH BASKET</h2>
+                        <p style="color:#27ae60; margin:5px 0; font-weight:bold;">Freshness You Can Feel</p>
+                        <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">Bill No: {sale['bill_no']}</p>
+                    </div>
+                    <hr style="border:none; height:2px; background: linear-gradient(90deg, #27ae60, #2ecc71); margin:15px 0;">
+                """, unsafe_allow_html=True)
+                
+                # Sale info - REMOVED CUSTOMER NAME
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown(f"**📅 Date:** {sale['date']}")
+                    st.markdown(f"**⏰ Time:** {sale['time']}")
+                with col2:
+                    # Only show bill number, not customer name
+                    st.markdown(f"**🧾 Bill No:** {sale['bill_no']}")
+                
+                st.markdown("<hr style='border:none; height:1px; background:#e0e0e0; margin:15px 0;'>", unsafe_allow_html=True)
+                
+                # Items table - FIXED: Unified price column
+                st.markdown("### 🛒 Items Purchased")
+                
+                items_data = []
+                for item in sale['items']:
+                    unit_type = item['unit_type']
+                    
+                    # Determine display based on unit type
+                    if unit_type == 'kg':
+                        quantity_display = f"{item['quantity']:.3f} kg"
+                        price_display = f"₹{item['price']:.2f}/kg"
+                    elif unit_type == 'piece':
+                        quantity_display = f"{item['quantity']:.0f} pieces"
+                        price_display = f"₹{item['price']:.2f}/piece"
+                    else:
+                        quantity_display = f"{item['quantity']:.2f} {unit_type}"
+                        price_display = f"₹{item['price']:.2f}/{unit_type}"
+                    
+                    items_data.append({
+                        'Item': item['item'],
+                        'Quantity': quantity_display,
+                        'Price': price_display,
+                        'Total': f"₹{item['total']:.2f}"
+                    })
+                
+                items_df = pd.DataFrame(items_data)
+                
+                # Apply styling to the dataframe
+                st.dataframe(
+                    items_df.style
+                    .set_properties(**{'background-color': '#f8f9fa', 'color': '#2c3e50'})
+                    .set_table_styles([
+                        {'selector': 'th', 'props': [('background', '#27ae60'), ('color', 'white'), 
+                                                    ('font-weight', 'bold'), ('text-align', 'center')]},
+                        {'selector': 'td', 'props': [('text-align', 'center')]}
+                    ]),
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                # Total
+                st.markdown("<hr style='border:none; height:2px; background: linear-gradient(90deg, #27ae60, #2ecc71); margin:20px 0;'>", unsafe_allow_html=True)
+                
+                col1, col2 = st.columns([3, 1])
+                with col2:
+                    st.markdown(f"<h3 style='text-align:right; color:#2c3e50;'>Total: ₹{sale['total']:.2f}</h3>", unsafe_allow_html=True)
+                
+                st.markdown("""
+                <hr style='border:none; height:1px; background:#e0e0e0; margin:20px 0;'>
+                <div style="text-align:center; margin-top:20px;">
+                    <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">
+                        Thank you for your purchase! 🥦
+                    </p>
+                    <p style="color:#7f8c8d; font-size:0.8em; margin:5px 0;">
+                        Quality Vegetables • Fresh Every Day
+                    </p>
+                </div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Print button with JavaScript for printing
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                if st.button("🖨️ Print Bill", use_container_width=True, type="primary", key="print_bill"):
+                    # JavaScript to trigger print
+                    js = """
+                    <script>
+                    window.print();
+                    </script>
+                    """
+                    st.components.v1.html(js, height=0)
+                    st.success("Print dialog opened!")
+            with col2:
+                if st.button("📋 New Bill", use_container_width=True, key="new_bill"):
+                    st.session_state.last_sale = None
+                    st.rerun()
+            with col3:
+                if st.button("🏠 Main Menu", use_container_width=True, key="main_menu"):
+                    st.session_state.last_sale = None
+                    st.rerun()
 
 # ========================== INVENTORY ==========================
 elif menu == "📦 Inventory":
