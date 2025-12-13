@@ -5,7 +5,7 @@ from datetime import datetime, date
 import re
 
 # ========================== PAGE SETUP ==========================
-st.set_page_config(page_title="Fresh Basket", page_icon="🥦", layout="wide")
+st.set_page_config(page_title="Fresh Basket", page_icon="🌿", layout="wide")
 
 # Custom CSS for beautiful UI
 st.markdown("""
@@ -223,8 +223,7 @@ st.markdown("""
 # Header
 st.markdown("""
 <div style="text-align:center; margin-bottom:30px;">
-    <h1>🥦 Fresh Basket</h1>
-    <div class="subtitle">Freshness You Can Feel</div>
+    <h1>🌿 Fresh Basket</h1>
 </div>
 """, unsafe_allow_html=True)
 
@@ -545,6 +544,7 @@ def process_sale_simple(cust_name, cust_phone):
     
     # Process sale
     d = st.session_state.selected_date.strftime("%Y-%m-%d")
+    current_time = datetime.now().strftime("%H:%M:%S")
     
     # Handle customer name
     if not cust_name or cust_name.strip() == "":
@@ -595,7 +595,7 @@ def process_sale_simple(cust_name, cust_phone):
         "items": sale_details,
         "total": sum(item[3] for item in st.session_state.cart),
         "phone": cust_phone,
-        "time": datetime.now().strftime("%H:%M:%S"),
+        "time": current_time,
         "bill_no": datetime.now().strftime("%Y%m%d%H%M%S")
     }
     
@@ -620,8 +620,7 @@ def show_receipt_simple():
         st.markdown("""
         <div class="receipt">
             <div style="text-align:center; margin-bottom:20px;">
-                <h2 style="color:#2c3e50;">🥦 FRESH BASKET</h2>
-                <p style="color:#27ae60; margin:5px 0; font-weight:bold;">Freshness You Can Feel</p>
+                <h2 style="color:#2c3e50;">🌿 FRESH BASKET</h2>
                 <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">Bill No: {bill_no}</p>
             </div>
             <hr style="border:none; height:2px; background: linear-gradient(90deg, #27ae60, #2ecc71); margin:15px 0;">
@@ -681,7 +680,7 @@ def show_receipt_simple():
         <hr style='border:none; height:1px; background:#e0e0e0; margin:20px 0;'>
         <div style="text-align:center; margin-top:20px;">
             <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">
-                Thank you for your purchase! 🥦
+                Thank you for your purchase! 🌿
             </p>
             <p style="color:#7f8c8d; font-size:0.8em; margin:5px 0;">
                 Quality Vegetables • Fresh Every Day
@@ -758,7 +757,6 @@ if menu == "📊 Dashboard":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>📊 Dashboard Overview</h2>
-        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -834,15 +832,13 @@ if menu == "📊 Dashboard":
     
     st.markdown("---")
     
-    # Current Stock Details
-    st.markdown("### 📋 Current Stock Details")
+    # Low Stock Items Details Section
+    st.markdown("### 📉 Low Stock Items Alert")
     
-    # Set shortage threshold
-    threshold = st.slider("Low Stock Alert Threshold (default unit)", 0.0, 50.0, 5.0, 0.5, 
-                         help="Items below this quantity will be marked as low stock")
-    st.session_state.shortage_threshold = threshold
+    # Get low stock items
+    threshold = st.session_state.shortage_threshold
     
-    # Get inventory data
+    # Get all inventory items
     inv_df = pd.read_sql("""
         SELECT vegetable, quantity, selling_price, unit_type 
         FROM inventory 
@@ -853,17 +849,81 @@ if menu == "📊 Dashboard":
     if inv_df.empty:
         st.info("No stock available. Add purchases first.")
     else:
+        # Identify low stock items
+        low_stock_items = []
+        
+        for _, row in inv_df.iterrows():
+            veg = row['vegetable']
+            qty = row['quantity']
+            unit_type = row['unit_type']
+            price = row['selling_price']
+            
+            # Different thresholds for different unit types
+            if unit_type == 'kg':
+                if qty < threshold:
+                    low_stock_items.append({
+                        'Vegetable': veg,
+                        'Current Stock': f"{qty:.2f} kg",
+                        'Unit Type': unit_type,
+                        'Price': f"₹{price:.2f}/kg",
+                        'Status': '⚠️ Low Stock'
+                    })
+            elif unit_type == 'piece':
+                if qty < 10:  # Threshold for pieces
+                    low_stock_items.append({
+                        'Vegetable': veg,
+                        'Current Stock': f"{int(qty)} pieces",
+                        'Unit Type': unit_type,
+                        'Price': f"₹{price:.2f}/piece",
+                        'Status': '⚠️ Low Stock'
+                    })
+            else:
+                if qty < threshold:
+                    low_stock_items.append({
+                        'Vegetable': veg,
+                        'Current Stock': f"{qty:.2f} {unit_type}",
+                        'Unit Type': unit_type,
+                        'Price': f"₹{price:.2f}/{unit_type}",
+                        'Status': '⚠️ Low Stock'
+                    })
+        
+        if low_stock_items:
+            low_stock_df = pd.DataFrame(low_stock_items)
+            st.dataframe(
+                low_stock_df,
+                use_container_width=True,
+                height=300
+            )
+            
+            # Display warning message
+            st.warning(f"⚠️ **Alert:** {len(low_stock_items)} items are running low on stock. Consider purchasing more stock soon.")
+        else:
+            st.success("✅ All items have sufficient stock levels!")
+    
+    st.markdown("---")
+    
+    # Current Stock Details
+    st.markdown("### 📋 Current Stock Details")
+    
+    # Set shortage threshold
+    threshold = st.slider("Low Stock Alert Threshold (default unit)", 0.0, 50.0, 5.0, 0.5, 
+                         help="Items below this quantity will be marked as low stock")
+    st.session_state.shortage_threshold = threshold
+    
+    if inv_df.empty:
+        st.info("No stock available. Add purchases first.")
+    else:
         # Create a styled dataframe
         inv_display = inv_df.copy()
         inv_display = inv_display.rename(columns={
-            "vegetable": "🥬 Vegetable",
+            "vegetable": "🌿 Vegetable",
             "quantity": "⚖️ Stock",
             "selling_price": "💰 Price",
             "unit_type": "📏 Unit"
         })
         
         # Display the table
-        display_df = inv_display[['🥬 Vegetable', '⚖️ Stock', '💰 Price', '📏 Unit']].copy()
+        display_df = inv_display[['🌿 Vegetable', '⚖️ Stock', '💰 Price', '📏 Unit']].copy()
         
         # Format price based on unit type
         def format_price(row):
@@ -902,7 +962,6 @@ elif menu == "🛒 Add Purchase":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>🛒 Add Purchase</h2>
-        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -928,7 +987,7 @@ elif menu == "🛒 Add Purchase":
             edited_df = st.data_editor(
                 purchase_df[['vegetable', 'current_stock', 'unit_type', 'New Purchase', 'Amount (₹)', 'Supplier']],
                 column_config={
-                    "vegetable": st.column_config.TextColumn("🥬 Vegetable", disabled=True),
+                    "vegetable": st.column_config.TextColumn("🌿 Vegetable", disabled=True),
                     "current_stock": st.column_config.NumberColumn("📦 Current Stock", disabled=True, format="%.2f"),
                     "unit_type": st.column_config.TextColumn("📏 Unit", disabled=True),
                     "New Purchase": st.column_config.NumberColumn("🛒 Purchase Qty", min_value=0.0, step=0.5, format="%.2f"),
@@ -1088,7 +1147,7 @@ elif menu == "🛒 Add Purchase":
         with col2:
             st.metric("⚖️ Total Quantity", f"{total_qty:.1f}")
         with col3:
-            st.metric("🥬 Vegetables Bought", veg_count)
+            st.metric("🌿 Vegetables Bought", veg_count)
         
         # Display table
         st.dataframe(
@@ -1104,7 +1163,6 @@ elif menu == "🏷 Set Prices":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>🏷 Set Selling Prices</h2>
-        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1141,7 +1199,7 @@ elif menu == "🏷 Set Prices":
         edited_df = st.data_editor(
             price_df,
             column_config={
-                "vegetable": st.column_config.TextColumn("🥬 Vegetable", disabled=True),
+                "vegetable": st.column_config.TextColumn("🌿 Vegetable", disabled=True),
                 "unit_type": st.column_config.TextColumn("📏 Unit", disabled=True),
                 "selling_price": st.column_config.NumberColumn(
                     "💰 Price (₹)",
@@ -1218,7 +1276,6 @@ elif menu == "💵 Quick Sell":
     st.markdown("""
     <div style="text-align:center; margin-bottom:20px;">
         <h2>💵 Quick Selling</h2>
-        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1265,7 +1322,7 @@ elif menu == "💵 Quick Sell":
         col1, col2 = st.columns([3, 2])
         
         with col1:
-            st.markdown("### 🥬 Select Vegetables")
+            st.markdown("### 🌿 Select Vegetables")
             
             # Customer info - Simple and clean
             with st.expander("👤 Customer Information", expanded=True):
@@ -1305,21 +1362,23 @@ elif menu == "💵 Quick Sell":
                             # KG Quantity input
                             if selected_kg_display:
                                 max_kg = max(0.1, min(selected_kg['stock'], 50.0)) if selected_kg['stock'] > 0 else 0.1
-                                qty_col1, qty_col2 = st.columns(2)
-                                with qty_col1:
-                                    qty_kg = st.number_input("Kilograms", min_value=0.0, max_value=float(max_kg), 
-                                                            step=0.5, value=0.5, key="qty_kg_input")
-                                with qty_col2:
-                                    max_g = min(999, int((max_kg - qty_kg) * 1000)) if max_kg > qty_kg else 0
-                                    qty_g = st.number_input("Grams", min_value=0, max_value=int(max_g), step=100, 
-                                                           value=0, key="qty_g_input")
                                 
-                                total_qty = qty_kg + (qty_g / 1000)
-                                total_price = total_qty * selected_kg['price']
+                                # Fix the max_value issue
+                                qty_kg = st.number_input("Kilograms", min_value=0.0, step=0.5, value=0.5, key="qty_kg_input")
+                                
+                                # Calculate remaining kg after subtracting what's already in cart
+                                current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == selected_kg['name'])
+                                remaining_kg = max(0, selected_kg['stock'] - current_in_cart)
+                                
+                                # Validate that qty_kg doesn't exceed remaining stock
+                                if qty_kg > remaining_kg:
+                                    st.warning(f"Available stock: {remaining_kg:.2f} kg")
+                                    qty_kg = min(qty_kg, remaining_kg)
+                                
+                                total_price = qty_kg * selected_kg['price']
                                 
                                 st.info(f"Total: ₹{total_price:.2f}")
                             else:
-                                total_qty = 0
                                 total_price = 0
                         
                         with col_c:
@@ -1328,9 +1387,9 @@ elif menu == "💵 Quick Sell":
                             # Submit button
                             submitted = st.form_submit_button("➕ Add to Bill", use_container_width=True, type="primary")
                             if submitted:
-                                if selected_kg_display and total_qty > 0:
-                                    if add_to_cart_simple(selected_kg['name'], total_qty):
-                                        st.success(f"Added {total_qty:.2f} kg of {selected_kg['name']}")
+                                if selected_kg_display and qty_kg > 0:
+                                    if add_to_cart_simple(selected_kg['name'], qty_kg):
+                                        st.success(f"Added {qty_kg:.2f} kg of {selected_kg['name']}")
                 else:
                     st.info("No KG vegetables available")
             
@@ -1358,8 +1417,17 @@ elif menu == "💵 Quick Sell":
                             # Piece Quantity input
                             if selected_piece_display:
                                 max_pieces = min(int(selected_piece['stock']), 100) if selected_piece['stock'] > 0 else 1
-                                total_qty = st.number_input("Pieces", min_value=1, max_value=int(max_pieces), 
-                                                           step=1, value=1, key="qty_pieces_input")
+                                
+                                # Calculate remaining pieces after subtracting what's already in cart
+                                current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == selected_piece['name'])
+                                remaining_pieces = max(0, int(selected_piece['stock']) - current_in_cart)
+                                
+                                total_qty = st.number_input("Pieces", min_value=1, step=1, value=1, key="qty_pieces_input")
+                                
+                                # Validate that total_qty doesn't exceed remaining stock
+                                if total_qty > remaining_pieces:
+                                    st.warning(f"Available stock: {remaining_pieces} pieces")
+                                    total_qty = min(total_qty, remaining_pieces)
                                 
                                 total_price = total_qty * selected_piece['price']
                                 
@@ -1408,10 +1476,28 @@ elif menu == "💵 Quick Sell":
                         stock, _, _, unit_type = get_stock(manual_veg)
                         if unit_type == 'kg':
                             man_qty_kg = st.number_input("Kg", min_value=0.0, step=0.5, value=0.5, key="man_kg_input")
-                            man_qty_g = st.number_input("Grams", min_value=0, step=100, value=0, key="man_g_input")
-                            man_qty = man_qty_kg + (man_qty_g / 1000)
+                            
+                            # Calculate remaining kg after subtracting what's already in cart
+                            current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == manual_veg)
+                            remaining_kg = max(0, stock - current_in_cart)
+                            
+                            # Validate that man_qty_kg doesn't exceed remaining stock
+                            if man_qty_kg > remaining_kg:
+                                st.warning(f"Available stock: {remaining_kg:.2f} kg")
+                                man_qty_kg = min(man_qty_kg, remaining_kg)
+                            
+                            man_qty = man_qty_kg
                         elif unit_type == 'piece':
                             man_qty = st.number_input("Pieces", min_value=1, step=1, value=1, key="man_pieces_input")
+                            
+                            # Calculate remaining pieces after subtracting what's already in cart
+                            current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == manual_veg)
+                            remaining_pieces = max(0, stock - current_in_cart)
+                            
+                            # Validate that man_qty doesn't exceed remaining stock
+                            if man_qty > remaining_pieces:
+                                st.warning(f"Available stock: {remaining_pieces} pieces")
+                                man_qty = min(man_qty, remaining_pieces)
                         else:
                             man_qty = st.number_input(f"Quantity ({unit_type})", min_value=0.1, step=1.0, value=1.0, key=f"man_{unit_type}_input")
                     else:
@@ -1543,8 +1629,7 @@ elif menu == "💵 Quick Sell":
                 st.markdown(f"""
                 <div class="receipt">
                     <div style="text-align:center; margin-bottom:20px;">
-                        <h2 style="color:#2c3e50;">🥦 FRESH BASKET</h2>
-                        <p style="color:#27ae60; margin:5px 0; font-weight:bold;">Freshness You Can Feel</p>
+                        <h2 style="color:#2c3e50;">🌿 FRESH BASKET</h2>
                         <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">Bill No: {sale['bill_no']}</p>
                     </div>
                     <hr style="border:none; height:2px; background: linear-gradient(90deg, #27ae60, #2ecc71); margin:15px 0;">
@@ -1612,7 +1697,7 @@ elif menu == "💵 Quick Sell":
                 <hr style='border:none; height:1px; background:#e0e0e0; margin:20px 0;'>
                 <div style="text-align:center; margin-top:20px;">
                     <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">
-                        Thank you for your purchase! 🥦
+                        Thank you for your purchase! 🌿
                     </p>
                     <p style="color:#7f8c8d; font-size:0.8em; margin:5px 0;">
                         Quality Vegetables • Fresh Every Day
@@ -1647,7 +1732,6 @@ elif menu == "📦 Inventory":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>📦 Inventory Management</h2>
-        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1719,7 +1803,7 @@ elif menu == "📦 Inventory":
         edited_inv = st.data_editor(
             inv_df,
             column_config={
-                "vegetable": st.column_config.TextColumn("🥬 Vegetable", disabled=True),
+                "vegetable": st.column_config.TextColumn("🌿 Vegetable", disabled=True),
                 "unit_type": st.column_config.TextColumn("📏 Unit", disabled=True),
                 "quantity": st.column_config.NumberColumn(
                     "⚖️ Quantity",
@@ -1764,7 +1848,6 @@ elif menu == "📋 Purchases":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>📋 Purchase Records</h2>
-        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1796,7 +1879,7 @@ elif menu == "📋 Purchases":
         with col2:
             st.metric("⚖️ Total Quantity", f"{total_qty:.1f}")
         with col3:
-            st.metric("🥬 Vegetables Bought", veg_count)
+            st.metric("🌿 Vegetables Bought", veg_count)
         
         # Display table
         st.dataframe(
@@ -1812,7 +1895,6 @@ elif menu == "🧾 Sales":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>🧾 Sales Records</h2>
-        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1873,7 +1955,6 @@ elif menu == "💸 Expenses":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>💸 Expense Management</h2>
-        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1920,15 +2001,15 @@ elif menu == "👥 Customers":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>👥 Customer Management</h2>
-        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
-    # Get all sales to count customers properly
-    sales_df = pd.read_sql("SELECT DISTINCT customer FROM sales", conn)
+    # Get today's sales to count customers properly
+    sales_df = pd.read_sql("SELECT DISTINCT customer FROM sales WHERE date=?", 
+                          conn, params=(selected_date.strftime("%Y-%m-%d"),))
     
     if sales_df.empty:
-        st.info("No customers yet")
+        st.info("No customers for today")
     else:
         # Count customers properly
         total_customers = len(sales_df)
@@ -1960,8 +2041,23 @@ elif menu == "👥 Customers":
                     unique_base_customers.add(customer)
                 regular_count += 1
         
-        # Get customer details from customers table
-        customers_df = pd.read_sql("SELECT * FROM customers ORDER BY points DESC", conn)
+        # Get customer details from customers table (only those who made purchases today)
+        if not sales_df.empty:
+            customer_names = []
+            for customer in sales_df['customer'].unique():
+                if '(' in customer:
+                    phone = customer.split('(')[1].replace(')', '').strip()
+                    customer_names.append(phone)
+            
+            if customer_names:
+                placeholders = ','.join(['?'] * len(customer_names))
+                customers_df = pd.read_sql(f"SELECT * FROM customers WHERE phone IN ({placeholders}) ORDER BY points DESC", 
+                                         conn, params=customer_names)
+            else:
+                customers_df = pd.DataFrame(columns=['phone', 'name', 'points'])
+        else:
+            customers_df = pd.DataFrame(columns=['phone', 'name', 'points'])
+        
         total_points = customers_df['points'].sum() if not customers_df.empty else 0
         
         # Display metrics - FIXED
@@ -1975,15 +2071,15 @@ elif menu == "👥 Customers":
         with col4:
             st.metric("Total Points", total_points)
         
-        # Show all customers from sales - IMPROVED
-        st.markdown("### All Customer Bills")
+        # Show today's customers from sales - IMPROVED
+        st.markdown(f"### Today's Customer Bills ({selected_date.strftime('%d %B %Y')})")
         
         # Create a better display of customers
         customer_summary = []
         for customer in sales_df['customer'].unique():
-            # Get total purchases for this customer
-            customer_sales = pd.read_sql("SELECT SUM(total) as total_spent FROM sales WHERE customer=?", 
-                                        conn, params=(customer,)).iloc[0]['total_spent'] or 0
+            # Get total purchases for this customer TODAY
+            customer_sales = pd.read_sql("SELECT SUM(total) as total_spent FROM sales WHERE customer=? AND date=?", 
+                                        conn, params=(customer, selected_date.strftime("%Y-%m-%d"))).iloc[0]['total_spent'] or 0
             
             # Check if it's a guest
             is_guest = isinstance(customer, str) and customer.startswith('Guest')
@@ -1998,15 +2094,15 @@ elif menu == "👥 Customers":
                 "Bill Customer": customer,
                 "Display Name": display_name,
                 "Type": "Guest" if is_guest else "Regular",
-                "Total Spent": f"₹{customer_sales:.2f}"
+                "Total Spent Today": f"₹{customer_sales:.2f}"
             })
         
         customer_summary_df = pd.DataFrame(customer_summary)
         st.dataframe(customer_summary_df, use_container_width=True)
         
-        # Show loyalty customers
+        # Show loyalty customers who purchased today
         if not customers_df.empty:
-            st.markdown("### 🏆 Loyalty Customers")
+            st.markdown("### 🏆 Loyalty Customers (Purchased Today)")
             for idx, row in customers_df.head(10).iterrows():
                 st.markdown(f"""
                 <div class="card" style="padding:15px; margin-bottom:10px;">
@@ -2030,56 +2126,96 @@ elif menu == "🗑 Waste":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>🗑 Waste Management</h2>
-        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
     # Get all vegetables for selection
     all_veg = pd.read_sql("SELECT vegetable, unit_type FROM inventory ORDER BY vegetable", conn)
     
-    # Record waste
-    with st.form("waste_form"):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            veg = st.selectbox("Vegetable", all_veg['vegetable'].tolist() if not all_veg.empty else [], key="waste_veg")
-            if veg:
-                unit_type = all_veg[all_veg['vegetable'] == veg].iloc[0]['unit_type']
-                st.info(f"Unit: {unit_type}")
-                
-                if unit_type == 'kg':
-                    qty = st.number_input("Quantity (kg)", min_value=0.0, step=0.1, value=0.0, key="waste_qty")
-                elif unit_type == 'piece':
-                    qty = st.number_input("Quantity (pieces)", min_value=0, step=1, value=0, key="waste_pieces")
-                else:
-                    qty = st.number_input(f"Quantity ({unit_type})", min_value=0.0, step=0.5, value=0.0, key=f"waste_{unit_type}")
-            else:
-                qty = 0
-        with col2:
-            reason = st.selectbox("Reason", 
-                                 ["Spoiled", "Damaged", "Expired", "Overstock", "Other"],
-                                 key="waste_reason")
-            description = st.text_input("Details", key="waste_desc")
+    # Tab interface for different waste types
+    tab1, tab2 = st.tabs(["⚖️ KG Vegetables Waste", "🧩 Piece Vegetables Waste"])
+    
+    with tab1:
+        st.markdown("### ⚖️ KG Vegetables Waste")
+        # Filter only kg vegetables
+        kg_vegetables = all_veg[all_veg['unit_type'] == 'kg']
         
-        with col3:
-            # Submit button
-            submit_button = st.form_submit_button("Record Waste", use_container_width=True, type="primary")
-            if submit_button:
-                if qty <= 0:
-                    st.error("Enter quantity > 0")
+        # Record waste for kg vegetables
+        with st.form("kg_waste_form"):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                veg = st.selectbox("Select KG Vegetable", kg_vegetables['vegetable'].tolist() if not kg_vegetables.empty else [], key="kg_waste_veg")
+                if veg:
+                    st.info(f"Unit: kg")
+                    qty = st.number_input("Quantity (kg)", min_value=0.0, step=0.1, value=0.0, key="kg_waste_qty")
                 else:
-                    stock, _, _, _ = get_stock(veg)
-                    if qty > stock:
-                        st.error(f"Not enough stock! Available: {stock:.2f}")
+                    qty = 0
+            with col2:
+                reason = st.selectbox("Reason", 
+                                     ["Spoiled", "Damaged", "Expired", "Overstock", "Other"],
+                                     key="kg_waste_reason")
+                description = st.text_input("Details", key="kg_waste_desc")
+            
+            with col3:
+                # Submit button
+                submit_button = st.form_submit_button("Record KG Waste", use_container_width=True, type="primary")
+                if submit_button:
+                    if qty <= 0:
+                        st.error("Enter quantity > 0")
                     else:
-                        d = selected_date.strftime("%Y-%m-%d")
-                        c.execute("INSERT INTO waste VALUES (?,?,?,?)", 
-                                 (d, veg, qty, f"{reason}: {description}"))
-                        c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
-                        conn.commit()
-                        unit_display = unit_type if unit_type != 'kg' else 'kg'
-                        st.success(f"✅ Recorded waste: {qty} {unit_display} of {veg}")
+                        stock, _, _, _ = get_stock(veg)
+                        if qty > stock:
+                            st.error(f"Not enough stock! Available: {stock:.2f} kg")
+                        else:
+                            d = selected_date.strftime("%Y-%m-%d")
+                            c.execute("INSERT INTO waste VALUES (?,?,?,?)", 
+                                     (d, veg, qty, f"{reason}: {description}"))
+                            c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
+                            conn.commit()
+                            st.success(f"✅ Recorded waste: {qty} kg of {veg}")
+    
+    with tab2:
+        st.markdown("### 🧩 Piece Vegetables Waste")
+        # Filter only piece vegetables
+        piece_vegetables = all_veg[all_veg['unit_type'] == 'piece']
+        
+        # Record waste for piece vegetables
+        with st.form("piece_waste_form"):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                veg = st.selectbox("Select Piece Vegetable", piece_vegetables['vegetable'].tolist() if not piece_vegetables.empty else [], key="piece_waste_veg")
+                if veg:
+                    st.info(f"Unit: pieces")
+                    qty = st.number_input("Quantity (pieces)", min_value=0, step=1, value=0, key="piece_waste_qty")
+                else:
+                    qty = 0
+            with col2:
+                reason = st.selectbox("Reason", 
+                                     ["Spoiled", "Damaged", "Expired", "Overstock", "Other"],
+                                     key="piece_waste_reason")
+                description = st.text_input("Details", key="piece_waste_desc")
+            
+            with col3:
+                # Submit button
+                submit_button = st.form_submit_button("Record Piece Waste", use_container_width=True, type="primary")
+                if submit_button:
+                    if qty <= 0:
+                        st.error("Enter quantity > 0")
+                    else:
+                        stock, _, _, _ = get_stock(veg)
+                        if qty > stock:
+                            st.error(f"Not enough stock! Available: {stock:.0f} pieces")
+                        else:
+                            d = selected_date.strftime("%Y-%m-%d")
+                            c.execute("INSERT INTO waste VALUES (?,?,?,?)", 
+                                     (d, veg, qty, f"{reason}: {description}"))
+                            c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
+                            conn.commit()
+                            st.success(f"✅ Recorded waste: {qty} pieces of {veg}")
     
     # Today's waste
+    st.markdown("---")
+    st.markdown(f"### Today's Waste ({selected_date.strftime('%d %B %Y')})")
     waste_df = pd.read_sql("SELECT * FROM waste WHERE date=?", 
                           conn, params=(selected_date.strftime("%Y-%m-%d"),))
     
@@ -2094,48 +2230,204 @@ elif menu == "🗑 Waste":
 elif menu == "⬇ Download":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
-        <h2>⬇ Download Records</h2>
-        <p class="subtitle">Freshness You Can Feel</p>
+        <h2>⬇ Download Reports</h2>
     </div>
     """, unsafe_allow_html=True)
     
-    # Download options
-    st.markdown(f"### 📅 Data for {selected_date.strftime('%d %B %Y')}")
+    # Tab interface for different report types
+    tab1, tab2, tab3 = st.tabs(["📅 Daily Reports", "📊 Monthly Reports", "📋 Data Export"])
     
-    tables = [
-        ("inventory", "📦 Inventory", "Current stock levels"),
-        ("purchases", "🛒 Purchases", "Purchase records"),
-        ("sales", "💰 Sales", "Sales transactions"),
-        ("waste", "🗑 Waste", "Waste records"),
-        ("customers", "👥 Customers", "Customer database"),
-        ("expenses", "💸 Expenses", "Expense records")
-    ]
+    with tab1:
+        st.markdown(f"### 📅 Daily Report - {selected_date.strftime('%d %B %Y')}")
+        
+        # Get daily data
+        d = selected_date.strftime("%Y-%m-%d")
+        
+        # Sales data
+        daily_sales = pd.read_sql("SELECT COALESCE(SUM(total),0) as total_sales FROM sales WHERE date=?", 
+                                 conn, params=(d,)).iloc[0]['total_sales']
+        
+        # Purchase data
+        daily_purchases = pd.read_sql("SELECT COALESCE(SUM(amount),0) as total_purchases FROM purchases WHERE date=?", 
+                                     conn, params=(d,)).iloc[0]['total_purchases']
+        
+        # Expense data
+        daily_expenses = pd.read_sql("SELECT COALESCE(SUM(amount),0) as total_expenses FROM expenses WHERE date=?", 
+                                    conn, params=(d,)).iloc[0]['total_expenses']
+        
+        # Waste data
+        daily_waste = pd.read_sql("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE date=?", 
+                                 conn, params=(d,)).iloc[0]['total_waste']
+        
+        # Calculate profit
+        daily_profit = daily_sales - daily_purchases - daily_expenses
+        
+        # Display daily summary
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("💰 Sales", f"₹{daily_sales:.2f}")
+        with col2:
+            st.metric("🛒 Purchases", f"₹{daily_purchases:.2f}")
+        with col3:
+            st.metric("💸 Expenses", f"₹{daily_expenses:.2f}")
+        with col4:
+            profit_color = "green" if daily_profit >= 0 else "red"
+            st.metric("📈 Profit/Loss", f"₹{daily_profit:.2f}", delta_color="off")
+        
+        # Detailed daily data
+        st.markdown("#### Detailed Daily Data")
+        
+        tables = [
+            ("purchases", "🛒 Purchases", "Daily purchase records"),
+            ("sales", "💰 Sales", "Daily sales transactions"),
+            ("waste", "🗑 Waste", "Daily waste records"),
+            ("expenses", "💸 Expenses", "Daily expense records")
+        ]
+        
+        for table_name, display_name, description in tables:
+            with st.expander(f"{display_name} - {description}"):
+                df = pd.read_sql(f"SELECT * FROM {table_name} WHERE date=?", 
+                                conn, params=(d,))
+                
+                if df.empty:
+                    st.info(f"No {display_name.lower()} data for today")
+                else:
+                    st.dataframe(df, use_container_width=True)
+                    csv = df.to_csv(index=False).encode()
+                    st.download_button(
+                        f"Download {display_name}",
+                        data=csv,
+                        file_name=f"{table_name}_{d}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
     
-    for table_name, display_name, description in tables:
-        with st.expander(f"{display_name} - {description}"):
-            df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
-            if table_name in ["purchases", "sales", "waste", "expenses"]:
-                df = df[df['date'] == selected_date.strftime("%Y-%m-%d")]
+    with tab2:
+        st.markdown("### 📊 Monthly Reports")
+        
+        # Get current month and year
+        current_month = selected_date.strftime("%Y-%m")
+        
+        # Month selection
+        months = pd.read_sql("SELECT DISTINCT strftime('%Y-%m', date) as month FROM sales UNION SELECT DISTINCT strftime('%Y-%m', date) as month FROM purchases ORDER BY month DESC", conn)
+        
+        if months.empty:
+            st.info("No monthly data available")
+        else:
+            selected_month = st.selectbox("Select Month", months['month'].tolist(), index=0)
             
-            if df.empty:
-                st.info(f"No {display_name.lower()} data")
-            else:
-                st.dataframe(df, use_container_width=True)
-                csv = df.to_csv(index=False).encode()
-                st.download_button(
-                    f"Download {display_name}",
-                    data=csv,
-                    file_name=f"{table_name}_{selected_date.strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
+            # Get monthly data
+            # Sales data
+            monthly_sales = pd.read_sql("SELECT COALESCE(SUM(total),0) as total_sales FROM sales WHERE strftime('%Y-%m', date)=?", 
+                                       conn, params=(selected_month,)).iloc[0]['total_sales']
+            
+            # Purchase data
+            monthly_purchases = pd.read_sql("SELECT COALESCE(SUM(amount),0) as total_purchases FROM purchases WHERE strftime('%Y-%m', date)=?", 
+                                          conn, params=(selected_month,)).iloc[0]['total_purchases']
+            
+            # Expense data
+            monthly_expenses = pd.read_sql("SELECT COALESCE(SUM(amount),0) as total_expenses FROM expenses WHERE strftime('%Y-%m', date)=?", 
+                                         conn, params=(selected_month,)).iloc[0]['total_expenses']
+            
+            # Waste data
+            monthly_waste = pd.read_sql("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE strftime('%Y-%m', date)=?", 
+                                       conn, params=(selected_month,)).iloc[0]['total_waste']
+            
+            # Calculate monthly profit
+            monthly_profit = monthly_sales - monthly_purchases - monthly_expenses
+            
+            # Display monthly summary
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("💰 Monthly Sales", f"₹{monthly_sales:.2f}")
+            with col2:
+                st.metric("🛒 Monthly Purchases", f"₹{monthly_purchases:.2f}")
+            with col3:
+                st.metric("💸 Monthly Expenses", f"₹{monthly_expenses:.2f}")
+            with col4:
+                profit_color = "green" if monthly_profit >= 0 else "red"
+                st.metric("📈 Monthly Profit/Loss", f"₹{monthly_profit:.2f}", delta_color="off")
+            
+            # Daily breakdown for the month
+            st.markdown("#### Daily Breakdown for the Month")
+            
+            # Get daily sales for the month
+            daily_sales_month = pd.read_sql("""
+                SELECT date, SUM(total) as daily_sales 
+                FROM sales 
+                WHERE strftime('%Y-%m', date)=? 
+                GROUP BY date 
+                ORDER BY date
+            """, conn, params=(selected_month,))
+            
+            if not daily_sales_month.empty:
+                # Display as chart
+                st.line_chart(daily_sales_month.set_index('date')['daily_sales'])
+                
+                # Display as table
+                st.dataframe(
+                    daily_sales_month.style.format({
+                        "daily_sales": "₹{:.2f}"
+                    }),
                     use_container_width=True
                 )
+            
+            # Download monthly report
+            st.markdown("#### Download Monthly Report")
+            
+            # Create comprehensive monthly report
+            monthly_data = {
+                'Metric': ['Total Sales', 'Total Purchases', 'Total Expenses', 'Total Waste', 'Net Profit/Loss'],
+                'Amount': [f"₹{monthly_sales:.2f}", f"₹{monthly_purchases:.2f}", 
+                          f"₹{monthly_expenses:.2f}", f"{monthly_waste:.2f}", f"₹{monthly_profit:.2f}"]
+            }
+            
+            monthly_report_df = pd.DataFrame(monthly_data)
+            
+            csv = monthly_report_df.to_csv(index=False).encode()
+            st.download_button(
+                "📥 Download Monthly Summary",
+                data=csv,
+                file_name=f"monthly_report_{selected_month}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+    
+    with tab3:
+        st.markdown("### 📋 Data Export")
+        st.markdown("Export complete database tables")
+        
+        tables = [
+            ("inventory", "📦 Inventory", "Current stock levels"),
+            ("customers", "👥 Customers", "Customer database"),
+            ("purchases", "🛒 Purchases", "All purchase records"),
+            ("sales", "💰 Sales", "All sales transactions"),
+            ("waste", "🗑 Waste", "All waste records"),
+            ("expenses", "💸 Expenses", "All expense records")
+        ]
+        
+        for table_name, display_name, description in tables:
+            with st.expander(f"{display_name} - {description}"):
+                df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+                
+                if df.empty:
+                    st.info(f"No {display_name.lower()} data")
+                else:
+                    st.dataframe(df, use_container_width=True)
+                    csv = df.to_csv(index=False).encode()
+                    st.download_button(
+                        f"Download {display_name}",
+                        data=csv,
+                        file_name=f"{table_name}_full_export.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
 
 # ========================== FINANCIALS ==========================
 elif menu == "💰 Financials":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>💰 Financial Summary</h2>
-        <p class="subtitle">Freshness You Can Feel</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -2260,7 +2552,7 @@ elif menu == "💰 Financials":
 st.markdown("---")
 st.markdown("""
 <div class="footer">
-    <p>🥦 Fresh Basket — Freshness You Can Feel | Quality Vegetables Daily ✅</p>
+    <p>🌿 Fresh Basket — Quality Vegetables Daily ✅</p>
     <p style="font-size:0.8em; color:#95a5a6;">© 2024 Fresh Basket. All features working perfectly.</p>
 </div>
 """, unsafe_allow_html=True)
