@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 from datetime import datetime, date
+import re
 
 # ========================== PAGE SETUP ==========================
 st.set_page_config(page_title="Fresh Basket", page_icon="🥦", layout="wide")
@@ -444,7 +445,22 @@ if "selected_date" not in st.session_state:
 if "last_sale" not in st.session_state:
     st.session_state.last_sale = None
 if "guest_counter" not in st.session_state:
-    st.session_state.guest_counter = 1
+    # Try to get the maximum guest number from existing sales to persist across sessions
+    try:
+        c.execute("SELECT customer FROM sales WHERE customer LIKE 'Guest%'")
+        guests = c.fetchall()
+        max_guest = 0
+        for guest in guests:
+            # Extract number from "GuestX" or "GuestX (phone)"
+            guest_str = guest[0]
+            match = re.search(r'Guest(\d+)', guest_str)
+            if match:
+                guest_num = int(match.group(1))
+                if guest_num > max_guest:
+                    max_guest = guest_num
+        st.session_state.guest_counter = max_guest + 1
+    except:
+        st.session_state.guest_counter = 1
 
 # ========================== HELPER FUNCTIONS FOR SELL PAGE ==========================
 def add_to_cart_simple(veg, qty):
@@ -533,9 +549,14 @@ def process_sale_simple(cust_name, cust_phone):
     # Handle customer name
     if not cust_name or cust_name.strip() == "":
         cust_name = f"Guest{st.session_state.guest_counter}"
+        # Increment counter for next guest
         st.session_state.guest_counter += 1
     
-    cust = f"{cust_name} ({cust_phone})" if cust_phone else cust_name
+    # Create customer string
+    if cust_phone and cust_phone.strip():
+        cust = f"{cust_name} ({cust_phone})"
+    else:
+        cust = cust_name
     
     sale_details = []
     for item in st.session_state.cart:
@@ -768,9 +789,28 @@ if menu == "📊 Dashboard":
         """, unsafe_allow_html=True)
     
     with col3:
-        # Today's Customers
-        today_customers = pd.read_sql("SELECT COUNT(DISTINCT customer) as count FROM sales WHERE date=?", 
-                                     conn, params=(selected_date.strftime("%Y-%m-%d"),)).iloc[0]['count']
+        # Today's Customers - FIXED
+        today_customers_df = pd.read_sql("SELECT DISTINCT customer FROM sales WHERE date=?", 
+                                       conn, params=(selected_date.strftime("%Y-%m-%d"),))
+        
+        # Count unique customers (not guest instances)
+        unique_customers = set()
+        for customer in today_customers_df['customer'].unique():
+            if isinstance(customer, str):
+                if customer.startswith('Guest'):
+                    # Extract just the guest number
+                    match = re.match(r'Guest(\d+)(?:\s*\(.*\))?', customer)
+                    if match:
+                        unique_customers.add(f'Guest{match.group(1)}')
+                else:
+                    # Regular customer - extract name before phone
+                    if '(' in customer:
+                        unique_customers.add(customer.split('(')[0].strip())
+                    else:
+                        unique_customers.add(customer)
+        
+        today_customers = len(unique_customers)
+        
         st.markdown(f"""
         <div class="metric-card">
             <h3>👥</h3>
@@ -1667,7 +1707,6 @@ elif menu == "📦 Inventory":
         
         col1, col2, col3 = st.columns(3)
         with col1:
-            # FIXED: Removed key parameter from st.metric
             st.metric("Total Items", len(inv_df))
         with col2:
             st.metric("In Stock", in_stock)
@@ -1894,29 +1933,50 @@ elif menu == "👥 Customers":
         # Count customers properly
         total_customers = len(sales_df)
         
-        # Count named customers (not starting with Guest)
-        named_customers = len(sales_df[~sales_df['customer'].str.startswith('Guest', na=False)])
+        # Count unique customers by extracting base names
+        unique_base_customers = set()
+        guest_count = 0
+        regular_count = 0
         
-        # Count guest customers (starting with Guest)
-        guest_customers = len(sales_df[sales_df['customer'].str.startswith('Guest', na=False)])
+        for customer in sales_df['customer'].unique():
+            # Check if it's a guest (starts with Guest followed by number)
+            if isinstance(customer, str) and customer.startswith('Guest'):
+                # Extract just the guest number part
+                match = re.match(r'Guest(\d+)(?:\s*\(.*\))?', customer)
+                if match:
+                    guest_num = match.group(1)
+                    unique_base_customers.add(f'Guest{guest_num}')
+                    guest_count += 1
+                else:
+                    # If pattern doesn't match, treat as regular customer
+                    unique_base_customers.add(customer.split('(')[0].strip())
+                    regular_count += 1
+            else:
+                # Regular customer - extract name before phone if present
+                if '(' in customer:
+                    name_part = customer.split('(')[0].strip()
+                    unique_base_customers.add(name_part)
+                else:
+                    unique_base_customers.add(customer)
+                regular_count += 1
         
         # Get customer details from customers table
         customers_df = pd.read_sql("SELECT * FROM customers ORDER BY points DESC", conn)
         total_points = customers_df['points'].sum() if not customers_df.empty else 0
         
-        # Display metrics
+        # Display metrics - FIXED
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("Total Customers", total_customers)
+            st.metric("Total Bills", total_customers)
         with col2:
-            st.metric("Named Customers", named_customers)
+            st.metric("Unique Customers", len(unique_base_customers))
         with col3:
-            st.metric("Guest Customers", guest_customers)
+            st.metric("Guest Bills", guest_count)
         with col4:
             st.metric("Total Points", total_points)
         
-        # Show all customers from sales
-        st.markdown("### All Customers (from sales)")
+        # Show all customers from sales - IMPROVED
+        st.markdown("### All Customer Bills")
         
         # Create a better display of customers
         customer_summary = []
@@ -1926,10 +1986,17 @@ elif menu == "👥 Customers":
                                         conn, params=(customer,)).iloc[0]['total_spent'] or 0
             
             # Check if it's a guest
-            is_guest = customer.startswith('Guest')
+            is_guest = isinstance(customer, str) and customer.startswith('Guest')
+            
+            # Clean up display name
+            if '(' in customer:
+                display_name = customer.split('(')[0].strip()
+            else:
+                display_name = customer
             
             customer_summary.append({
-                "Customer": customer,
+                "Bill Customer": customer,
+                "Display Name": display_name,
                 "Type": "Guest" if is_guest else "Regular",
                 "Total Spent": f"₹{customer_sales:.2f}"
             })
@@ -2171,10 +2238,19 @@ elif menu == "💰 Financials":
             else:
                 return f"{row['quantity_sold']:.2f} {unit_type}"
         
+        # Clean customer display names
+        def clean_customer_name(customer):
+            if not isinstance(customer, str):
+                return str(customer)
+            if '(' in customer:
+                return customer.split('(')[0].strip()
+            return customer
+        
         display_sales['Quantity'] = display_sales.apply(format_recent_sales, axis=1)
+        display_sales['Customer'] = display_sales['customer'].apply(clean_customer_name)
         
         st.dataframe(
-            display_sales[['vegetable', 'Quantity', 'total', 'customer']].style.format({
+            display_sales[['vegetable', 'Quantity', 'total', 'Customer']].style.format({
                 "total": "₹{:.2f}"
             }),
             use_container_width=True
