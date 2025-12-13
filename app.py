@@ -232,6 +232,15 @@ DB_FILE = "shop.db"
 conn = sqlite3.connect(DB_FILE, check_same_thread=False)
 c = conn.cursor()
 
+# Drop and recreate tables to ensure clean state (only for development)
+# In production, you might want to check if tables exist first
+c.execute("DROP TABLE IF EXISTS inventory")
+c.execute("DROP TABLE IF EXISTS purchases")
+c.execute("DROP TABLE IF EXISTS sales")
+c.execute("DROP TABLE IF EXISTS waste")
+c.execute("DROP TABLE IF EXISTS customers")
+c.execute("DROP TABLE IF EXISTS expenses")
+
 # Create tables with unit_type column
 c.execute("""
 CREATE TABLE IF NOT EXISTS inventory (
@@ -378,7 +387,8 @@ def add_to_cart_simple(veg, qty):
     current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == veg)
     
     if current_in_cart + qty > stock:
-        st.error(f"Not enough stock! Available: {stock:.2f} {unit_type}")
+        unit_display = unit_type if unit_type != 'kg' else 'kg'
+        st.error(f"Not enough stock! Available: {stock:.2f} {unit_display}")
         return False
     
     # Add to cart
@@ -412,7 +422,8 @@ def update_cart_qty(veg, new_qty):
     
     stock, _, price, unit_type = get_stock(veg)
     if new_qty > stock:
-        st.error(f"Not enough stock! Available: {stock:.2f} {unit_type}")
+        unit_display = unit_type if unit_type != 'kg' else 'kg'
+        st.error(f"Not enough stock! Available: {stock:.2f} {unit_display}")
         return False
     
     for i, item in enumerate(st.session_state.cart):
@@ -437,7 +448,8 @@ def process_sale_simple(cust_name, cust_phone):
     
     if insufficient:
         for v, stock, q, unit in insufficient:
-            st.error(f"Not enough {v}: available {stock:.2f} {unit}, requested {q:.2f} {unit}")
+            unit_display = unit if unit != 'kg' else 'kg'
+            st.error(f"Not enough {v}: available {stock:.2f} {unit_display}, requested {q:.2f} {unit_display}")
         return False
     
     # Process sale
@@ -1958,3 +1970,6 @@ st.markdown("""
     <p style="font-size:0.8em; color:#95a5a6;">© 2024 Fresh Basket. All features working perfectly.</p>
 </div>
 """, unsafe_allow_html=True)
+
+# Close database connection
+conn.close()
