@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
-from datetime import datetime, date
+from datetime import datetime, date, timezone, timedelta
 import re
 
 # ========================== PAGE SETUP ==========================
@@ -224,6 +224,7 @@ st.markdown("""
 st.markdown("""
 <div style="text-align:center; margin-bottom:30px;">
     <h1>🌿 Fresh Basket</h1>
+    <div class="subtitle">Freshness You Can Feel</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -523,6 +524,13 @@ def update_cart_qty(veg, new_qty):
             return True
     return False
 
+def get_ist_time():
+    """Get current IST time"""
+    # IST is UTC+5:30
+    utc_now = datetime.utcnow()
+    ist_now = utc_now + timedelta(hours=5, minutes=30)
+    return ist_now.strftime("%H:%M:%S")
+
 def process_sale_simple(cust_name, cust_phone):
     """Process the sale with simplified logic"""
     if not st.session_state.cart:
@@ -544,7 +552,7 @@ def process_sale_simple(cust_name, cust_phone):
     
     # Process sale
     d = st.session_state.selected_date.strftime("%Y-%m-%d")
-    current_time = datetime.now().strftime("%H:%M:%S")
+    current_time = get_ist_time()
     
     # Handle customer name
     if not cust_name or cust_name.strip() == "":
@@ -621,6 +629,7 @@ def show_receipt_simple():
         <div class="receipt">
             <div style="text-align:center; margin-bottom:20px;">
                 <h2 style="color:#2c3e50;">🌿 FRESH BASKET</h2>
+                <p style="color:#27ae60; margin:5px 0; font-weight:bold;">Freshness You Can Feel</p>
                 <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">Bill No: {bill_no}</p>
             </div>
             <hr style="border:none; height:2px; background: linear-gradient(90deg, #27ae60, #2ecc71); margin:15px 0;">
@@ -630,7 +639,8 @@ def show_receipt_simple():
         col1, col2 = st.columns(2)
         with col1:
             st.markdown(f"**📅 Date:** {sale['date']}")
-            st.markdown(f"**⏰ Time:** {sale['time']}")
+            if sale['time']:
+                st.markdown(f"**⏰ Time:** {sale['time']} (IST)")
         with col2:
             st.markdown(f"**👤 Customer:** {sale['customer']}")
             if sale['phone']:
@@ -757,6 +767,7 @@ if menu == "📊 Dashboard":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>📊 Dashboard Overview</h2>
+        <div class="subtitle">Freshness You Can Feel</div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -962,6 +973,7 @@ elif menu == "🛒 Add Purchase":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>🛒 Add Purchase</h2>
+        <div class="subtitle">Freshness You Can Feel</div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1033,94 +1045,149 @@ elif menu == "🛒 Add Purchase":
             st.markdown("### ➕ Individual Purchase")
             st.markdown("Add purchase for a single vegetable")
             
-            with st.form("individual_purchase", clear_on_submit=True):
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    # Vegetable selection with option to add new
-                    existing_veg = all_veg_df['vegetable'].tolist()
-                    veg_choice = st.selectbox("Select Vegetable", existing_veg)
-                    new_veg_option = st.checkbox("Add New Vegetable")
+            # Tab interface for different vegetable types in individual purchase
+            subtab1, subtab2 = st.tabs(["⚖️ KG Vegetables", "🧩 Piece Vegetables"])
+            
+            # Subtab 1: KG Vegetables Purchase
+            with subtab1:
+                with st.form("kg_individual_purchase", clear_on_submit=True):
+                    st.markdown("#### ⚖️ Purchase KG Vegetables")
                     
-                    if new_veg_option:
-                        new_veg = st.text_input("New Vegetable Name")
-                        veg = new_veg if new_veg else veg_choice
-                        # Unit type selection for new vegetable
-                        unit_type = st.selectbox("Unit Type", ["kg", "piece", "bunch", "dozen"], 
-                                                help="Select how this vegetable is sold")
-                    else:
-                        veg = veg_choice
-                        # Get unit type for existing vegetable - FIXED
-                        try:
-                            unit_type_row = all_veg_df[all_veg_df['vegetable'] == veg]
-                            if not unit_type_row.empty:
-                                unit_type = unit_type_row.iloc[0]['unit_type']
-                                st.info(f"**Unit Type:** {unit_type}")
-                            else:
-                                unit_type = 'kg'  # Default
-                                st.info(f"**Unit Type:** {unit_type} (default)")
-                        except:
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        # Get only kg vegetables
+                        kg_veg_df = all_veg_df[all_veg_df['unit_type'] == 'kg']
+                        existing_kg_veg = kg_veg_df['vegetable'].tolist()
+                        
+                        # Vegetable selection with option to add new
+                        veg_choice = st.selectbox("Select KG Vegetable", existing_kg_veg, key="kg_veg_select_purchase")
+                        new_kg_veg_option = st.checkbox("Add New KG Vegetable", key="new_kg_veg_option")
+                        
+                        if new_kg_veg_option:
+                            new_veg = st.text_input("New Vegetable Name", key="new_kg_veg_name")
+                            veg = new_veg if new_veg else veg_choice
                             unit_type = 'kg'
-                            st.info(f"**Unit Type:** {unit_type} (default)")
-                    
-                    # Quantity based on unit type - FIXED
-                    if unit_type == 'kg':
+                        else:
+                            veg = veg_choice
+                            unit_type = 'kg'
+                            st.info(f"**Unit Type:** {unit_type}")
+                        
+                        # KG Quantity input
                         q_col1, q_col2 = st.columns(2)
                         with q_col1:
-                            qty_kg = st.number_input("Kilograms", min_value=0.0, step=0.5, value=1.0)
+                            qty_kg = st.number_input("Kilograms", min_value=0.0, step=0.5, value=1.0, key="kg_qty_kg")
                         with q_col2:
-                            qty_g = st.number_input("Grams", min_value=0, step=100, value=0, max_value=999)
+                            qty_g = st.number_input("Grams", min_value=0, step=100, value=0, max_value=999, key="kg_qty_g")
                         total_qty = qty_kg + (qty_g / 1000)
-                    elif unit_type == 'piece':
-                        total_qty = st.number_input("Number of Pieces", min_value=0, step=1, value=1)
-                    else:
-                        total_qty = st.number_input(f"Quantity ({unit_type})", min_value=0.0, step=1.0, value=1.0)
-                
-                with col2:
-                    amount = st.number_input("Total Amount ₹", min_value=0.0, step=10.0, value=0.0)
-                    supplier = st.text_input("Supplier Name")
-                    unit_price = amount / total_qty if total_qty > 0 else 0
                     
-                    # Display unit price based on unit type
-                    if unit_type == 'kg':
+                    with col2:
+                        amount = st.number_input("Total Amount ₹", min_value=0.0, step=10.0, value=0.0, key="kg_amount")
+                        supplier = st.text_input("Supplier Name", key="kg_supplier")
+                        unit_price = amount / total_qty if total_qty > 0 else 0
+                        
+                        # Display unit price
                         st.info(f"**Unit Price:** ₹{unit_price:.2f}/kg")
-                    elif unit_type == 'piece':
-                        st.info(f"**Unit Price:** ₹{unit_price:.2f}/piece")
-                    else:
-                        st.info(f"**Unit Price:** ₹{unit_price:.2f} per {unit_type}")
-                
-                # Submit button
-                submit_button = st.form_submit_button("💾 Save Purchase", type="primary", use_container_width=True)
-                if submit_button:
-                    if total_qty <= 0:
-                        st.error("Enter quantity > 0")
-                    elif amount <= 0:
-                        st.error("Enter amount > 0")
-                    elif not veg.strip():
-                        st.error("Enter vegetable name")
-                    else:
-                        d = selected_date.strftime("%Y-%m-%d")
-                        
-                        # Save purchase
-                        c.execute("INSERT INTO purchases VALUES (?,?,?,?,?)", 
-                                 (d, veg, total_qty, amount, supplier))
-                        
-                        # Update inventory
-                        old_qty, old_cost, old_sell, old_unit = get_stock(veg)
-                        new_qty = old_qty + total_qty
-                        unit_cost = (amount / total_qty) if total_qty > 0 else old_cost
-                        
-                        if old_qty == 0 and veg not in existing_veg:
-                            # New vegetable
-                            c.execute("INSERT OR REPLACE INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type) VALUES (?,?,?,?,?)", 
-                                     (veg, new_qty, unit_cost, 0.0, unit_type))
+                    
+                    # Submit button
+                    submit_button = st.form_submit_button("💾 Save KG Purchase", type="primary", use_container_width=True)
+                    if submit_button:
+                        if total_qty <= 0:
+                            st.error("Enter quantity > 0")
+                        elif amount <= 0:
+                            st.error("Enter amount > 0")
+                        elif not veg.strip():
+                            st.error("Enter vegetable name")
                         else:
-                            c.execute("UPDATE inventory SET quantity=?, cost_price=? WHERE vegetable=?", 
-                                     (new_qty, unit_cost, veg))
+                            d = selected_date.strftime("%Y-%m-%d")
+                            
+                            # Save purchase
+                            c.execute("INSERT INTO purchases VALUES (?,?,?,?,?)", 
+                                     (d, veg, total_qty, amount, supplier))
+                            
+                            # Update inventory
+                            old_qty, old_cost, old_sell, old_unit = get_stock(veg)
+                            new_qty = old_qty + total_qty
+                            unit_cost = (amount / total_qty) if total_qty > 0 else old_cost
+                            
+                            if old_qty == 0 and veg not in existing_kg_veg:
+                                # New vegetable
+                                c.execute("INSERT OR REPLACE INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type) VALUES (?,?,?,?,?)", 
+                                         (veg, new_qty, unit_cost, 0.0, unit_type))
+                            else:
+                                c.execute("UPDATE inventory SET quantity=?, cost_price=? WHERE vegetable=?", 
+                                         (new_qty, unit_cost, veg))
+                            
+                            conn.commit()
+                            st.success(f"✅ Added {total_qty:.2f} kg of {veg}")
+            
+            # Subtab 2: Piece Vegetables Purchase
+            with subtab2:
+                with st.form("piece_individual_purchase", clear_on_submit=True):
+                    st.markdown("#### 🧩 Purchase Piece Vegetables")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        # Get only piece vegetables
+                        piece_veg_df = all_veg_df[all_veg_df['unit_type'] == 'piece']
+                        existing_piece_veg = piece_veg_df['vegetable'].tolist()
                         
-                        conn.commit()
-                        unit_display = unit_type if unit_type != 'kg' else 'kg'
-                        st.success(f"✅ Added {total_qty:.2f} {unit_display} of {veg}")
+                        # Vegetable selection with option to add new
+                        veg_choice = st.selectbox("Select Piece Vegetable", existing_piece_veg, key="piece_veg_select_purchase")
+                        new_piece_veg_option = st.checkbox("Add New Piece Vegetable", key="new_piece_veg_option")
+                        
+                        if new_piece_veg_option:
+                            new_veg = st.text_input("New Vegetable Name", key="new_piece_veg_name")
+                            veg = new_veg if new_veg else veg_choice
+                            unit_type = 'piece'
+                        else:
+                            veg = veg_choice
+                            unit_type = 'piece'
+                            st.info(f"**Unit Type:** {unit_type}")
+                        
+                        # Piece Quantity input
+                        total_qty = st.number_input("Number of Pieces", min_value=0, step=1, value=1, key="piece_qty")
+                    
+                    with col2:
+                        amount = st.number_input("Total Amount ₹", min_value=0.0, step=10.0, value=0.0, key="piece_amount")
+                        supplier = st.text_input("Supplier Name", key="piece_supplier")
+                        unit_price = amount / total_qty if total_qty > 0 else 0
+                        
+                        # Display unit price
+                        st.info(f"**Unit Price:** ₹{unit_price:.2f}/piece")
+                    
+                    # Submit button
+                    submit_button = st.form_submit_button("💾 Save Piece Purchase", type="primary", use_container_width=True)
+                    if submit_button:
+                        if total_qty <= 0:
+                            st.error("Enter quantity > 0")
+                        elif amount <= 0:
+                            st.error("Enter amount > 0")
+                        elif not veg.strip():
+                            st.error("Enter vegetable name")
+                        else:
+                            d = selected_date.strftime("%Y-%m-%d")
+                            
+                            # Save purchase
+                            c.execute("INSERT INTO purchases VALUES (?,?,?,?,?)", 
+                                     (d, veg, total_qty, amount, supplier))
+                            
+                            # Update inventory
+                            old_qty, old_cost, old_sell, old_unit = get_stock(veg)
+                            new_qty = old_qty + total_qty
+                            unit_cost = (amount / total_qty) if total_qty > 0 else old_cost
+                            
+                            if old_qty == 0 and veg not in existing_piece_veg:
+                                # New vegetable
+                                c.execute("INSERT OR REPLACE INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type) VALUES (?,?,?,?,?)", 
+                                         (veg, new_qty, unit_cost, 0.0, unit_type))
+                            else:
+                                c.execute("UPDATE inventory SET quantity=?, cost_price=? WHERE vegetable=?", 
+                                         (new_qty, unit_cost, veg))
+                            
+                            conn.commit()
+                            st.success(f"✅ Added {total_qty:.0f} pieces of {veg}")
     
     # Today's purchases summary
     st.markdown("---")
@@ -1163,6 +1230,7 @@ elif menu == "🏷 Set Prices":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>🏷 Set Selling Prices</h2>
+        <div class="subtitle">Freshness You Can Feel</div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1276,6 +1344,7 @@ elif menu == "💵 Quick Sell":
     st.markdown("""
     <div style="text-align:center; margin-bottom:20px;">
         <h2>💵 Quick Selling</h2>
+        <div class="subtitle">Freshness You Can Feel</div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1357,27 +1426,35 @@ elif menu == "💵 Quick Sell":
                             
                             if selected_kg_display:
                                 selected_kg = kg_dict[selected_kg_display]
+                                # Show current stock info
+                                current_stock = selected_kg['stock']
+                                # Calculate how much is already in cart
+                                current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == selected_kg['name'])
+                                available_stock = current_stock - current_in_cart
+                                st.info(f"**Available Stock:** {available_stock:.2f} kg")
                         
                         with col_b:
                             # KG Quantity input
                             if selected_kg_display:
-                                max_kg = max(0.1, min(selected_kg['stock'], 50.0)) if selected_kg['stock'] > 0 else 0.1
-                                
-                                # Fix the max_value issue
-                                qty_kg = st.number_input("Kilograms", min_value=0.0, step=0.5, value=0.5, key="qty_kg_input")
-                                
-                                # Calculate remaining kg after subtracting what's already in cart
+                                # Calculate available stock
                                 current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == selected_kg['name'])
-                                remaining_kg = max(0, selected_kg['stock'] - current_in_cart)
+                                available_stock = selected_kg['stock'] - current_in_cart
                                 
-                                # Validate that qty_kg doesn't exceed remaining stock
-                                if qty_kg > remaining_kg:
-                                    st.warning(f"Available stock: {remaining_kg:.2f} kg")
-                                    qty_kg = min(qty_kg, remaining_kg)
+                                if available_stock <= 0:
+                                    st.error("No stock available! This item is already in cart or out of stock.")
+                                    qty_kg = 0
+                                else:
+                                    qty_kg = st.number_input("Kilograms", min_value=0.0, step=0.5, value=0.5, key="qty_kg_input")
+                                    
+                                    # Validate that qty_kg doesn't exceed available stock
+                                    if qty_kg > available_stock:
+                                        st.warning(f"Maximum available: {available_stock:.2f} kg")
+                                        qty_kg = min(qty_kg, available_stock)
                                 
                                 total_price = qty_kg * selected_kg['price']
                                 
-                                st.info(f"Total: ₹{total_price:.2f}")
+                                if qty_kg > 0:
+                                    st.info(f"**Total:** ₹{total_price:.2f}")
                             else:
                                 total_price = 0
                         
@@ -1412,26 +1489,35 @@ elif menu == "💵 Quick Sell":
                             
                             if selected_piece_display:
                                 selected_piece = piece_dict[selected_piece_display]
+                                # Show current stock info
+                                current_stock = selected_piece['stock']
+                                # Calculate how much is already in cart
+                                current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == selected_piece['name'])
+                                available_stock = current_stock - current_in_cart
+                                st.info(f"**Available Stock:** {available_stock:.0f} pieces")
                         
                         with col_b:
                             # Piece Quantity input
                             if selected_piece_display:
-                                max_pieces = min(int(selected_piece['stock']), 100) if selected_piece['stock'] > 0 else 1
-                                
-                                # Calculate remaining pieces after subtracting what's already in cart
+                                # Calculate available stock
                                 current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == selected_piece['name'])
-                                remaining_pieces = max(0, int(selected_piece['stock']) - current_in_cart)
+                                available_stock = selected_piece['stock'] - current_in_cart
                                 
-                                total_qty = st.number_input("Pieces", min_value=1, step=1, value=1, key="qty_pieces_input")
-                                
-                                # Validate that total_qty doesn't exceed remaining stock
-                                if total_qty > remaining_pieces:
-                                    st.warning(f"Available stock: {remaining_pieces} pieces")
-                                    total_qty = min(total_qty, remaining_pieces)
+                                if available_stock <= 0:
+                                    st.error("No stock available! This item is already in cart or out of stock.")
+                                    total_qty = 0
+                                else:
+                                    total_qty = st.number_input("Pieces", min_value=1, step=1, value=1, key="qty_pieces_input")
+                                    
+                                    # Validate that total_qty doesn't exceed available stock
+                                    if total_qty > available_stock:
+                                        st.warning(f"Maximum available: {available_stock:.0f} pieces")
+                                        total_qty = min(total_qty, available_stock)
                                 
                                 total_price = total_qty * selected_piece['price']
                                 
-                                st.info(f"Total: ₹{total_price:.2f}")
+                                if total_qty > 0:
+                                    st.info(f"**Total:** ₹{total_price:.2f}")
                             else:
                                 total_qty = 0
                                 total_price = 0
@@ -1461,45 +1547,52 @@ elif menu == "💵 Quick Sell":
                     # Check if vegetable exists
                     if manual_veg:
                         stock, _, price, unit_type = get_stock(manual_veg)
-                        if stock == 0:
-                            st.warning(f"{manual_veg} not in stock or doesn't exist")
+                        if stock <= 0:
+                            st.warning(f"{manual_veg} is out of stock or doesn't exist")
                         else:
-                            if unit_type == 'kg':
-                                st.info(f"Price: ₹{price:.2f}/kg, Stock: {stock:.2f} kg")
-                            elif unit_type == 'piece':
-                                st.info(f"Price: ₹{price:.2f}/piece, Stock: {stock:.0f} pieces")
+                            # Calculate how much is already in cart
+                            current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == manual_veg)
+                            available_stock = stock - current_in_cart
+                            
+                            if available_stock <= 0:
+                                st.error(f"No stock available! {manual_veg} is already in cart or out of stock.")
                             else:
-                                st.info(f"Price: ₹{price:.2f} per {unit_type}, Stock: {stock:.2f} {unit_type}")
+                                if unit_type == 'kg':
+                                    st.info(f"**Price:** ₹{price:.2f}/kg, **Available Stock:** {available_stock:.2f} kg")
+                                elif unit_type == 'piece':
+                                    st.info(f"**Price:** ₹{price:.2f}/piece, **Available Stock:** {available_stock:.0f} pieces")
+                                else:
+                                    st.info(f"**Price:** ₹{price:.2f} per {unit_type}, **Available Stock:** {available_stock:.2f} {unit_type}")
                 
                 with man_col2:
                     if manual_veg:
-                        stock, _, _, unit_type = get_stock(manual_veg)
-                        if unit_type == 'kg':
-                            man_qty_kg = st.number_input("Kg", min_value=0.0, step=0.5, value=0.5, key="man_kg_input")
-                            
-                            # Calculate remaining kg after subtracting what's already in cart
-                            current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == manual_veg)
-                            remaining_kg = max(0, stock - current_in_cart)
-                            
-                            # Validate that man_qty_kg doesn't exceed remaining stock
-                            if man_qty_kg > remaining_kg:
-                                st.warning(f"Available stock: {remaining_kg:.2f} kg")
-                                man_qty_kg = min(man_qty_kg, remaining_kg)
-                            
-                            man_qty = man_qty_kg
-                        elif unit_type == 'piece':
-                            man_qty = st.number_input("Pieces", min_value=1, step=1, value=1, key="man_pieces_input")
-                            
-                            # Calculate remaining pieces after subtracting what's already in cart
-                            current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == manual_veg)
-                            remaining_pieces = max(0, stock - current_in_cart)
-                            
-                            # Validate that man_qty doesn't exceed remaining stock
-                            if man_qty > remaining_pieces:
-                                st.warning(f"Available stock: {remaining_pieces} pieces")
-                                man_qty = min(man_qty, remaining_pieces)
+                        stock, _, price, unit_type = get_stock(manual_veg)
+                        # Calculate how much is already in cart
+                        current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == manual_veg)
+                        available_stock = stock - current_in_cart
+                        
+                        if available_stock > 0:
+                            if unit_type == 'kg':
+                                man_qty_kg = st.number_input("Kg", min_value=0.0, step=0.5, value=0.5, key="man_kg_input")
+                                
+                                # Validate that man_qty_kg doesn't exceed available stock
+                                if man_qty_kg > available_stock:
+                                    st.warning(f"Maximum available: {available_stock:.2f} kg")
+                                    man_qty_kg = min(man_qty_kg, available_stock)
+                                
+                                man_qty = man_qty_kg
+                            elif unit_type == 'piece':
+                                man_qty = st.number_input("Pieces", min_value=1, step=1, value=1, key="man_pieces_input")
+                                
+                                # Validate that man_qty doesn't exceed available stock
+                                if man_qty > available_stock:
+                                    st.warning(f"Maximum available: {available_stock:.0f} pieces")
+                                    man_qty = min(man_qty, available_stock)
+                            else:
+                                man_qty = st.number_input(f"Quantity ({unit_type})", min_value=0.1, step=1.0, value=1.0, key=f"man_{unit_type}_input")
                         else:
-                            man_qty = st.number_input(f"Quantity ({unit_type})", min_value=0.1, step=1.0, value=1.0, key=f"man_{unit_type}_input")
+                            man_qty = 0
+                            st.error("No available stock!")
                     else:
                         man_qty = 0
                 
@@ -1630,6 +1723,7 @@ elif menu == "💵 Quick Sell":
                 <div class="receipt">
                     <div style="text-align:center; margin-bottom:20px;">
                         <h2 style="color:#2c3e50;">🌿 FRESH BASKET</h2>
+                        <p style="color:#27ae60; margin:5px 0; font-weight:bold;">Freshness You Can Feel</p>
                         <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">Bill No: {sale['bill_no']}</p>
                     </div>
                     <hr style="border:none; height:2px; background: linear-gradient(90deg, #27ae60, #2ecc71); margin:15px 0;">
@@ -1639,7 +1733,8 @@ elif menu == "💵 Quick Sell":
                 col1, col2 = st.columns(2)
                 with col1:
                     st.markdown(f"**📅 Date:** {sale['date']}")
-                    st.markdown(f"**⏰ Time:** {sale['time']}")
+                    if sale['time']:
+                        st.markdown(f"**⏰ Time:** {sale['time']} (IST)")
                 with col2:
                     # Only show bill number
                     st.markdown(f"**🧾 Bill No:** {sale['bill_no']}")
@@ -1732,6 +1827,7 @@ elif menu == "📦 Inventory":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>📦 Inventory Management</h2>
+        <div class="subtitle">Freshness You Can Feel</div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1848,6 +1944,7 @@ elif menu == "📋 Purchases":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>📋 Purchase Records</h2>
+        <div class="subtitle">Freshness You Can Feel</div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1895,6 +1992,7 @@ elif menu == "🧾 Sales":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>🧾 Sales Records</h2>
+        <div class="subtitle">Freshness You Can Feel</div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1955,6 +2053,7 @@ elif menu == "💸 Expenses":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>💸 Expense Management</h2>
+        <div class="subtitle">Freshness You Can Feel</div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -2001,6 +2100,7 @@ elif menu == "👥 Customers":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>👥 Customer Management</h2>
+        <div class="subtitle">Freshness You Can Feel</div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -2126,6 +2226,7 @@ elif menu == "🗑 Waste":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>🗑 Waste Management</h2>
+        <div class="subtitle">Freshness You Can Feel</div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -2231,6 +2332,7 @@ elif menu == "⬇ Download":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>⬇ Download Reports</h2>
+        <div class="subtitle">Freshness You Can Feel</div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -2428,6 +2530,7 @@ elif menu == "💰 Financials":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>💰 Financial Summary</h2>
+        <div class="subtitle">Freshness You Can Feel</div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -2552,7 +2655,7 @@ elif menu == "💰 Financials":
 st.markdown("---")
 st.markdown("""
 <div class="footer">
-    <p>🌿 Fresh Basket — Quality Vegetables Daily ✅</p>
+    <p>🌿 Fresh Basket — Freshness You Can Feel | Quality Vegetables Daily ✅</p>
     <p style="font-size:0.8em; color:#95a5a6;">© 2024 Fresh Basket. All features working perfectly.</p>
 </div>
 """, unsafe_allow_html=True)
