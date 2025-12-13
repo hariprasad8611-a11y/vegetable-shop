@@ -232,31 +232,83 @@ DB_FILE = "shop.db"
 conn = sqlite3.connect(DB_FILE, check_same_thread=False)
 c = conn.cursor()
 
-# Drop and recreate tables to ensure clean state (only for development)
-# In production, you might want to check if tables exist first
-c.execute("DROP TABLE IF EXISTS inventory")
-c.execute("DROP TABLE IF EXISTS purchases")
-c.execute("DROP TABLE IF EXISTS sales")
-c.execute("DROP TABLE IF EXISTS waste")
-c.execute("DROP TABLE IF EXISTS customers")
-c.execute("DROP TABLE IF EXISTS expenses")
+# ========================== DATABASE SETUP ==========================
+# First, check if inventory table exists and has unit_type column
+c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='inventory'")
+table_exists = c.fetchone()
 
-# Create tables with unit_type column
+if table_exists:
+    # Check if unit_type column exists
+    c.execute("PRAGMA table_info(inventory)")
+    columns = [column[1] for column in c.fetchall()]
+    
+    if 'unit_type' not in columns:
+        # Add unit_type column if it doesn't exist
+        c.execute("ALTER TABLE inventory ADD COLUMN unit_type TEXT DEFAULT 'kg'")
+        conn.commit()
+        st.info("Updated database schema: Added unit_type column")
+else:
+    # Create tables if they don't exist
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS inventory (
+        vegetable TEXT PRIMARY KEY,
+        quantity REAL,
+        cost_price REAL,
+        selling_price REAL,
+        image_url TEXT,
+        unit_type TEXT DEFAULT 'kg'
+    )
+    """)
+
+# Create other tables if they don't exist
 c.execute("""
-CREATE TABLE IF NOT EXISTS inventory (
-    vegetable TEXT PRIMARY KEY,
-    quantity REAL,
-    cost_price REAL,
-    selling_price REAL,
-    image_url TEXT,
-    unit_type TEXT DEFAULT 'kg'
+CREATE TABLE IF NOT EXISTS purchases (
+    date TEXT, 
+    vegetable TEXT, 
+    quantity REAL, 
+    amount REAL, 
+    supplier TEXT
 )
 """)
-c.execute("CREATE TABLE IF NOT EXISTS purchases (date TEXT, vegetable TEXT, quantity REAL, amount REAL, supplier TEXT)")
-c.execute("CREATE TABLE IF NOT EXISTS sales (date TEXT, vegetable TEXT, quantity_sold REAL, sale_price REAL, total REAL, customer TEXT, unit_type TEXT)")
-c.execute("CREATE TABLE IF NOT EXISTS waste (date TEXT, vegetable TEXT, quantity REAL, reason TEXT)")
-c.execute("CREATE TABLE IF NOT EXISTS customers (phone TEXT PRIMARY KEY, name TEXT, points INTEGER DEFAULT 0)")
-c.execute("CREATE TABLE IF NOT EXISTS expenses (date TEXT, category TEXT, amount REAL, description TEXT)")
+
+c.execute("""
+CREATE TABLE IF NOT EXISTS sales (
+    date TEXT, 
+    vegetable TEXT, 
+    quantity_sold REAL, 
+    sale_price REAL, 
+    total REAL, 
+    customer TEXT,
+    unit_type TEXT
+)
+""")
+
+c.execute("""
+CREATE TABLE IF NOT EXISTS waste (
+    date TEXT, 
+    vegetable TEXT, 
+    quantity REAL, 
+    reason TEXT
+)
+""")
+
+c.execute("""
+CREATE TABLE IF NOT EXISTS customers (
+    phone TEXT PRIMARY KEY, 
+    name TEXT, 
+    points INTEGER DEFAULT 0
+)
+""")
+
+c.execute("""
+CREATE TABLE IF NOT EXISTS expenses (
+    date TEXT, 
+    category TEXT, 
+    amount REAL, 
+    description TEXT
+)
+""")
+
 conn.commit()
 
 # ========================== DEFAULT VEGETABLES WITH UNIT TYPES ==========================
@@ -296,8 +348,16 @@ default_vegetables = [
 
 # Initialize default vegetables if not exists
 for veg, unit_type in default_vegetables:
-    c.execute("INSERT OR IGNORE INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type) VALUES (?, 0, 0, 0, '', ?)", 
-              (veg, unit_type))
+    # First check if vegetable exists
+    c.execute("SELECT vegetable FROM inventory WHERE vegetable=?", (veg,))
+    if not c.fetchone():
+        # Insert new vegetable with unit_type
+        c.execute("INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type) VALUES (?, 0, 0, 0, '', ?)", 
+                 (veg, unit_type))
+    else:
+        # Update existing vegetable with unit_type if needed
+        c.execute("UPDATE inventory SET unit_type=? WHERE vegetable=?", (unit_type, veg))
+
 conn.commit()
 
 # ========================== HELPERS ==========================
@@ -309,7 +369,7 @@ def get_stock(veg):
         qty = row[0] or 0.0
         cost = row[1] or 0.0
         sell = row[2] or 0.0
-        unit_type = row[3] or 'kg'
+        unit_type = row[3] or 'kg'  # Default to 'kg' if None
         return qty, cost, sell, unit_type
     return 0.0, 0.0, 0.0, 'kg'
 
@@ -767,14 +827,6 @@ if menu == "📊 Dashboard":
                 else:
                     return 'background-color: #d4edda; color: #155724'
         
-        # Apply styling row by row
-        styled_data = []
-        for idx, row in inv_display.iterrows():
-            style = highlight_stock(row['⚖️ Stock'], row['📏 Unit'])
-            styled_data.append(style)
-        
-        inv_display['Style'] = styled_data
-        
         # Display the table
         display_df = inv_display[['🥬 Vegetable', '⚖️ Stock', '💰 Price', '📏 Unit']].copy()
         
@@ -790,9 +842,7 @@ if menu == "📊 Dashboard":
         display_df['💰 Price'] = display_df.apply(format_price, axis=1)
         
         st.dataframe(
-            display_df.style.apply(lambda x: ['']*len(x), axis=1, subset=['🥬 Vegetable', '💰 Price', '📏 Unit'])
-            .apply(lambda x: inv_display['Style'], axis=0, subset=['⚖️ Stock'])
-            .format({"⚖️ Stock": "{:.2f}"}),
+            display_df,
             use_container_width=True,
             height=400
         )
@@ -1043,17 +1093,6 @@ elif menu == "🏷 Set Prices":
         
         # Bulk price editor
         st.markdown("### 📝 Bulk Price Update")
-        
-        # Format display based on unit type
-        def format_price_column(df):
-            df_copy = df.copy()
-            df_copy['price_display'] = df_copy.apply(lambda x: 
-                f"₹{x['selling_price']:.2f}/kg" if x['unit_type'] == 'kg' else 
-                f"₹{x['selling_price']:.2f}/piece" if x['unit_type'] == 'piece' else 
-                f"₹{x['selling_price']:.2f} per {x['unit_type']}", axis=1)
-            return df_copy
-        
-        display_df = format_price_column(price_df)
         
         edited_df = st.data_editor(
             price_df,
@@ -1970,6 +2009,3 @@ st.markdown("""
     <p style="font-size:0.8em; color:#95a5a6;">© 2024 Fresh Basket. All features working perfectly.</p>
 </div>
 """, unsafe_allow_html=True)
-
-# Close database connection
-conn.close()
