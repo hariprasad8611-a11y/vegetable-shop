@@ -1235,110 +1235,103 @@ elif menu == "💵 Quick Sell":
                 with cust_col2:
                     cust_phone = st.text_input("Phone Number", placeholder="Optional", key="cust_phone_sell")
             
-            # Vegetable selection with SEPARATE dropdowns
+            # Vegetable selection with SEPARATE dropdowns in same section
             st.markdown("### Add Items to Bill")
             
-            # Tab interface for different vegetable types
-            tab1, tab2 = st.tabs(["⚖️ KG Vegetables", "🧩 Piece Vegetables"])
-            
-            # Tab 1: KG Vegetables
-            with tab1:
-                if kg_vegetables:
-                    with st.form("kg_veg_form", clear_on_submit=True):
-                        col_a, col_b, col_c = st.columns([3, 2, 1])
+            # Create a form for adding items
+            with st.form("add_item_form", clear_on_submit=True):
+                # Two columns for KG and Piece vegetables side by side
+                col_a, col_b = st.columns(2)
+                
+                # Left column: KG Vegetables
+                with col_a:
+                    st.markdown("#### ⚖️ KG Vegetables")
+                    if kg_vegetables:
+                        # KG Vegetables dropdown
+                        kg_options = [""] + [veg['display'] for veg in kg_vegetables]
+                        kg_dict = {veg['display']: veg for veg in kg_vegetables}
                         
-                        with col_a:
-                            # KG Vegetables dropdown
-                            kg_options = [veg['display'] for veg in kg_vegetables]
-                            kg_dict = {veg['display']: veg for veg in kg_vegetables}
-                            
-                            selected_kg_display = st.selectbox(
-                                "Select KG Vegetable",
-                                options=kg_options,
-                                key="kg_veg_select"
-                            )
-                            
-                            if selected_kg_display:
-                                selected_kg = kg_dict[selected_kg_display]
+                        selected_kg_display = st.selectbox(
+                            "Select KG Vegetable",
+                            options=kg_options,
+                            key="kg_veg_select_main",
+                            index=0
+                        )
                         
-                        with col_b:
+                        if selected_kg_display:
+                            selected_kg = kg_dict[selected_kg_display]
+                            
                             # KG Quantity input
-                            if selected_kg_display:
-                                max_kg = max(0.1, min(selected_kg['stock'], 50.0)) if selected_kg['stock'] > 0 else 0.1
-                                qty_col1, qty_col2 = st.columns(2)
-                                with qty_col1:
-                                    qty_kg = st.number_input("Kilograms", min_value=0.0, max_value=float(max_kg), 
-                                                            step=0.5, value=0.5, key="qty_kg_input")
-                                with qty_col2:
-                                    max_g = min(999, int((max_kg - qty_kg) * 1000)) if max_kg > qty_kg else 0
-                                    qty_g = st.number_input("Grams", min_value=0, max_value=int(max_g), step=100, 
-                                                           value=0, key="qty_g_input")
-                                
-                                total_qty = qty_kg + (qty_g / 1000)
-                                total_price = total_qty * selected_kg['price']
-                                
-                                st.info(f"Total: ₹{total_price:.2f}")
-                            else:
-                                total_qty = 0
-                                total_price = 0
-                        
-                        with col_c:
-                            st.write("")  # Spacer
-                            st.write("")  # Spacer
-                            # Submit button
-                            submitted = st.form_submit_button("➕ Add to Bill", use_container_width=True, type="primary")
-                            if submitted:
-                                if selected_kg_display and total_qty > 0:
-                                    if add_to_cart_simple(selected_kg['name'], total_qty):
-                                        st.success(f"Added {total_qty:.2f} kg of {selected_kg['name']}")
-                else:
-                    st.info("No KG vegetables available")
-            
-            # Tab 2: Piece Vegetables
-            with tab2:
-                if piece_vegetables:
-                    with st.form("piece_veg_form", clear_on_submit=True):
-                        col_a, col_b, col_c = st.columns([3, 2, 1])
-                        
-                        with col_a:
-                            # Piece Vegetables dropdown
-                            piece_options = [veg['display'] for veg in piece_vegetables]
-                            piece_dict = {veg['display']: veg for veg in piece_vegetables}
+                            max_kg = max(0.1, min(selected_kg['stock'], 50.0)) if selected_kg['stock'] > 0 else 0.1
+                            qty_col1, qty_col2 = st.columns(2)
+                            with qty_col1:
+                                qty_kg = st.number_input("Kilograms", min_value=0.0, max_value=float(max_kg), 
+                                                        step=0.5, value=0.5, key="qty_kg_input_main")
+                            with qty_col2:
+                                max_g = min(999, int((max_kg - qty_kg) * 1000)) if max_kg > qty_kg else 0
+                                qty_g = st.number_input("Grams", min_value=0, max_value=int(max_g), step=100, 
+                                                       value=0, key="qty_g_input_main")
                             
-                            selected_piece_display = st.selectbox(
-                                "Select Piece Vegetable",
-                                options=piece_options,
-                                key="piece_veg_select"
-                            )
+                            kg_total_qty = qty_kg + (qty_g / 1000)
+                            kg_total_price = kg_total_qty * selected_kg['price']
                             
-                            if selected_piece_display:
-                                selected_piece = piece_dict[selected_piece_display]
+                            st.info(f"**Total:** ₹{kg_total_price:.2f}")
+                    else:
+                        st.info("No KG vegetables available")
+                        kg_total_qty = 0
+                
+                # Right column: Piece Vegetables
+                with col_b:
+                    st.markdown("#### 🧩 Piece Vegetables")
+                    if piece_vegetables:
+                        # Piece Vegetables dropdown
+                        piece_options = [""] + [veg['display'] for veg in piece_vegetables]
+                        piece_dict = {veg['display']: veg for veg in piece_vegetables}
                         
-                        with col_b:
+                        selected_piece_display = st.selectbox(
+                            "Select Piece Vegetable",
+                            options=piece_options,
+                            key="piece_veg_select_main",
+                            index=0
+                        )
+                        
+                        if selected_piece_display:
+                            selected_piece = piece_dict[selected_piece_display]
+                            
                             # Piece Quantity input
-                            if selected_piece_display:
-                                max_pieces = min(int(selected_piece['stock']), 100) if selected_piece['stock'] > 0 else 1
-                                total_qty = st.number_input("Pieces", min_value=1, max_value=int(max_pieces), 
-                                                           step=1, value=1, key="qty_pieces_input")
-                                
-                                total_price = total_qty * selected_piece['price']
-                                
-                                st.info(f"Total: ₹{total_price:.2f}")
-                            else:
-                                total_qty = 0
-                                total_price = 0
-                        
-                        with col_c:
-                            st.write("")  # Spacer
-                            st.write("")  # Spacer
-                            # Submit button
-                            submitted = st.form_submit_button("➕ Add to Bill", use_container_width=True, type="primary")
-                            if submitted:
-                                if selected_piece_display and total_qty > 0:
-                                    if add_to_cart_simple(selected_piece['name'], total_qty):
-                                        st.success(f"Added {total_qty:.0f} pieces of {selected_piece['name']}")
-                else:
-                    st.info("No Piece vegetables available")
+                            max_pieces = min(int(selected_piece['stock']), 100) if selected_piece['stock'] > 0 else 1
+                            piece_total_qty = st.number_input("Pieces", min_value=1, max_value=int(max_pieces), 
+                                                             step=1, value=1, key="qty_pieces_input_main")
+                            
+                            piece_total_price = piece_total_qty * selected_piece['price']
+                            
+                            st.info(f"**Total:** ₹{piece_total_price:.2f}")
+                    else:
+                        st.info("No Piece vegetables available")
+                        piece_total_qty = 0
+                
+                # Submit button for both
+                col_c, col_d = st.columns(2)
+                with col_c:
+                    submit_kg = st.form_submit_button("➕ Add KG Item", use_container_width=True, type="primary")
+                with col_d:
+                    submit_piece = st.form_submit_button("➕ Add Piece Item", use_container_width=True, type="primary")
+                
+                # Handle KG submission
+                if submit_kg:
+                    if selected_kg_display and kg_total_qty > 0:
+                        if add_to_cart_simple(selected_kg['name'], kg_total_qty):
+                            st.success(f"Added {kg_total_qty:.2f} kg of {selected_kg['name']}")
+                    else:
+                        st.error("Please select a KG vegetable and enter quantity > 0")
+                
+                # Handle Piece submission
+                if submit_piece:
+                    if selected_piece_display and piece_total_qty > 0:
+                        if add_to_cart_simple(selected_piece['name'], piece_total_qty):
+                            st.success(f"Added {piece_total_qty:.0f} pieces of {selected_piece['name']}")
+                    else:
+                        st.error("Please select a Piece vegetable and enter quantity > 0")
             
             # Manual vegetable entry
             st.markdown("---")
@@ -1395,7 +1388,7 @@ elif menu == "💵 Quick Sell":
             if not st.session_state.cart:
                 st.info("🛒 Bill is Empty - Add items from the left")
             else:
-                # Display cart items in a clean table - FIXED: Unified price column
+                # Display cart items in a clean table
                 st.markdown("#### Items in Bill")
                 
                 # Create a dataframe for display
@@ -1521,7 +1514,7 @@ elif menu == "💵 Quick Sell":
                 
                 st.markdown("<hr style='border:none; height:1px; background:#e0e0e0; margin:15px 0;'>", unsafe_allow_html=True)
                 
-                # Items table - FIXED: Unified price column
+                # Items table
                 st.markdown("### 🛒 Items Purchased")
                 
                 items_data = []
