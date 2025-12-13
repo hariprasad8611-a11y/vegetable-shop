@@ -1235,12 +1235,18 @@ elif menu == "💵 Quick Sell":
                 with cust_col2:
                     cust_phone = st.text_input("Phone Number", placeholder="Optional", key="cust_phone_sell")
             
-            # Vegetable selection with SEPARATE dropdowns in same section (one below the other)
+            # Vegetable selection with SEPARATE dropdowns in same section
             st.markdown("### Add Items to Bill")
             
             # Create a form for adding items
             with st.form("add_item_form", clear_on_submit=True):
-                # First: KG Vegetables dropdown
+                # Initialize variables
+                kg_total_qty = 0
+                piece_total_qty = 0
+                selected_kg_display = ""
+                selected_piece_display = ""
+                
+                # First: KG Vegetables dropdown and quantity input
                 st.markdown("#### ⚖️ KG Vegetables")
                 if kg_vegetables:
                     # KG Vegetables dropdown
@@ -1257,7 +1263,7 @@ elif menu == "💵 Quick Sell":
                     if selected_kg_display:
                         selected_kg = kg_dict[selected_kg_display]
                         
-                        # KG Quantity input
+                        # KG Quantity input - ALWAYS SHOW
                         max_kg = max(0.1, min(selected_kg['stock'], 50.0)) if selected_kg['stock'] > 0 else 0.1
                         qty_col1, qty_col2 = st.columns(2)
                         with qty_col1:
@@ -1272,13 +1278,13 @@ elif menu == "💵 Quick Sell":
                         kg_total_price = kg_total_qty * selected_kg['price']
                         
                         st.info(f"**Total:** ₹{kg_total_price:.2f}")
+                    else:
+                        # Show kg quantity input even when no vegetable selected (but disabled)
+                        st.info("Select a KG vegetable to enter quantity")
                 else:
                     st.info("No KG vegetables available")
-                    kg_total_qty = 0
                 
-                st.markdown("---")
-                
-                # Second: Piece Vegetables dropdown (below KG section)
+                # Second: Piece Vegetables dropdown and quantity input
                 st.markdown("#### 🧩 Piece Vegetables")
                 if piece_vegetables:
                     # Piece Vegetables dropdown
@@ -1295,7 +1301,7 @@ elif menu == "💵 Quick Sell":
                     if selected_piece_display:
                         selected_piece = piece_dict[selected_piece_display]
                         
-                        # Piece Quantity input
+                        # Piece Quantity input - ALWAYS SHOW
                         max_pieces = min(int(selected_piece['stock']), 100) if selected_piece['stock'] > 0 else 1
                         piece_total_qty = st.number_input("Pieces", min_value=1, max_value=int(max_pieces), 
                                                          step=1, value=1, key="qty_pieces_input_main")
@@ -1303,32 +1309,30 @@ elif menu == "💵 Quick Sell":
                         piece_total_price = piece_total_qty * selected_piece['price']
                         
                         st.info(f"**Total:** ₹{piece_total_price:.2f}")
+                    else:
+                        # Show piece quantity input even when no vegetable selected (but disabled)
+                        st.info("Select a Piece vegetable to enter quantity")
                 else:
                     st.info("No Piece vegetables available")
-                    piece_total_qty = 0
                 
-                # Submit button for both
-                col_c, col_d = st.columns(2)
-                with col_c:
-                    submit_kg = st.form_submit_button("➕ Add KG Item", use_container_width=True, type="primary")
-                with col_d:
-                    submit_piece = st.form_submit_button("➕ Add Piece Item", use_container_width=True, type="primary")
+                # Single submit button for both
+                submit_both = st.form_submit_button("➕ Add Selected Items", use_container_width=True, type="primary")
                 
-                # Handle KG submission
-                if submit_kg:
+                # Handle submissions
+                if submit_both:
+                    # Handle KG item
                     if selected_kg_display and kg_total_qty > 0:
                         if add_to_cart_simple(selected_kg['name'], kg_total_qty):
                             st.success(f"Added {kg_total_qty:.2f} kg of {selected_kg['name']}")
-                    else:
-                        st.error("Please select a KG vegetable and enter quantity > 0")
-                
-                # Handle Piece submission
-                if submit_piece:
+                    
+                    # Handle Piece item
                     if selected_piece_display and piece_total_qty > 0:
                         if add_to_cart_simple(selected_piece['name'], piece_total_qty):
                             st.success(f"Added {piece_total_qty:.0f} pieces of {selected_piece['name']}")
-                    else:
-                        st.error("Please select a Piece vegetable and enter quantity > 0")
+                    
+                    # Show message if nothing selected
+                    if not selected_kg_display and not selected_piece_display:
+                        st.error("Please select at least one vegetable and enter quantity > 0")
             
             # Manual vegetable entry
             st.markdown("---")
