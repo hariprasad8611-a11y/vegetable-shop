@@ -1207,6 +1207,10 @@ elif menu == "💵 Quick Sell":
                 with cust_col2:
                     cust_phone = st.text_input("Phone Number", placeholder="Optional", key="cust_phone_sell")
             
+            # Initialize session state for selected vegetable unit type
+            if 'selected_unit_for_qty' not in st.session_state:
+                st.session_state.selected_unit_for_qty = 'kg'
+            
             # Vegetable selection with dropdown
             st.markdown("### Add Items to Bill")
             
@@ -1244,49 +1248,48 @@ elif menu == "💵 Quick Sell":
                             selected_stock = selected_veg_data[2]
                             selected_unit = selected_veg_data[4]
                             
-                            # Store in session state to use in the quantity input
-                            st.session_state.selected_unit_type = selected_unit
+                            # Update session state with selected unit type
+                            st.session_state.selected_unit_for_qty = selected_unit
                         except:
                             selected_veg = ""
                             selected_price = 0.0
                             selected_stock = 0.0
                             selected_unit = 'kg'
-                            st.session_state.selected_unit_type = 'kg'
+                            st.session_state.selected_unit_for_qty = 'kg'
                     else:
                         st.warning("No vegetables available")
                         selected_veg = ""
                         selected_price = 0.0
                         selected_stock = 0.0
                         selected_unit = 'kg'
-                        st.session_state.selected_unit_type = 'kg'
+                        st.session_state.selected_unit_for_qty = 'kg'
                 
                 with col_b:
-                    # Quantity input based on unit type - FIXED: Dynamically change based on selected vegetable
+                    # Quantity input based on unit type - FIXED: Use session state unit
+                    current_unit = st.session_state.selected_unit_for_qty
+                    
                     if selected_veg:
-                        # Get current unit type from session state or selected data
-                        current_unit = getattr(st.session_state, 'selected_unit_type', selected_unit)
-                        
                         if current_unit == 'kg':
                             max_kg = max(0.1, min(selected_stock, 50.0)) if selected_stock > 0 else 0.1
                             qty_col1, qty_col2 = st.columns(2)
                             with qty_col1:
                                 qty_kg = st.number_input("Kilograms", min_value=0.0, max_value=float(max_kg), 
-                                                        step=0.5, value=0.5, key="qty_kg_sell")
+                                                        step=0.5, value=0.5, key="qty_kg_sell_dynamic")
                             with qty_col2:
                                 max_g = min(999, int((max_kg - qty_kg) * 1000)) if max_kg > qty_kg else 0
                                 qty_g = st.number_input("Grams", min_value=0, max_value=int(max_g), step=100, 
-                                                       value=0, key="qty_g_sell")
+                                                       value=0, key="qty_g_sell_dynamic")
                             
                             total_qty = qty_kg + (qty_g / 1000)
                         elif current_unit == 'piece':
                             max_pieces = min(int(selected_stock), 100) if selected_stock > 0 else 1
                             total_qty = st.number_input("Pieces", min_value=1, max_value=int(max_pieces), 
-                                                       step=1, value=1, key="qty_pieces_sell")
+                                                       step=1, value=1, key="qty_pieces_sell_dynamic")
                         else:
                             max_qty = min(selected_stock, 100.0) if selected_stock > 0 else 1.0
                             total_qty = st.number_input(f"Quantity ({current_unit})", min_value=0.1, 
                                                        max_value=float(max_qty), step=1.0, value=1.0, 
-                                                       key=f"qty_{current_unit}_sell")
+                                                       key=f"qty_{current_unit}_sell_dynamic")
                         
                         total_price = total_qty * selected_price
                         
@@ -1307,12 +1310,16 @@ elif menu == "💵 Quick Sell":
                             st.error("Select a vegetable")
                         else:
                             if add_to_cart_simple(selected_veg, total_qty):
-                                unit_display = selected_unit if selected_unit != 'kg' else 'kg'
+                                unit_display = current_unit if current_unit != 'kg' else 'kg'
                                 st.success(f"Added {total_qty:.2f} {unit_display} of {selected_veg}")
             
             # Manual vegetable entry
             st.markdown("---")
             st.markdown("#### 🔤 Manual Vegetable Entry")
+            
+            # Initialize session state for manual entry
+            if 'manual_unit_for_qty' not in st.session_state:
+                st.session_state.manual_unit_for_qty = 'kg'
             
             with st.form("manual_veg_form", clear_on_submit=True):
                 man_col1, man_col2, man_col3 = st.columns([3, 2, 1])
@@ -1326,24 +1333,30 @@ elif menu == "💵 Quick Sell":
                         if stock == 0:
                             st.warning(f"{manual_veg} not in stock or doesn't exist")
                         else:
+                            # Update session state with manual veg unit type
+                            st.session_state.manual_unit_for_qty = unit_type
                             if unit_type == 'kg':
                                 st.info(f"Price: ₹{price:.2f}/kg, Stock: {stock:.2f} kg")
                             elif unit_type == 'piece':
                                 st.info(f"Price: ₹{price:.2f}/piece, Stock: {stock:.0f} pieces")
                             else:
                                 st.info(f"Price: ₹{price:.2f} per {unit_type}, Stock: {stock:.2f} {unit_type}")
+                    else:
+                        unit_type = 'kg'
+                        st.session_state.manual_unit_for_qty = 'kg'
                 
                 with man_col2:
+                    manual_unit = st.session_state.manual_unit_for_qty
                     if manual_veg:
-                        stock, _, _, unit_type = get_stock(manual_veg)
-                        if unit_type == 'kg':
-                            man_qty_kg = st.number_input("Kg", min_value=0.0, step=0.5, value=0.5, key="man_kg_sell_2")
-                            man_qty_g = st.number_input("Grams", min_value=0, step=100, value=0, key="man_g_sell_2")
+                        stock, _, _, _ = get_stock(manual_veg)
+                        if manual_unit == 'kg':
+                            man_qty_kg = st.number_input("Kg", min_value=0.0, step=0.5, value=0.5, key="man_kg_sell_dynamic")
+                            man_qty_g = st.number_input("Grams", min_value=0, step=100, value=0, key="man_g_sell_dynamic")
                             man_qty = man_qty_kg + (man_qty_g / 1000)
-                        elif unit_type == 'piece':
-                            man_qty = st.number_input("Pieces", min_value=1, step=1, value=1, key="man_pieces_sell_2")
+                        elif manual_unit == 'piece':
+                            man_qty = st.number_input("Pieces", min_value=1, step=1, value=1, key="man_pieces_sell_dynamic")
                         else:
-                            man_qty = st.number_input(f"Quantity ({unit_type})", min_value=0.1, step=1.0, value=1.0, key=f"man_{unit_type}_sell_2")
+                            man_qty = st.number_input(f"Quantity ({manual_unit})", min_value=0.1, step=1.0, value=1.0, key=f"man_{manual_unit}_sell_dynamic")
                     else:
                         man_qty = 0
                 
@@ -1461,7 +1474,7 @@ elif menu == "💵 Quick Sell":
                         if process_sale_simple(cust_name, cust_phone):
                             st.success("✅ Bill completed successfully!")
         
-        # Show receipt if last sale exists - FIXED: Remove customer name from bill
+        # Show receipt if last sale exists
         if st.session_state.last_sale:
             sale = st.session_state.last_sale
             
@@ -1483,13 +1496,13 @@ elif menu == "💵 Quick Sell":
                     <hr style="border:none; height:2px; background: linear-gradient(90deg, #27ae60, #2ecc71); margin:15px 0;">
                 """, unsafe_allow_html=True)
                 
-                # Sale info - REMOVED CUSTOMER NAME
+                # Sale info
                 col1, col2 = st.columns(2)
                 with col1:
                     st.markdown(f"**📅 Date:** {sale['date']}")
                     st.markdown(f"**⏰ Time:** {sale['time']}")
                 with col2:
-                    # Only show bill number, not customer name
+                    # Only show bill number
                     st.markdown(f"**🧾 Bill No:** {sale['bill_no']}")
                 
                 st.markdown("<hr style='border:none; height:1px; background:#e0e0e0; margin:15px 0;'>", unsafe_allow_html=True)
