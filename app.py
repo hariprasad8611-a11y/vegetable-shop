@@ -248,7 +248,7 @@ if table_exists:
             c.execute("ALTER TABLE inventory ADD COLUMN unit_type TEXT DEFAULT 'kg'")
             conn.commit()
         except Exception as e:
-            st.info(f"Note: {e}")
+            pass
 else:
     # Create tables if they don't exist
     c.execute("""
@@ -1191,12 +1191,8 @@ elif menu == "💵 Quick Sell":
     """, conn)
     
     if available_veg.empty:
-        st.warning("""
-        <div class="alert-warning">
-            <h4>⚠️ No vegetables available for sale!</h4>
-            <p>Please add purchases and set prices first.</p>
-        </div>
-        """, unsafe_allow_html=True)
+        # FIXED: Using regular st.warning instead of HTML string
+        st.warning("⚠️ No vegetables available for sale! Please add purchases and set prices first.")
     else:
         # SIMPLE SELLING INTERFACE - Dropdown based
         col1, col2 = st.columns([3, 2])
@@ -1360,12 +1356,8 @@ elif menu == "💵 Quick Sell":
             st.markdown("### 🛒 Current Bill")
             
             if not st.session_state.cart:
-                st.info("""
-                <div style="text-align:center; padding:40px;">
-                    <h3 style="color:#7f8c8d;">🛒 Bill is Empty</h3>
-                    <p style="color:#95a5a6;">Add items from the left</p>
-                </div>
-                """, unsafe_allow_html=True)
+                # FIXED: Using regular st.info instead of HTML string
+                st.info("🛒 Bill is Empty - Add items from the left")
             else:
                 # Display cart items in a clean table
                 st.markdown("#### Items in Bill")
@@ -1533,11 +1525,12 @@ elif menu == "📦 Inventory":
         
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Total Items", len(inv_df), key="total_items_metric")
+            # FIXED: Removed key parameter from st.metric
+            st.metric("Total Items", len(inv_df))
         with col2:
-            st.metric("In Stock", in_stock, key="in_stock_metric")
+            st.metric("In Stock", in_stock)
         with col3:
-            st.metric("Out of Stock", out_of_stock, key="out_stock_metric")
+            st.metric("Out of Stock", out_of_stock)
         
         # Editable inventory table
         st.markdown("#### ✏️ Edit Inventory Quantities")
@@ -1618,11 +1611,11 @@ elif menu == "📋 Purchases":
         
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("💰 Total Amount", f"₹{total_amount:.2f}", key="purchases_amount")
+            st.metric("💰 Total Amount", f"₹{total_amount:.2f}")
         with col2:
-            st.metric("⚖️ Total Quantity", f"{total_qty:.1f}", key="purchases_qty")
+            st.metric("⚖️ Total Quantity", f"{total_qty:.1f}")
         with col3:
-            st.metric("🥬 Vegetables Bought", veg_count, key="purchases_count")
+            st.metric("🥬 Vegetables Bought", veg_count)
         
         # Display table
         st.dataframe(
@@ -1630,8 +1623,7 @@ elif menu == "📋 Purchases":
                 "quantity": "{:.2f}",
                 "amount": "₹{:.2f}"
             }),
-            use_container_width=True,
-            key="purchases_table"
+            use_container_width=True
         )
 
 # ========================== SALES ==========================
@@ -1667,11 +1659,11 @@ elif menu == "🧾 Sales":
         
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("💰 Total Sales", f"₹{total_sales:.2f}", key="sales_total")
+            st.metric("💰 Total Sales", f"₹{total_sales:.2f}")
         with col2:
-            st.metric("⚖️ Quantity Sold", f"{total_qty:.1f}", key="sales_qty")
+            st.metric("⚖️ Quantity Sold", f"{total_qty:.1f}")
         with col3:
-            st.metric("👥 Customers", customer_count, key="sales_customers")
+            st.metric("👥 Customers", customer_count)
         
         # Display table with unit types
         display_df = sales_df.copy()
@@ -1692,8 +1684,7 @@ elif menu == "🧾 Sales":
             display_df[['date', 'vegetable', 'Quantity Display', 'total', 'customer']].style.format({
                 "total": "₹{:.2f}"
             }),
-            use_container_width=True,
-            key="sales_table"
+            use_container_width=True
         )
 
 # ========================== EXPENSES ==========================
@@ -1774,13 +1765,13 @@ elif menu == "👥 Customers":
         # Display metrics
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("Total Customers", total_customers, key="total_customers_metric")
+            st.metric("Total Customers", total_customers)
         with col2:
-            st.metric("Named Customers", named_customers, key="named_customers_metric")
+            st.metric("Named Customers", named_customers)
         with col3:
-            st.metric("Guest Customers", guest_customers, key="guest_customers_metric")
+            st.metric("Guest Customers", guest_customers)
         with col4:
-            st.metric("Total Points", total_points, key="total_points_metric")
+            st.metric("Total Points", total_points)
         
         # Show all customers from sales
         st.markdown("### All Customers (from sales)")
@@ -1802,7 +1793,7 @@ elif menu == "👥 Customers":
             })
         
         customer_summary_df = pd.DataFrame(customer_summary)
-        st.dataframe(customer_summary_df, use_container_width=True, key="customers_table")
+        st.dataframe(customer_summary_df, use_container_width=True)
         
         # Show loyalty customers
         if not customers_df.empty:
