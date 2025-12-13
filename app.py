@@ -992,15 +992,16 @@ elif menu == "🛒 Add Purchase":
             
             # Create editable dataframe
             purchase_df = pd.read_sql("SELECT vegetable, quantity as current_stock, selling_price, unit_type FROM inventory ORDER BY vegetable", conn)
+            purchase_df['Current Stock (Editable)'] = purchase_df['current_stock']
             purchase_df['New Purchase'] = 0.0
             purchase_df['Amount (₹)'] = 0.0
             purchase_df['Supplier'] = ""
             
             edited_df = st.data_editor(
-                purchase_df[['vegetable', 'current_stock', 'unit_type', 'New Purchase', 'Amount (₹)', 'Supplier']],
+                purchase_df[['vegetable', 'Current Stock (Editable)', 'unit_type', 'New Purchase', 'Amount (₹)', 'Supplier']],
                 column_config={
                     "vegetable": st.column_config.TextColumn("🌿 Vegetable", disabled=True),
-                    "current_stock": st.column_config.NumberColumn("📦 Current Stock", disabled=True, format="%.2f"),
+                    "Current Stock (Editable)": st.column_config.NumberColumn("📦 Current Stock", min_value=0.0, format="%.2f"),
                     "unit_type": st.column_config.TextColumn("📏 Unit", disabled=True),
                     "New Purchase": st.column_config.NumberColumn("🛒 Purchase Qty", min_value=0.0, step=0.5, format="%.2f"),
                     "Amount (₹)": st.column_config.NumberColumn("💰 Amount (₹)", min_value=0.0, step=10.0, format="₹%.2f"),
@@ -1013,10 +1014,23 @@ elif menu == "🛒 Add Purchase":
             
             if st.button("💾 Save All Purchases", type="primary", use_container_width=True):
                 purchases_made = 0
+                stock_updates = 0
+                
                 for _, row in edited_df.iterrows():
+                    veg = row['vegetable']
+                    
+                    # Update current stock if changed
+                    new_current_stock = row['Current Stock (Editable)']
+                    old_stock, old_cost, old_sell, old_unit = get_stock(veg)
+                    
+                    if new_current_stock != old_stock:
+                        c.execute("UPDATE inventory SET quantity=? WHERE vegetable=?", 
+                                 (new_current_stock, veg))
+                        stock_updates += 1
+                    
+                    # Save new purchases if any
                     if row['New Purchase'] > 0 and row['Amount (₹)'] > 0:
                         d = selected_date.strftime("%Y-%m-%d")
-                        veg = row['vegetable']
                         qty = row['New Purchase']
                         amount = row['Amount (₹)']
                         supplier = row['Supplier']
@@ -1026,20 +1040,27 @@ elif menu == "🛒 Add Purchase":
                         c.execute("INSERT INTO purchases VALUES (?,?,?,?,?)", 
                                  (d, veg, qty, amount, supplier))
                         
-                        # Update inventory
-                        old_qty, old_cost, _, _ = get_stock(veg)
-                        new_qty = old_qty + qty
-                        unit_cost = (amount / qty) if qty > 0 else old_cost
-                        c.execute("UPDATE inventory SET quantity=?, cost_price=? WHERE vegetable=?", 
-                                 (new_qty, unit_cost, veg))
+                        # Update inventory with new purchase (in addition to any direct stock edit)
+                        if qty > 0:
+                            old_qty, old_cost, _, _ = get_stock(veg)
+                            new_qty = old_qty + qty  # Add to current stock
+                            unit_cost = (amount / qty) if qty > 0 else old_cost
+                            c.execute("UPDATE inventory SET quantity=?, cost_price=? WHERE vegetable=?", 
+                                     (new_qty, unit_cost, veg))
                         
                         purchases_made += 1
                 
                 conn.commit()
+                messages = []
+                if stock_updates > 0:
+                    messages.append(f"✅ {stock_updates} stock quantities updated")
                 if purchases_made > 0:
-                    st.success(f"✅ {purchases_made} purchases saved successfully!")
+                    messages.append(f"✅ {purchases_made} purchases saved")
+                
+                if messages:
+                    st.success(" | ".join(messages))
                 else:
-                    st.warning("No purchases were saved. Make sure to enter quantity and amount.")
+                    st.info("No changes were saved")
         
         with tab2:
             st.markdown("### ➕ Individual Purchase")
@@ -1426,13 +1447,12 @@ elif menu == "💵 Quick Sell":
                             
                             if selected_kg_display:
                                 selected_kg = kg_dict[selected_kg_display]
-                                # Show current stock info
+                                # Show current stock info (but not "Available Stock" box)
                                 current_stock = selected_kg['stock']
                                 # Calculate how much is already in cart
                                 current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == selected_kg['name'])
                                 available_stock = current_stock - current_in_cart
-                                st.info(f"**Available Stock:** {available_stock:.2f} kg")
-                        
+                                # Remove the "Available Stock" info box
                         with col_b:
                             # KG Quantity input
                             if selected_kg_display:
@@ -1441,15 +1461,17 @@ elif menu == "💵 Quick Sell":
                                 available_stock = selected_kg['stock'] - current_in_cart
                                 
                                 if available_stock <= 0:
-                                    st.error("No stock available! This item is already in cart or out of stock.")
+                                    st.error("No stock available!")
                                     qty_kg = 0
                                 else:
-                                    qty_kg = st.number_input("Kilograms", min_value=0.0, step=0.5, value=0.5, key="qty_kg_input")
+                                    # Changed: Remove default value (0.50), make it empty (0.0)
+                                    qty_kg = st.number_input("Kilograms", min_value=0.0, step=0.5, value=0.0, key="qty_kg_input")
                                     
-                                    # Validate that qty_kg doesn't exceed available stock
+                                    # Remove the maximum available warning display
+                                    # Just validate silently
                                     if qty_kg > available_stock:
-                                        st.warning(f"Maximum available: {available_stock:.2f} kg")
-                                        qty_kg = min(qty_kg, available_stock)
+                                        # Don't show warning, just adjust
+                                        qty_kg = available_stock
                                 
                                 total_price = qty_kg * selected_kg['price']
                                 
@@ -1489,12 +1511,12 @@ elif menu == "💵 Quick Sell":
                             
                             if selected_piece_display:
                                 selected_piece = piece_dict[selected_piece_display]
-                                # Show current stock info
+                                # Show current stock info (but not "Available Stock" box)
                                 current_stock = selected_piece['stock']
                                 # Calculate how much is already in cart
                                 current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == selected_piece['name'])
                                 available_stock = current_stock - current_in_cart
-                                st.info(f"**Available Stock:** {available_stock:.0f} pieces")
+                                # Remove the "Available Stock" info box
                         
                         with col_b:
                             # Piece Quantity input
@@ -1504,15 +1526,17 @@ elif menu == "💵 Quick Sell":
                                 available_stock = selected_piece['stock'] - current_in_cart
                                 
                                 if available_stock <= 0:
-                                    st.error("No stock available! This item is already in cart or out of stock.")
+                                    st.error("No stock available!")
                                     total_qty = 0
                                 else:
-                                    total_qty = st.number_input("Pieces", min_value=1, step=1, value=1, key="qty_pieces_input")
+                                    # Remove default value, make it empty (0)
+                                    total_qty = st.number_input("Pieces", min_value=0, step=1, value=0, key="qty_pieces_input")
                                     
-                                    # Validate that total_qty doesn't exceed available stock
+                                    # Remove the maximum available warning display
+                                    # Just validate silently
                                     if total_qty > available_stock:
-                                        st.warning(f"Maximum available: {available_stock:.0f} pieces")
-                                        total_qty = min(total_qty, available_stock)
+                                        # Don't show warning, just adjust
+                                        total_qty = available_stock
                                 
                                 total_price = total_qty * selected_piece['price']
                                 
@@ -1534,79 +1558,8 @@ elif menu == "💵 Quick Sell":
                 else:
                     st.info("No Piece vegetables available")
             
-            # Manual vegetable entry
-            st.markdown("---")
-            st.markdown("#### 🔤 Manual Vegetable Entry")
-            
-            with st.form("manual_veg_form", clear_on_submit=True):
-                man_col1, man_col2, man_col3 = st.columns([3, 2, 1])
-                
-                with man_col1:
-                    manual_veg = st.text_input("Vegetable Name", placeholder="Enter vegetable name manually", key="manual_veg_input")
-                    
-                    # Check if vegetable exists
-                    if manual_veg:
-                        stock, _, price, unit_type = get_stock(manual_veg)
-                        if stock <= 0:
-                            st.warning(f"{manual_veg} is out of stock or doesn't exist")
-                        else:
-                            # Calculate how much is already in cart
-                            current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == manual_veg)
-                            available_stock = stock - current_in_cart
-                            
-                            if available_stock <= 0:
-                                st.error(f"No stock available! {manual_veg} is already in cart or out of stock.")
-                            else:
-                                if unit_type == 'kg':
-                                    st.info(f"**Price:** ₹{price:.2f}/kg, **Available Stock:** {available_stock:.2f} kg")
-                                elif unit_type == 'piece':
-                                    st.info(f"**Price:** ₹{price:.2f}/piece, **Available Stock:** {available_stock:.0f} pieces")
-                                else:
-                                    st.info(f"**Price:** ₹{price:.2f} per {unit_type}, **Available Stock:** {available_stock:.2f} {unit_type}")
-                
-                with man_col2:
-                    if manual_veg:
-                        stock, _, price, unit_type = get_stock(manual_veg)
-                        # Calculate how much is already in cart
-                        current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == manual_veg)
-                        available_stock = stock - current_in_cart
-                        
-                        if available_stock > 0:
-                            if unit_type == 'kg':
-                                man_qty_kg = st.number_input("Kg", min_value=0.0, step=0.5, value=0.5, key="man_kg_input")
-                                
-                                # Validate that man_qty_kg doesn't exceed available stock
-                                if man_qty_kg > available_stock:
-                                    st.warning(f"Maximum available: {available_stock:.2f} kg")
-                                    man_qty_kg = min(man_qty_kg, available_stock)
-                                
-                                man_qty = man_qty_kg
-                            elif unit_type == 'piece':
-                                man_qty = st.number_input("Pieces", min_value=1, step=1, value=1, key="man_pieces_input")
-                                
-                                # Validate that man_qty doesn't exceed available stock
-                                if man_qty > available_stock:
-                                    st.warning(f"Maximum available: {available_stock:.0f} pieces")
-                                    man_qty = min(man_qty, available_stock)
-                            else:
-                                man_qty = st.number_input(f"Quantity ({unit_type})", min_value=0.1, step=1.0, value=1.0, key=f"man_{unit_type}_input")
-                        else:
-                            man_qty = 0
-                            st.error("No available stock!")
-                    else:
-                        man_qty = 0
-                
-                with man_col3:
-                    st.write("")  # Spacer
-                    st.write("")  # Spacer
-                    # Submit button
-                    submitted_manual = st.form_submit_button("➕ Add Manual", use_container_width=True)
-                    if submitted_manual:
-                        if manual_veg and man_qty > 0:
-                            if add_to_cart_simple(manual_veg, man_qty):
-                                unit_type = get_stock(manual_veg)[3]
-                                unit_display = unit_type if unit_type != 'kg' else 'kg'
-                                st.success(f"Added {man_qty:.2f} {unit_display} of {manual_veg}")
+            # Manual vegetable entry section removed as requested
+            # Only dropdown selection is available
         
         with col2:
             st.markdown("### 🛒 Current Bill")
@@ -1693,14 +1646,21 @@ elif menu == "💵 Quick Sell":
                                 st.write(f"**{veg}** - Current: {qty:.2f} {unit_display}")
                             with edit_col2:
                                 stock, _, _, _ = get_stock(veg)
-                                max_qty = stock + qty  # Allow up to current + already in cart
+                                # Remove the maximum calculation and warning
                                 new_qty = st.number_input(f"New Qty", min_value=0.0, value=float(qty), 
-                                                        max_value=float(max_qty), step=0.1, key=f"edit_{veg}_{idx}")
+                                                        step=0.1, key=f"edit_{veg}_{idx}")
                                 if new_qty != qty:
                                     if st.button("Update", key=f"update_{veg}_{idx}"):
-                                        update_cart_qty(veg, new_qty)
-                                        st.success(f"Updated {veg}")
-                                        st.rerun()
+                                        # Just validate without showing warning
+                                        if new_qty <= stock:
+                                            update_cart_qty(veg, new_qty)
+                                            st.success(f"Updated {veg}")
+                                            st.rerun()
+                                        else:
+                                            # Silent adjustment
+                                            update_cart_qty(veg, stock)
+                                            st.success(f"Adjusted to available stock: {stock:.2f}")
+                                            st.rerun()
                 
                 with col_c:
                     if st.button("✅ Complete Bill", type="primary", use_container_width=True, key="complete_bill"):
@@ -1821,7 +1781,7 @@ elif menu == "💵 Quick Sell":
                 if st.button("🏠 Main Menu", use_container_width=True, key="main_menu"):
                     st.session_state.last_sale = None
                     st.rerun()
-                    
+
 # ========================== INVENTORY ==========================
 elif menu == "📦 Inventory":
     st.markdown("""
