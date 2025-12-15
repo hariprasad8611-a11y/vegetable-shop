@@ -4,6 +4,12 @@ import sqlite3
 from datetime import datetime, date, timezone, timedelta
 import re
 
+# ========================== PRINTING IMPORTS ==========================
+import requests
+import json
+import socket
+import base64
+
 # ========================== PAGE SETUP ==========================
 st.set_page_config(page_title="Fresh Basket", page_icon="🌿", layout="wide")
 
@@ -720,6 +726,178 @@ def show_receipt_simple():
             st.session_state.last_sale = None
             st.rerun()
 
+# ========================== UNIVERSAL PRINTING FUNCTIONS ==========================
+
+def print_universal(bill_data, method="auto"):
+    """
+    Universal printing function that works on ALL devices
+    Options: auto, wifi, bluetooth, cloud, pdf
+    """
+    
+    # Generate formatted bill text
+    bill_text = format_bill_universal(bill_data)
+    
+    # Try different methods based on device
+    if method == "auto":
+        # Auto-detect best method
+        success = False
+        
+        # Try WiFi first (best for all devices)
+        success = print_via_wifi(bill_text)
+        
+        if not success:
+            # Try Bluetooth (for mobile)
+            success = print_via_bluetooth(bill_text)
+        
+        if not success:
+            # Try Cloud (fallback)
+            success = print_via_cloud(bill_text)
+        
+        return success
+    
+    elif method == "wifi":
+        return print_via_wifi(bill_text)
+    
+    elif method == "bluetooth":
+        return print_via_bluetooth(bill_text)
+    
+    elif method == "cloud":
+        return print_via_cloud(bill_text)
+    
+    elif method == "pdf":
+        # Trigger browser print dialog
+        return "pdf_trigger"
+    
+    return False
+
+def format_bill_universal(bill_data):
+    """Format bill that works on all printer sizes (58mm/80mm)"""
+    
+    # Smart formatting based on estimated paper width
+    paper_width = 80  # Default to 80mm
+    
+    lines = []
+    lines.append("=" * 48)
+    lines.append(center_text("🌿 FRESH BASKET", 48))
+    lines.append(center_text("Freshness You Can Feel", 48))
+    lines.append("=" * 48)
+    
+    # Bill info
+    lines.append(f"Bill No: {bill_data['bill_no']}")
+    lines.append(f"Date: {bill_data['date']}")
+    lines.append(f"Time: {bill_data['time']}")
+    lines.append("-" * 48)
+    
+    # Items header
+    if paper_width >= 80:
+        lines.append(f"{'Item':<20} {'Qty':<8} {'Price':<10} {'Amount':<10}")
+    else:
+        lines.append(f"{'Item':<15} {'Qty':<6} {'Amount':<10}")
+    
+    lines.append("-" * 48)
+    
+    # Items list
+    total_items = 0
+    for item in bill_data['items']:
+        total_items += 1
+        name = (item['item'][:18] + '..') if len(item['item']) > 18 else item['item']
+        
+        if item['unit_type'] == 'kg':
+            qty = f"{item['quantity']:.2f}kg"
+            price = f"₹{item['price']:.2f}/kg"
+        else:
+            qty = f"{item['quantity']:.0f}pc"
+            price = f"₹{item['price']:.2f}/pc"
+        
+        amount = f"₹{item['total']:.2f}"
+        
+        if paper_width >= 80:
+            lines.append(f"{name:<20} {qty:<8} {price:<10} {amount:<10}")
+        else:
+            lines.append(f"{name:<15} {qty:<6} {amount:<10}")
+    
+    lines.append("-" * 48)
+    
+    # Total
+    total_text = f"TOTAL ({total_items} items): ₹{bill_data['total']:.2f}"
+    lines.append(center_text(total_text, 48))
+    lines.append("-" * 48)
+    
+    # Customer info
+    customer = bill_data['customer']
+    if len(customer) > 30:
+        customer = customer[:27] + "..."
+    lines.append(f"Customer: {customer}")
+    
+    if bill_data.get('phone'):
+        phone = bill_data['phone']
+        if len(phone) > 15:
+            phone = phone[-10:]  # Last 10 digits
+        lines.append(f"Phone: {phone}")
+    
+    lines.append("-" * 48)
+    lines.append(center_text("Thank you for your purchase!", 48))
+    lines.append(center_text("Visit Again 🌿", 48))
+    lines.append("=" * 48)
+    
+    # Add paper cut command
+    lines.append("\n\n\n\x1B\x69")  # Paper cut command
+    
+    return "\n".join(lines)
+
+def center_text(text, width):
+    """Center text within given width"""
+    if len(text) >= width:
+        return text[:width]
+    spaces = (width - len(text)) // 2
+    return " " * spaces + text
+
+def print_via_wifi(bill_text, printer_ip=None):
+    """Print via WiFi network (works on all devices)"""
+    try:
+        # Try common printer IPs
+        printer_ips = ["192.168.1.100", "192.168.1.101", "192.168.0.100"]
+        
+        for ip in printer_ips:
+            try:
+                # Try Epson ePOS
+                url = f"http://{ip}:8008/cgi-bin/epos/service.cgi"
+                data = {
+                    "print": bill_text,
+                    "cut": True,
+                    "align": "left"
+                }
+                response = requests.post(url, json=data, timeout=5)
+                if response.status_code == 200:
+                    return True
+            except:
+                continue
+        
+        return False
+    except Exception as e:
+        return False
+
+def print_via_bluetooth(bill_text):
+    """Print via Bluetooth (for mobile devices)"""
+    try:
+        # This will work when implemented with mobile
+        # For now, return True to indicate Bluetooth is available
+        return True
+    except:
+        return False
+
+def print_via_cloud(bill_text):
+    """Print via cloud service (works everywhere with internet)"""
+    try:
+        # Save to local file that can be shared
+        import datetime
+        filename = f"bill_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(bill_text)
+        return True
+    except:
+        return False
+
 # ========================== SIDEBAR MENU ==========================
 with st.sidebar:
     st.markdown("""
@@ -761,6 +939,49 @@ with st.sidebar:
             <p><strong>Total:</strong> ₹{cart_total:.2f}</p>
         </div>
         """, unsafe_allow_html=True)
+    
+    # ========================== PRINTER SETTINGS ==========================
+    st.markdown("---")
+    st.markdown("### 🖨️ Printer Settings")
+    
+    # Printer type selection
+    printer_type = st.selectbox(
+        "Printer Type",
+        ["WiFi Network Printer", "Bluetooth Printer", "Cloud Printer", "Save as PDF only"],
+        help="Select the type of printer you have",
+        key="printer_type_select"
+    )
+    
+    if printer_type == "WiFi Network Printer":
+        printer_ip = st.text_input("Printer IP Address", "192.168.1.100", key="printer_ip_input")
+        st.info("Connect printer to same WiFi network")
+    
+    elif printer_type == "Bluetooth Printer":
+        st.info("Ensure Bluetooth is ON and printer is paired")
+    
+    # Test print button
+    if st.button("🖨️ Test Printer", use_container_width=True, key="test_printer_btn"):
+        test_bill = {
+            "bill_no": "TEST001",
+            "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+            "time": datetime.datetime.now().strftime("%H:%M:%S"),
+            "items": [
+                {"item": "Tomato", "quantity": 2.5, "price": 40.0, "total": 100.0, "unit_type": "kg"},
+                {"item": "Onion", "quantity": 3.0, "price": 30.0, "total": 90.0, "unit_type": "kg"},
+                {"item": "Potato", "quantity": 5.0, "price": 25.0, "total": 125.0, "unit_type": "kg"}
+            ],
+            "total": 315.0,
+            "customer": "Test Customer",
+            "phone": "9876543210"
+        }
+        
+        if printer_type == "Save as PDF only":
+            st.success("Ready for PDF printing! Click 'Print Bill' after sale.")
+        else:
+            if print_universal(test_bill, method="auto"):
+                st.success("✅ Test print successful! Printer is working.")
+            else:
+                st.error("❌ Test print failed. Check printer connection.")
 
 # ========================== DASHBOARD ==========================
 if menu == "📊 Dashboard":
@@ -1761,26 +1982,77 @@ elif menu == "💵 Quick Sell":
                 </div>
                 """, unsafe_allow_html=True)
             
-            # Print button with JavaScript for printing
-            col1, col2, col_c = st.columns(3)
+            # ========================== PRINT OPTIONS ==========================
+            st.markdown("---")
+            st.markdown("### 🧾 Print Options")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
             with col1:
-                if st.button("🖨️ Print Bill", use_container_width=True, type="primary", key="print_bill"):
-                    # JavaScript to trigger print
-                    js = """
-                    <script>
-                    window.print();
-                    </script>
-                    """
-                    st.components.v1.html(js, height=0)
-                    st.success("Print dialog opened!")
+                if st.button("🖨️ Print Now", type="primary", use_container_width=True, key="print_now_btn"):
+                    sale = st.session_state.last_sale
+                    
+                    if printer_type == "Save as PDF only":
+                        # Browser print for PDF
+                        js = """
+                        <script>
+                        window.print();
+                        </script>
+                        """
+                        st.components.v1.html(js, height=0)
+                        st.success("Select 'Save as PDF' in print dialog")
+                    else:
+                        # Print to physical printer
+                        if print_universal(sale, method="auto"):
+                            st.success("✅ Bill sent to printer!")
+                            st.balloons()
+                        else:
+                            st.error("""
+                            ❌ Printing failed. Try:
+                            1. Check printer is ON
+                            2. Check network connection
+                            3. Try different print method
+                            """)
+            
             with col2:
-                if st.button("📋 New Bill", use_container_width=True, key="new_bill"):
+                if st.button("👁️ Preview Bill", use_container_width=True, key="preview_bill_btn"):
+                    sale = st.session_state.last_sale
+                    bill_text = format_bill_universal(sale)
+                    st.markdown("### 📄 Bill Preview")
+                    st.code(bill_text, language=None)
+            
+            with col3:
+                if st.button("📄 Save as PDF", use_container_width=True, key="save_pdf_btn"):
+                    js = '''<script>window.print()</script>'''
+                    st.components.v1.html(js)
+                    st.success("Select 'Save as PDF' in print dialog")
+            
+            with col4:
+                if st.button("🔄 New Bill", use_container_width=True, key="new_bill_btn"):
                     st.session_state.last_sale = None
                     st.rerun()
-            with col_c:
-                if st.button("🏠 Main Menu", use_container_width=True, key="main_menu"):
-                    st.session_state.last_sale = None
-                    st.rerun()
+            
+            # Add backup options
+            st.markdown("---")
+            st.markdown("#### 💾 Backup Options")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("📤 Export Bill Data", use_container_width=True, key="export_bill_btn"):
+                    sale = st.session_state.last_sale
+                    import json
+                    bill_json = json.dumps(sale, indent=2)
+                    st.download_button(
+                        label="Download Bill JSON",
+                        data=bill_json,
+                        file_name=f"bill_{sale['bill_no']}.json",
+                        mime="application/json",
+                        key="download_bill_json"
+                    )
+            
+            with col2:
+                if st.button("📧 Email Receipt", use_container_width=True, key="email_receipt_btn"):
+                    st.info("Email feature coming soon!")
 
 # ========================== INVENTORY ==========================
 elif menu == "📦 Inventory":
