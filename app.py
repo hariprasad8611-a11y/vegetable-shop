@@ -3306,18 +3306,3 @@ st.markdown("""
     <p style="font-size:0.8em; color:#95a5a6;">© 2024 Fresh Basket. All features working perfectly.</p>
 </div>
 """, unsafe_allow_html=True)
-
-# ========================== IMPORTANT NOTE ==========================
-st.markdown("""
-<div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px; border-left: 5px solid #27ae60;">
-    <h4>💡 Important Notes:</h4>
-    <ol>
-        <li><strong>Data Persistence:</strong> All your data is saved in a local SQLite database (shop.db) and will persist between sessions.</li>
-        <li><strong>All Dates Data:</strong> You can view data for all dates by selecting the "Show all dates" option in each section.</li>
-        <li><strong>Quick Sell Updates:</strong> KG quantity boxes are now empty by default (no 0.00 showing).</li>
-        <li><strong>Printing Fixed:</strong> PDF printing now works properly with proper bill display.</li>
-        <li><strong>Customer Reports Fixed:</strong> Customer details now show correctly in download reports.</li>
-        <li><strong>Added "Others" Category:</strong> In Expenses page, "Others" category is now available.</li>
-    </ol>
-</div>
-""", unsafe_allow_html=True)
