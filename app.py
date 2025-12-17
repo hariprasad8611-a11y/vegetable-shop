@@ -3,12 +3,104 @@ import pandas as pd
 import sqlite3
 from datetime import datetime, date, timezone, timedelta
 import re
+import os
+import sys
+import atexit
 
 # ========================== PRINTING IMPORTS ==========================
 import requests
 import json
 import socket
 import base64
+
+# ========================== DATABASE PERSISTENCE SETUP ==========================
+# Use a persistent location for the database file
+if sys.platform == "win32":
+    # Windows
+    PERSISTENT_DIR = os.path.join(os.environ.get("APPDATA", "."), "FreshBasket")
+else:
+    # Linux/Mac
+    PERSISTENT_DIR = os.path.join(os.path.expanduser("~"), ".freshbasket")
+
+# Create the directory if it doesn't exist
+os.makedirs(PERSISTENT_DIR, exist_ok=True)
+
+# Database file in persistent location
+DB_FILE = os.path.join(PERSISTENT_DIR, "shop.db")
+BACKUP_FILE = os.path.join(PERSISTENT_DIR, "shop_backup.db")
+
+# ========================== DATABASE BACKUP & RECOVERY ==========================
+def backup_database():
+    """Create a backup of the database"""
+    try:
+        if os.path.exists(DB_FILE):
+            import shutil
+            shutil.copy2(DB_FILE, BACKUP_FILE)
+            return True
+    except Exception as e:
+        print(f"Backup failed: {e}")
+    return False
+
+def restore_database():
+    """Restore database from backup if needed"""
+    try:
+        if os.path.exists(BACKUP_FILE) and not os.path.exists(DB_FILE):
+            import shutil
+            shutil.copy2(BACKUP_FILE, DB_FILE)
+            return True
+        elif os.path.exists(BACKUP_FILE) and os.path.getsize(DB_FILE) == 0:
+            import shutil
+            shutil.copy2(BACKUP_FILE, DB_FILE)
+            return True
+    except Exception as e:
+        print(f"Restore failed: {e}")
+    return False
+
+# Check for existing database in current directory (for migration)
+CURRENT_DIR_DB = "shop.db"
+if os.path.exists(CURRENT_DIR_DB) and not os.path.exists(DB_FILE):
+    # Migrate old database to persistent location
+    import shutil
+    shutil.copy2(CURRENT_DIR_DB, DB_FILE)
+    st.toast("✅ Database migrated to persistent storage", icon="📦")
+
+# Register backup on exit
+atexit.register(backup_database)
+
+# ========================== DATABASE CONNECTION ==========================
+def get_db_connection():
+    """Get a database connection with proper error handling"""
+    try:
+        # First, restore if needed
+        if not os.path.exists(DB_FILE) or os.path.getsize(DB_FILE) == 0:
+            restore_database()
+        
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")  # Enable Write-Ahead Logging for better concurrency
+        conn.execute("PRAGMA synchronous=NORMAL")  # Balance between safety and performance
+        conn.execute("PRAGMA foreign_keys=ON")
+        
+        # Set busy timeout to handle concurrent access
+        conn.execute("PRAGMA busy_timeout = 3000")
+        
+        return conn
+    except Exception as e:
+        st.error(f"Database connection failed: {e}")
+        # Try to create a new database
+        try:
+            conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+            return conn
+        except Exception as e2:
+            st.error(f"Could not create database: {e2}")
+            return None
+
+# Initialize connection
+conn = get_db_connection()
+if conn is None:
+    st.error("❌ Critical: Could not initialize database. Please refresh the page.")
+    st.stop()
+
+c = conn.cursor()
 
 # ========================== PAGE SETUP ==========================
 st.set_page_config(page_title="Fresh Basket", page_icon="🌿", layout="wide")
@@ -245,102 +337,107 @@ st.markdown("""
             visibility: visible !important;
         }
     }
+    
+    /* Database status indicator */
+    .db-status {
+        padding: 8px 15px;
+        border-radius: 20px;
+        font-size: 0.8em;
+        font-weight: bold;
+        display: inline-block;
+        margin: 5px;
+    }
+    .db-ok {
+        background: #27ae60;
+        color: white;
+    }
+    .db-warning {
+        background: #f39c12;
+        color: white;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# Header
-st.markdown("""
+# Header with database status
+db_size = os.path.getsize(DB_FILE) if os.path.exists(DB_FILE) else 0
+db_status = "✅ OK" if db_size > 1000 else "⚠️ Check"
+
+st.markdown(f"""
 <div style="text-align:center; margin-bottom:30px;">
     <h1>🌿 Fresh Basket</h1>
-    <div class="subtitle">Freshness You Can Feel</div>
+    <div class="subtitle">Freshness You Can Feel | DB: {db_status} | Size: {db_size/1024:.1f} KB</div>
 </div>
 """, unsafe_allow_html=True)
 
-# ========================== DATABASE ==========================
-DB_FILE = "shop.db"
-conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-c = conn.cursor()
-
 # ========================== DATABASE SETUP ==========================
-# First, check if inventory table exists and has unit_type column
-c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='inventory'")
-table_exists = c.fetchone()
+# Create tables if they don't exist
+tables_sql = {
+    "inventory": """
+        CREATE TABLE IF NOT EXISTS inventory (
+            vegetable TEXT PRIMARY KEY,
+            quantity REAL,
+            cost_price REAL,
+            selling_price REAL,
+            image_url TEXT,
+            unit_type TEXT DEFAULT 'kg'
+        )
+    """,
+    "purchases": """
+        CREATE TABLE IF NOT EXISTS purchases (
+            date TEXT, 
+            vegetable TEXT, 
+            quantity REAL, 
+            amount REAL, 
+            supplier TEXT
+        )
+    """,
+    "sales": """
+        CREATE TABLE IF NOT EXISTS sales (
+            date TEXT, 
+            vegetable TEXT, 
+            quantity_sold REAL, 
+            sale_price REAL, 
+            total REAL, 
+            customer TEXT,
+            unit_type TEXT
+        )
+    """,
+    "waste": """
+        CREATE TABLE IF NOT EXISTS waste (
+            date TEXT, 
+            vegetable TEXT, 
+            quantity REAL, 
+            reason TEXT
+        )
+    """,
+    "customers": """
+        CREATE TABLE IF NOT EXISTS customers (
+            phone TEXT PRIMARY KEY, 
+            name TEXT, 
+            points INTEGER DEFAULT 0
+        )
+    """,
+    "expenses": """
+        CREATE TABLE IF NOT EXISTS expenses (
+            date TEXT, 
+            category TEXT, 
+            amount REAL, 
+            description TEXT
+        )
+    """
+}
 
-if table_exists:
-    # Check if unit_type column exists
-    c.execute("PRAGMA table_info(inventory)")
-    columns = [column[1] for column in c.fetchall()]
-    
-    if 'unit_type' not in columns:
-        # Add unit_type column if it doesn't exist
-        try:
-            c.execute("ALTER TABLE inventory ADD COLUMN unit_type TEXT DEFAULT 'kg'")
-            conn.commit()
-        except Exception as e:
-            pass
-else:
-    # Create tables if they don't exist
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS inventory (
-        vegetable TEXT PRIMARY KEY,
-        quantity REAL,
-        cost_price REAL,
-        selling_price REAL,
-        image_url TEXT,
-        unit_type TEXT DEFAULT 'kg'
-    )
-    """)
+for table_name, sql in tables_sql.items():
+    c.execute(sql)
 
-# Create other tables if they don't exist
-c.execute("""
-CREATE TABLE IF NOT EXISTS purchases (
-    date TEXT, 
-    vegetable TEXT, 
-    quantity REAL, 
-    amount REAL, 
-    supplier TEXT
-)
-""")
-
-c.execute("""
-CREATE TABLE IF NOT EXISTS sales (
-    date TEXT, 
-    vegetable TEXT, 
-    quantity_sold REAL, 
-    sale_price REAL, 
-    total REAL, 
-    customer TEXT,
-    unit_type TEXT
-)
-""")
-
-c.execute("""
-CREATE TABLE IF NOT EXISTS waste (
-    date TEXT, 
-    vegetable TEXT, 
-    quantity REAL, 
-    reason TEXT
-)
-""")
-
-c.execute("""
-CREATE TABLE IF NOT EXISTS customers (
-    phone TEXT PRIMARY KEY, 
-    name TEXT, 
-    points INTEGER DEFAULT 0
-)
-""")
-
-c.execute("""
-CREATE TABLE IF NOT EXISTS expenses (
-    date TEXT, 
-    category TEXT, 
-    amount REAL, 
-    description TEXT
-)
-""")
-
-conn.commit()
+# Check if unit_type column exists in inventory
+c.execute("PRAGMA table_info(inventory)")
+columns = [column[1] for column in c.fetchall()]
+if 'unit_type' not in columns:
+    try:
+        c.execute("ALTER TABLE inventory ADD COLUMN unit_type TEXT DEFAULT 'kg'")
+    except Exception as e:
+        pass
 
 # ========================== UPDATED DEFAULT VEGETABLES AND FRUITS ==========================
 # Vegetables in KG
@@ -469,6 +566,45 @@ for item, unit_type in default_items:
             pass
 
 conn.commit()
+
+# ========================== DATABASE INTEGRITY CHECK ==========================
+def check_database_integrity():
+    """Check and fix database integrity"""
+    try:
+        # Check if database exists and has data
+        if not os.path.exists(DB_FILE):
+            st.warning("Database file not found. Creating new database.")
+            return False
+        
+        # Check if tables exist
+        c.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [row[0] for row in c.fetchall()]
+        required_tables = ['inventory', 'purchases', 'sales', 'waste', 'customers', 'expenses']
+        
+        missing_tables = [t for t in required_tables if t not in tables]
+        if missing_tables:
+            st.warning(f"Missing tables: {missing_tables}. Recreating...")
+            return False
+        
+        # Check if inventory has data
+        c.execute("SELECT COUNT(*) FROM inventory")
+        count = c.fetchone()[0]
+        if count == 0:
+            st.info("Database is empty. Initializing with default items.")
+        
+        return True
+    except Exception as e:
+        st.error(f"Database integrity check failed: {e}")
+        return False
+
+# Run integrity check
+if not check_database_integrity():
+    # Recreate tables
+    for table_name, sql in tables_sql.items():
+        c.execute(f"DROP TABLE IF EXISTS {table_name}")
+        c.execute(sql)
+    conn.commit()
+    st.rerun()
 
 # ========================== HELPERS ==========================
 def get_stock(veg):
@@ -982,7 +1118,7 @@ def print_via_cloud(bill_text):
     except:
         return False
 
-# ========================== SIDEBAR MENU ==========================
+# ========================== DATABASE MANAGEMENT IN SIDEBAR ==========================
 with st.sidebar:
     st.markdown("""
     <div style="background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%); padding:20px; border-radius:15px; margin-bottom:20px;">
@@ -994,7 +1130,7 @@ with st.sidebar:
         "",
         ["📊 Dashboard", "🛒 Add Purchase", "🏷 Set Prices", "💵 Quick Sell", "📦 Inventory", 
          "📋 Purchases", "🧾 Sales", "💸 Expenses", "👥 Customers", "🗑 Waste", 
-         "⬇ Download", "💰 Financials"],
+         "⬇ Download", "💰 Financials", "🔧 Database Tools"],
         label_visibility="collapsed"
     )
     
@@ -1011,6 +1147,33 @@ with st.sidebar:
         <h3 style="color:#2c3e50;">{selected_date.strftime('%d %B %Y')}</h3>
     </div>
     """, unsafe_allow_html=True)
+    
+    # Database Info
+    st.markdown("---")
+    st.markdown("### 💾 Database Info")
+    
+    try:
+        c.execute("SELECT COUNT(*) FROM inventory")
+        inv_count = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM sales")
+        sales_count = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM purchases")
+        purchases_count = c.fetchone()[0]
+        
+        db_size = os.path.getsize(DB_FILE) if os.path.exists(DB_FILE) else 0
+        
+        st.markdown(f"""
+        <div style="background: white; padding: 15px; border-radius: 10px; margin: 10px 0;">
+            <p style="margin: 5px 0; font-size: 0.9em;"><strong>Items:</strong> {inv_count}</p>
+            <p style="margin: 5px 0; font-size: 0.9em;"><strong>Sales:</strong> {sales_count}</p>
+            <p style="margin: 5px 0; font-size: 0.9em;"><strong>Purchases:</strong> {purchases_count}</p>
+            <p style="margin: 5px 0; font-size: 0.9em;"><strong>Size:</strong> {db_size/1024:.1f} KB</p>
+        </div>
+        """, unsafe_allow_html=True)
+    except:
+        pass
     
     # Cart summary
     if st.session_state.cart:
@@ -3298,11 +3461,128 @@ elif menu == "💰 Financials":
             use_container_width=True
         )
 
+# ========================== DATABASE TOOLS ==========================
+elif menu == "🔧 Database Tools":
+    st.markdown("""
+    <div style="text-align:center; margin-bottom:30px;">
+        <h2>🔧 Database Tools</h2>
+        <div class="subtitle">Freshness You Can Feel</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Database management tools
+    st.markdown("### 💾 Database Management")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### 📊 Database Status")
+        try:
+            # Get database info
+            db_size = os.path.getsize(DB_FILE) if os.path.exists(DB_FILE) else 0
+            backup_size = os.path.getsize(BACKUP_FILE) if os.path.exists(BACKUP_FILE) else 0
+            
+            st.info(f"""
+            **Database File:** {DB_FILE}
+            **Size:** {db_size/1024:.1f} KB
+            **Backup Size:** {backup_size/1024:.1f} KB
+            **Tables:** 6
+            **Last Backup:** {datetime.fromtimestamp(os.path.getmtime(BACKUP_FILE)).strftime('%Y-%m-%d %H:%M') if os.path.exists(BACKUP_FILE) else 'Never'}
+            """)
+        except Exception as e:
+            st.error(f"Error reading database info: {e}")
+    
+    with col2:
+        st.markdown("#### 🛠️ Tools")
+        
+        # Create backup button
+        if st.button("💾 Create Backup", use_container_width=True, key="create_backup"):
+            if backup_database():
+                st.success("✅ Backup created successfully!")
+            else:
+                st.error("❌ Backup failed!")
+        
+        # Restore from backup button
+        if st.button("🔄 Restore from Backup", use_container_width=True, key="restore_backup"):
+            if restore_database():
+                st.success("✅ Database restored from backup!")
+                st.rerun()
+            else:
+                st.error("❌ Restore failed!")
+        
+        # Export database button
+        if st.button("📤 Export Database", use_container_width=True, key="export_db"):
+            try:
+                import shutil
+                export_file = os.path.join(PERSISTENT_DIR, f"freshbasket_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db")
+                shutil.copy2(DB_FILE, export_file)
+                st.success(f"✅ Database exported to: {export_file}")
+            except Exception as e:
+                st.error(f"❌ Export failed: {e}")
+        
+        # Database integrity check
+        if st.button("🔍 Check Integrity", use_container_width=True, key="check_integrity"):
+            if check_database_integrity():
+                st.success("✅ Database integrity check passed!")
+            else:
+                st.warning("⚠️ Database integrity issues found!")
+    
+    # Database cleanup
+    st.markdown("---")
+    st.markdown("### 🧹 Database Cleanup")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Remove old sales data
+        days_to_keep = st.number_input("Days to keep sales data", min_value=30, max_value=365, value=90, step=30)
+        if st.button("🗑️ Clean Old Sales Data", use_container_width=True, type="secondary", key="clean_sales"):
+            cutoff_date = (datetime.now() - timedelta(days=days_to_keep)).strftime("%Y-%m-%d")
+            try:
+                c.execute("DELETE FROM sales WHERE date < ?", (cutoff_date,))
+                conn.commit()
+                st.success(f"✅ Sales data older than {cutoff_date} removed!")
+            except Exception as e:
+                st.error(f"❌ Cleanup failed: {e}")
+    
+    with col2:
+        # Vacuum database
+        if st.button("⚡ Vacuum Database", use_container_width=True, key="vacuum_db"):
+            try:
+                c.execute("VACUUM")
+                conn.commit()
+                st.success("✅ Database optimized and compacted!")
+            except Exception as e:
+                st.error(f"❌ Vacuum failed: {e}")
+    
+    # Database statistics
+    st.markdown("---")
+    st.markdown("### 📈 Database Statistics")
+    
+    try:
+        stats = {
+            "Table": ["Inventory", "Sales", "Purchases", "Customers", "Expenses", "Waste"],
+            "Count": []
+        }
+        
+        tables = ["inventory", "sales", "purchases", "customers", "expenses", "waste"]
+        for table in tables:
+            c.execute(f"SELECT COUNT(*) FROM {table}")
+            stats["Count"].append(c.fetchone()[0])
+        
+        stats_df = pd.DataFrame(stats)
+        st.dataframe(stats_df, use_container_width=True)
+    except Exception as e:
+        st.error(f"Error fetching statistics: {e}")
+
 # Footer
 st.markdown("---")
 st.markdown("""
 <div class="footer">
     <p>🌿 Fresh Basket — Freshness You Can Feel | Quality Vegetables Daily ✅</p>
-    <p style="font-size:0.8em; color:#95a5a6;">© 2024 Fresh Basket. All features working perfectly.</p>
+    <p style="font-size:0.8em; color:#95a5a6;">© 2024 Fresh Basket. Database: {db_path}</p>
 </div>
-""", unsafe_allow_html=True)
+""".format(db_path=DB_FILE), unsafe_allow_html=True)
+
+# Close database connection properly
+conn.close()
