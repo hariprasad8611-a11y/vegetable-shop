@@ -317,12 +317,13 @@ def create_fresh_database():
         """,
         "customers": """
             CREATE TABLE customers (
-                phone TEXT PRIMARY KEY, 
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone TEXT, 
                 name TEXT, 
                 points INTEGER DEFAULT 0,
                 total_spent REAL DEFAULT 0,
                 last_visit TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                UNIQUE(phone, name)
             )
         """,
         "expenses": """
@@ -430,17 +431,17 @@ if not st.session_state.logged_in:
 # ========================== PAGE SETUP ==========================
 st.set_page_config(page_title="Fresh Basket", page_icon="🌿", layout="wide")
 
-# Enhanced Custom CSS with more vibrant colors and better readability
+# Custom CSS for beautiful UI with red color boxes
 st.markdown("""
 <style>
-    /* Main background with gradient */
-    .main {background: linear-gradient(135deg, #f5f7fa 0%, #e4e7ec 100%);}
+    /* Main background */
+    .main {background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);}
     
     /* Fonts */
-    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=Montserrat:wght@400;500;600;700&family=Roboto:wght@300;400;500&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=Montserrat:wght@400;500;600;700&display=swap');
     
     * {
-        font-family: 'Roboto', sans-serif;
+        font-family: 'Poppins', sans-serif;
     }
     
     h1, h2, h3, h4, h5, h6 {
@@ -448,323 +449,222 @@ st.markdown("""
         font-weight: 600 !important;
     }
     
-    /* Vibrant Headers */
-    h1 {text-align:center; color:#2c3e50; font-size:3em; margin-bottom:5px; text-shadow: 2px 2px 4px rgba(0,0,0,0.1);}
-    .subtitle {text-align:center; color:#ff6b6b; font-size:1.3em; margin-bottom:10px; font-weight:600; letter-spacing:1px;}
+    /* Headers */
+    h1 {text-align:center; color:#2c3e50; font-size:2.8em; margin-bottom:5px;}
+    .subtitle {text-align:center; color:#27ae60; font-size:1.2em; margin-bottom:10px; font-weight:500;}
     
-    /* Enhanced Buttons with shadows */
+    /* Buttons */
     .stButton>button {
         height:3em; 
         border-radius:12px; 
         font-size:16px; 
-        font-weight:600;
+        font-weight:500;
         transition: all 0.3s ease;
         border: none !important;
-        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
     }
     .stButton>button:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 8px 16px rgba(0,0,0,0.2) !important;
+        transform: translateY(-2px);
+        box-shadow: 0 6px 12px rgba(0,0,0,0.15) !important;
     }
     
-    .primary-btn {background: linear-gradient(135deg, #ff6b6b 0%, #ee5a52 100%) !important; color:white !important;}
-    .secondary-btn {background: linear-gradient(135deg, #48cae4 0%, #0096c7 100%) !important; color:white !important;}
-    .success-btn {background: linear-gradient(135deg, #52b788 0%, #40916c 100%) !important; color:white !important;}
-    .warning-btn {background: linear-gradient(135deg, #ffd166 0%, #ffb703 100%) !important; color:#2c3e50 !important;}
-    .info-btn {background: linear-gradient(135deg, #7209b7 0%, #560bad 100%) !important; color:white !important;}
+    .primary-btn {background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%) !important; color:white !important;}
+    .secondary-btn {background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%) !important; color:white !important;}
+    .success-btn {background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%) !important; color:white !important;}
+    .warning-btn {background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%) !important; color:white !important;}
+    .info-btn {background: linear-gradient(135deg, #3498db 0%, #2980b9 100%) !important; color:white !important;}
     
-    /* Colorful Cards */
+    /* Cards */
     .card {
-        background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
+        background: white;
         padding: 25px;
         border-radius: 20px;
         margin: 15px 0;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-        border: 2px solid rgba(255,255,255,0.3);
+        box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+        border: 1px solid rgba(255,255,255,0.2);
         transition: transform 0.3s ease, box-shadow 0.3s ease;
     }
     .card:hover {
-        transform: translateY(-8px);
-        box-shadow: 0 20px 40px rgba(0,0,0,0.15);
+        transform: translateY(-5px);
+        box-shadow: 0 15px 35px rgba(0,0,0,0.12);
     }
     
-    /* Colorful metric cards */
-    .metric-card-sales {
-        background: linear-gradient(135deg, #ff6b6b 0%, #ee5a52 100%);
+    .metric-card {
+        background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%);
         padding: 25px;
-        border-radius: 20px;
+        border-radius: 15px;
         margin: 10px;
         color: white;
         text-align: center;
-        box-shadow: 0 12px 30px rgba(255,107,107,0.3);
+        box-shadow: 0 8px 25px rgba(39, 174, 96, 0.3);
     }
     
-    .metric-card-inventory {
-        background: linear-gradient(135deg, #48cae4 0%, #0096c7 100%);
-        padding: 25px;
-        border-radius: 20px;
+    .inventory-card {
+        background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+        padding: 20px;
+        border-radius: 15px;
         margin: 10px;
         color: white;
-        text-align: center;
-        box-shadow: 0 12px 30px rgba(72,202,228,0.3);
+        box-shadow: 0 8px 25px rgba(52, 152, 219, 0.3);
     }
     
-    .metric-card-customers {
-        background: linear-gradient(135deg, #7209b7 0%, #560bad 100%);
-        padding: 25px;
-        border-radius: 20px;
+    .sales-card {
+        background: linear-gradient(135deg, #9b59b6 0%, #8e44ad 100%);
+        padding: 20px;
+        border-radius: 15px;
         margin: 10px;
         color: white;
-        text-align: center;
-        box-shadow: 0 12px 30px rgba(114,9,183,0.3);
+        box-shadow: 0 8px 25px rgba(155, 89, 182, 0.3);
     }
     
-    .metric-card-profit {
-        background: linear-gradient(135deg, #52b788 0%, #40916c 100%);
-        padding: 25px;
-        border-radius: 20px;
+    .purchase-card {
+        background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%);
+        padding: 20px;
+        border-radius: 15px;
         margin: 10px;
         color: white;
-        text-align: center;
-        box-shadow: 0 12px 30px rgba(82,183,136,0.3);
+        box-shadow: 0 8px 25px rgba(243, 156, 18, 0.3);
     }
     
-    .metric-card-expense {
-        background: linear-gradient(135deg, #ffd166 0%, #ffb703 100%);
-        padding: 25px;
-        border-radius: 20px;
-        margin: 10px;
-        color: #2c3e50;
-        text-align: center;
-        box-shadow: 0 12px 30px rgba(255,209,102,0.3);
-    }
-    
-    .metric-card-waste {
-        background: linear-gradient(135deg, #f72585 0%, #b5179e 100%);
-        padding: 25px;
-        border-radius: 20px;
+    /* Red alert card */
+    .red-alert-card {
+        background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%) !important;
+        padding: 20px;
+        border-radius: 15px;
         margin: 10px;
         color: white;
-        text-align: center;
-        box-shadow: 0 12px 30px rgba(247,37,133,0.3);
+        box-shadow: 0 8px 25px rgba(231, 76, 60, 0.3);
     }
     
-    /* Enhanced Tables */
+    /* Tables */
     .dataframe {
-        border-radius: 15px !important;
+        border-radius: 10px !important;
         overflow: hidden !important;
-        box-shadow: 0 8px 20px rgba(0,0,0,0.08) !important;
-        border: 2px solid #e9ecef !important;
     }
     
-    .dataframe th {
-        background: linear-gradient(135deg, #48cae4 0%, #0096c7 100%) !important;
-        color: white !important;
-        font-weight: 600 !important;
-        text-align: center !important;
-        padding: 12px !important;
+    /* Inputs */
+    .stSelectbox, .stTextInput, .stNumberInput, .stDateInput {
+        border-radius: 10px !important;
     }
     
-    .dataframe td {
-        padding: 10px !important;
-        border-bottom: 1px solid #e9ecef !important;
+    .stSelectbox>div>div {
+        border-radius: 10px !important;
     }
     
-    .dataframe tr:nth-child(even) {
-        background-color: #f8f9fa !important;
-    }
-    
-    .dataframe tr:hover {
-        background-color: #e3f2fd !important;
-        transform: scale(1.01);
-        transition: all 0.2s ease;
-    }
-    
-    /* Colorful Inputs */
-    .stSelectbox>div>div, .stTextInput>div>div, .stNumberInput>div>div, .stDateInput>div>div {
-        border-radius: 12px !important;
-        border: 2px solid #dee2e6 !important;
-        background: white !important;
-        transition: all 0.3s ease;
-    }
-    
-    .stSelectbox>div>div:hover, .stTextInput>div>div:hover, .stNumberInput>div>div:hover, .stDateInput>div>div:hover {
-        border-color: #48cae4 !important;
-        box-shadow: 0 0 0 3px rgba(72,202,228,0.1) !important;
-    }
-    
-    /* Enhanced Tabs */
+    /* Tabs */
     .stTabs [data-baseweb="tab-list"] {
-        gap: 10px;
-        padding: 12px 0;
-        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
-        border-radius: 12px;
+        gap: 8px;
+        padding: 10px 0;
     }
-    
     .stTabs [data-baseweb="tab"] {
-        border-radius: 12px;
-        padding: 14px 28px;
-        background: white;
-        font-weight: 600;
-        border: 2px solid transparent;
-        transition: all 0.3s ease;
+        border-radius: 12px 12px 0 0;
+        padding: 12px 24px;
+        background: #f8f9fa;
+        font-weight: 500;
     }
-    
-    .stTabs [data-baseweb="tab"]:hover {
-        border-color: #48cae4;
-        transform: translateY(-2px);
-    }
-    
     .stTabs [aria-selected="true"] {
-        background: linear-gradient(135deg, #ff6b6b 0%, #ee5a52 100%) !important;
+        background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%) !important;
         color: white !important;
-        border-color: #ff6b6b !important;
-        box-shadow: 0 4px 12px rgba(255,107,107,0.3);
     }
     
-    /* Enhanced Sidebar */
+    /* Sidebar */
     .css-1d391kg {
-        background: linear-gradient(135deg, #2c3e50 0%, #1a252f 100%) !important;
-        box-shadow: 5px 0 15px rgba(0,0,0,0.1) !important;
+        background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%) !important;
     }
     
-    /* Receipt with colorful border */
+    /* Receipt */
     .receipt {
         background: white;
         padding: 30px;
         border-radius: 20px;
-        box-shadow: 0 20px 40px rgba(0,0,0,0.15);
-        border: 3px solid;
-        border-image: linear-gradient(135deg, #ff6b6b, #48cae4, #7209b7) 1;
+        box-shadow: 0 15px 35px rgba(0,0,0,0.1);
+        border: 2px solid #27ae60;
         max-width: 500px;
         margin: 20px auto;
     }
     
-    /* Colorful Alert boxes */
+    /* Alert boxes */
     .alert-success {
         background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
-        padding: 18px;
-        border-radius: 15px;
-        border-left: 6px solid #28a745;
-        margin: 12px 0;
+        padding: 15px;
+        border-radius: 12px;
+        border-left: 5px solid #28a745;
+        margin: 10px 0;
         color: #155724;
-        box-shadow: 0 6px 15px rgba(40,167,69,0.1);
     }
     
     .alert-warning {
         background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%);
-        padding: 18px;
-        border-radius: 15px;
-        border-left: 6px solid #ffc107;
-        margin: 12px 0;
+        padding: 15px;
+        border-radius: 12px;
+        border-left: 5px solid #ffc107;
+        margin: 10px 0;
         color: #856404;
-        box-shadow: 0 6px 15px rgba(255,193,7,0.1);
     }
     
     .alert-danger {
         background: linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%);
-        padding: 18px;
-        border-radius: 15px;
-        border-left: 6px solid #dc3545;
-        margin: 12px 0;
+        padding: 15px;
+        border-radius: 12px;
+        border-left: 5px solid #dc3545;
+        margin: 10px 0;
         color: #721c24;
-        box-shadow: 0 6px 15px rgba(220,53,69,0.1);
     }
     
-    .alert-info {
-        background: linear-gradient(135deg, #d1ecf1 0%, #bee5eb 100%);
-        padding: 18px;
-        border-radius: 15px;
-        border-left: 6px solid #17a2b8;
-        margin: 12px 0;
-        color: #0c5460;
-        box-shadow: 0 6px 15px rgba(23,162,184,0.1);
-    }
-    
-    /* Enhanced Cart Items */
+    /* Cart items */
     .cart-item {
-        background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
-        padding: 18px;
-        margin: 12px 0;
-        border-radius: 15px;
-        box-shadow: 0 6px 15px rgba(0,0,0,0.08);
-        border-left: 5px solid #ff6b6b;
+        background: white;
+        padding: 15px;
+        margin: 10px 0;
+        border-radius: 12px;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.05);
+        border-left: 4px solid #27ae60;
         transition: all 0.3s ease;
     }
     .cart-item:hover {
-        transform: translateX(8px) translateY(-3px);
-        box-shadow: 0 12px 25px rgba(0,0,0,0.15);
+        transform: translateX(5px);
+        box-shadow: 0 6px 12px rgba(0,0,0,0.1);
     }
     
-    /* Horizontal cart layout */
-    .cart-horizontal {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        margin-bottom: 25px;
-    }
-    
-    .cart-item-horizontal {
-        background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
-        padding: 15px 20px;
-        border-radius: 15px;
-        box-shadow: 0 6px 15px rgba(0,0,0,0.08);
-        border-left: 4px solid #52b788;
-        flex: 1;
-        min-width: 220px;
-        transition: all 0.3s ease;
-    }
-    
-    .cart-item-horizontal:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 12px 25px rgba(0,0,0,0.15);
-    }
-    
-    /* Enhanced User Info */
-    .user-info {
-        background: linear-gradient(135deg, #ff6b6b 0%, #ee5a52 100%);
-        color: white;
-        padding: 15px 20px;
-        border-radius: 15px;
-        margin: 15px 0;
-        text-align: center;
-        font-weight: bold;
-        box-shadow: 0 8px 20px rgba(255,107,107,0.3);
-    }
-    
-    /* Colorful section headers */
-    .section-header {
-        background: linear-gradient(135deg, #48cae4 0%, #0096c7 100%);
-        color: white;
-        padding: 15px 25px;
-        border-radius: 15px;
-        margin: 20px 0;
-        font-size: 1.2em;
-        font-weight: 600;
-        box-shadow: 0 8px 20px rgba(72,202,228,0.3);
-    }
-    
-    /* Enhanced footer */
+    /* Footer */
     .footer {
         text-align: center;
-        color: #6c757d;
+        color: #7f8c8d;
         margin-top: 40px;
-        padding-top: 25px;
-        border-top: 2px solid #dee2e6;
-        font-size: 0.95em;
-        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
-        padding: 25px;
-        border-radius: 15px;
+        padding-top: 20px;
+        border-top: 1px solid #e0e0e0;
+        font-size: 0.9em;
     }
     
-    /* Print styles */
+    /* Vegetable selection */
+    .veg-select-card {
+        background: white;
+        padding: 15px;
+        border-radius: 15px;
+        margin: 10px 0;
+        box-shadow: 0 5px 15px rgba(0,0,0,0.05);
+        border: 1px solid #e0e0e0;
+    }
+    
+    /* Print button */
+    .print-btn {
+        background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%) !important;
+        color: white !important;
+        font-weight: bold !important;
+    }
+    
+    /* Remove the "Press Enter..." message from number inputs */
+    .stNumberInput input[type="number"]::placeholder {
+        color: transparent !important;
+    }
+    
+    /* Fix for print preview */
     @media print {
         .receipt {
             box-shadow: none !important;
-            border: 2px solid #000 !important;
+            border: 1px solid #000 !important;
             max-width: 100% !important;
             margin: 0 !important;
-            padding: 20px !important;
+            padding: 15px !important;
         }
         .stApp {
             visibility: hidden !important;
@@ -774,49 +674,61 @@ st.markdown("""
         }
     }
     
-    /* Color badges */
-    .badge-success {
-        background: linear-gradient(135deg, #52b788 0%, #40916c 100%);
+    /* Horizontal layout for cart items */
+    .cart-horizontal {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-bottom: 20px;
+    }
+    .cart-item-horizontal {
+        background: white;
+        padding: 10px 15px;
+        border-radius: 10px;
+        box-shadow: 0 3px 6px rgba(0,0,0,0.05);
+        border-left: 3px solid #27ae60;
+        flex: 1;
+        min-width: 200px;
+    }
+    
+    /* Complete bill button */
+    .complete-bill-btn {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        z-index: 1000;
+    }
+    
+    /* User info */
+    .user-info {
+        background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%);
         color: white;
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-size: 0.85em;
-        font-weight: 600;
+        padding: 10px 15px;
+        border-radius: 10px;
+        margin: 10px 0;
+        text-align: center;
+        font-weight: bold;
     }
     
-    .badge-warning {
-        background: linear-gradient(135deg, #ffd166 0%, #ffb703 100%);
-        color: #2c3e50;
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-size: 0.85em;
-        font-weight: 600;
+    /* Bill items table */
+    .bill-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 15px 0;
     }
-    
-    .badge-danger {
-        background: linear-gradient(135deg, #f72585 0%, #b5179e 100%);
+    .bill-table th {
+        background: #27ae60;
         color: white;
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-size: 0.85em;
-        font-weight: 600;
+        padding: 10px;
+        text-align: left;
+        font-weight: bold;
     }
-    
-    .badge-info {
-        background: linear-gradient(135deg, #48cae4 0%, #0096c7 100%);
-        color: white;
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-size: 0.85em;
-        font-weight: 600;
+    .bill-table td {
+        padding: 8px;
+        border-bottom: 1px solid #e0e0e0;
     }
-    
-    /* Progress bars */
-    .progress-bar {
-        height: 10px;
-        background: linear-gradient(135deg, #48cae4 0%, #0096c7 100%);
-        border-radius: 5px;
-        margin: 5px 0;
+    .bill-table tr:hover {
+        background-color: #f8f9fa;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -883,12 +795,13 @@ tables_sql = {
     """,
     "customers": """
         CREATE TABLE IF NOT EXISTS customers (
-            phone TEXT PRIMARY KEY, 
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT, 
             name TEXT, 
             points INTEGER DEFAULT 0,
             total_spent REAL DEFAULT 0,
             last_visit TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            UNIQUE(phone, name)
         )
     """,
     "expenses": """
@@ -907,26 +820,115 @@ for table_name, sql in tables_sql.items():
     except Exception as e:
         print(f"Error creating table {table_name}: {e}")
 
-# Check if columns exist
-try:
-    c.execute("PRAGMA table_info(inventory)")
-    columns = [column[1] for column in c.fetchall()]
-    if 'category' not in columns:
-        try:
-            c.execute("ALTER TABLE inventory ADD COLUMN category TEXT DEFAULT 'vegetable'")
-        except Exception as e:
-            pass
+# Check if columns exist and add if missing
+def ensure_table_columns():
+    """Ensure all required columns exist in tables"""
+    try:
+        # Check customers table
+        c.execute("PRAGMA table_info(customers)")
+        customer_columns = [column[1] for column in c.fetchall()]
+        
+        if 'id' not in customer_columns:
+            try:
+                # Create new table with correct structure
+                c.execute("DROP TABLE IF EXISTS customers")
+                c.execute("""
+                    CREATE TABLE customers (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        phone TEXT, 
+                        name TEXT, 
+                        points INTEGER DEFAULT 0,
+                        total_spent REAL DEFAULT 0,
+                        last_visit TEXT,
+                        UNIQUE(phone, name)
+                    )
+                """)
+            except Exception as e:
+                print(f"Error recreating customers table: {e}")
+        
+        # Check sales table for customer_name and customer_phone columns
+        c.execute("PRAGMA table_info(sales)")
+        sales_columns = [column[1] for column in c.fetchall()]
+        if 'customer_name' not in sales_columns:
+            try:
+                c.execute("ALTER TABLE sales ADD COLUMN customer_name TEXT")
+            except:
+                pass
+        if 'customer_phone' not in sales_columns:
+            try:
+                c.execute("ALTER TABLE sales ADD COLUMN customer_phone TEXT")
+            except:
+                pass
+    except Exception as e:
+        print(f"Error checking columns: {e}")
 
-    c.execute("PRAGMA table_info(sales)")
-    sales_columns = [column[1] for column in c.fetchall()]
-    if 'customer_name' not in sales_columns:
-        try:
-            c.execute("ALTER TABLE sales ADD COLUMN customer_name TEXT")
-            c.execute("ALTER TABLE sales ADD COLUMN customer_phone TEXT")
-        except Exception as e:
-            pass
-except Exception as e:
-    print(f"Error checking columns: {e}")
+# Ensure tables have correct structure
+ensure_table_columns()
+
+# ========================== DEFAULT VEGETABLES AND FRUITS ==========================
+kg_vegetables = [
+    "Avarakai", "Baby Corn", "Baby Potato", "Beetroot", "Bitter Gourd", 
+    "Bottle Gourd", "Brinjal", "Brinjal Green", "Brinjal Purple", "Broccoli",
+    "Bush Beans", "Cabbage Green", "Cabbage Red", "Capsicum", "Capsicum Colour",
+    "Carrot", "Chow Chow (Chayote)", "Cluster Beans", "Colacassia (Taro)",
+    "Coriander Leaf", "Cowpea", "Cucumber", "Curry Leaf", "Garlic", "Ginger",
+    "Green Chillies", "Green Peas", "Greens (Spinach/Amaranthus etc.)",
+    "Knol (Knol Khol)", "Kovakai (Ivy Gourd)", "Ladies Finger (Okra)",
+    "Onion Big", "Onion Small", "Potato", "Pudina (Mint)", "Pumpkin (Red)",
+    "Pumpkin (White)", "Radish", "Red Radish", "Ridge Gourd", "Snake Gourd",
+    "Sweet Potato", "Tomato", "Topaico", "Turnip", "Yam", "Zukuni (Zucchini)"
+]
+
+piece_vegetables = [
+    "Lemon", "Drumstick", "Banana Steam", "Banana Flower", 
+    "Raw Banana", "Coconut"
+]
+
+fruits_kg = [
+    "Amla (Indian Gooseberry)", "Apple", "Banana Country", "Banana Elachi",
+    "Banana Hill", "Banana Karpoorvali", "Banana Nendran", "Banana Poovan",
+    "Banana Rasthali", "Banana Red", "Black Grapes", "Butter Fruit (Avocado)",
+    "Custard Apple", "Fig", "Guava", "Guava Red", "Jackfruit", 
+    "Mangostan (Mangosteen)", "Mosambi (Sweet Lime)", "Musk Melon", "Orange",
+    "Papaya", "Passion Fruit", "Pears", "Pineapple", "Pomegranate",
+    "Raw Mango", "Sapota (Chikoo)", "Watermelon"
+]
+
+# Initialize default items with categories
+for veg in kg_vegetables:
+    try:
+        c.execute("SELECT vegetable FROM inventory WHERE vegetable=?", (veg,))
+        if not c.fetchone():
+            c.execute("INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type, category) VALUES (?, 0, 0, 0, '', 'kg', 'vegetable')", (veg,))
+        else:
+            c.execute("UPDATE inventory SET category='vegetable' WHERE vegetable=?", (veg,))
+    except:
+        pass
+
+for veg in piece_vegetables:
+    try:
+        c.execute("SELECT vegetable FROM inventory WHERE vegetable=?", (veg,))
+        if not c.fetchone():
+            c.execute("INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type, category) VALUES (?, 0, 0, 0, '', 'piece', 'vegetable')", (veg,))
+        else:
+            c.execute("UPDATE inventory SET category='vegetable' WHERE vegetable=?", (veg,))
+    except:
+        pass
+
+for fruit in fruits_kg:
+    try:
+        c.execute("SELECT vegetable FROM inventory WHERE vegetable=?", (fruit,))
+        if not c.fetchone():
+            c.execute("INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type, category) VALUES (?, 0, 0, 0, '', 'kg', 'fruit')", (fruit,))
+        else:
+            c.execute("UPDATE inventory SET category='fruit' WHERE vegetable=?", (fruit,))
+    except:
+        pass
+
+try:
+    conn.commit()
+except:
+    pass
 
 # ========================== HELPER FUNCTIONS ==========================
 def get_stock(veg):
@@ -942,7 +944,7 @@ def get_stock(veg):
             category = row[4] if row[4] is not None else 'vegetable'
             return qty, cost, sell, unit_type, category
     except Exception as e:
-        pass
+        print(f"Error getting stock for {veg}: {e}")
     return 0.0, 0.0, 0.0, 'kg', 'vegetable'
 
 def get_last_record_date(table_name):
@@ -956,17 +958,6 @@ def get_last_record_date(table_name):
             return "N/A"
     except:
         return "N/A"
-
-def safe_read_sql(query, conn, params=None):
-    """Safely read SQL query, handling missing tables"""
-    try:
-        if params:
-            return pd.read_sql(query, conn, params=params)
-        else:
-            return pd.read_sql(query, conn)
-    except Exception as e:
-        print(f"SQL Error: {e}")
-        return pd.DataFrame()
 
 # Initialize session state
 if "cart" not in st.session_state:
@@ -1105,17 +1096,40 @@ def process_sale_simple(cust_name, cust_phone):
             "quantity": qty,
             "price": price,
             "total": total,
-            "unit_type": unit_type,
-            "category": category
+            "unit_type": unit_type
         })
     
+    # Update customer information if phone is provided
     if cust_phone and cust_phone.strip() != "":
         total_amount = sum(item[3] for item in st.session_state.cart)
-        c.execute("INSERT OR IGNORE INTO customers (phone, name) VALUES (?,?)", 
-                 (cust_phone, cust_name))
-        points = int(total_amount // 10)
-        c.execute("UPDATE customers SET points = points + ?, total_spent = total_spent + ?, last_visit=? WHERE phone=?", 
-                 (points, total_amount, d, cust_phone))
+        try:
+            # Try to update existing customer
+            c.execute("UPDATE customers SET points = points + ?, total_spent = total_spent + ?, last_visit=? WHERE phone=?", 
+                     (int(total_amount // 10), total_amount, d, cust_phone))
+            
+            # If no rows were updated, insert new customer
+            if c.rowcount == 0:
+                c.execute("INSERT OR IGNORE INTO customers (phone, name, points, total_spent, last_visit) VALUES (?,?,?,?,?)", 
+                         (cust_phone, cust_name, int(total_amount // 10), total_amount, d))
+        except Exception as e:
+            print(f"Error updating customer: {e}")
+            # If table doesn't exist or has issues, create it
+            try:
+                c.execute("""
+                    CREATE TABLE IF NOT EXISTS customers (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        phone TEXT, 
+                        name TEXT, 
+                        points INTEGER DEFAULT 0,
+                        total_spent REAL DEFAULT 0,
+                        last_visit TEXT,
+                        UNIQUE(phone, name)
+                    )
+                """)
+                c.execute("INSERT OR IGNORE INTO customers (phone, name, points, total_spent, last_visit) VALUES (?,?,?,?,?)", 
+                         (cust_phone, cust_name, int(total_amount // 10), total_amount, d))
+            except Exception as e2:
+                print(f"Error creating customers table: {e2}")
     
     conn.commit()
     
@@ -1268,14 +1282,14 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
     
-    if st.button("🚪 Logout", use_container_width=True, type="primary"):
+    if st.button("🚪 Logout", use_container_width=True):
         st.session_state.logged_in = False
         st.session_state.username = ""
         st.session_state.role = ""
         st.rerun()
     
     st.markdown("""
-    <div style="background: linear-gradient(135deg, #ff6b6b 0%, #ee5a52 100%); padding:20px; border-radius:15px; margin-bottom:20px;">
+    <div style="background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%); padding:20px; border-radius:15px; margin-bottom:20px;">
         <h2 style="color:white; text-align:center;">📋 Navigation</h2>
     </div>
     """, unsafe_allow_html=True)
@@ -1295,9 +1309,9 @@ with st.sidebar:
     st.session_state.selected_date = selected_date
     
     st.markdown(f"""
-    <div class="card" style="margin-top:15px; padding:15px; text-align:center; background: linear-gradient(135deg, #48cae4 0%, #0096c7 100%); color:white;">
-        <h4>Selected Date</h4>
-        <h3>{selected_date.strftime('%d %B %Y')}</h3>
+    <div class="card" style="margin-top:15px; padding:15px; text-align:center;">
+        <h4 style="color:#27ae60;">Selected Date</h4>
+        <h3 style="color:#2c3e50;">{selected_date.strftime('%d %B %Y')}</h3>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1321,20 +1335,20 @@ with st.sidebar:
         backup_status = f"✅ ({backup_size/1024:.1f} KB)" if backup_size > 0 else "⚠️ No backup"
         
         st.markdown(f"""
-        <div style="background: white; padding: 15px; border-radius: 10px; margin: 10px 0; box-shadow: 0 4px 12px rgba(0,0,0,0.08);">
-            <p style="margin: 5px 0; font-size: 0.9em; color: #2c3e50;">
-                <strong>📦 Items:</strong> <span style="color:#ff6b6b;">{inv_count}</span>
+        <div style="background: white; padding: 15px; border-radius: 10px; margin: 10px 0;">
+            <p style="margin: 5px 0; font-size: 0.9em;">
+                <strong>📦 Items:</strong> {inv_count}
             </p>
-            <p style="margin: 5px 0; font-size: 0.9em; color: #2c3e50;">
-                <strong>💰 Sales:</strong> <span style="color:#52b788;">{sales_count}</span>
+            <p style="margin: 5px 0; font-size: 0.9em;">
+                <strong>💰 Sales:</strong> {sales_count}
             </p>
-            <p style="margin: 5px 0; font-size: 0.9em; color: #2c3e50;">
-                <strong>🛒 Purchases:</strong> <span style="color:#48cae4;">{purchases_count}</span>
+            <p style="margin: 5px 0; font-size: 0.9em;">
+                <strong>🛒 Purchases:</strong> {purchases_count}
             </p>
-            <p style="margin: 5px 0; font-size: 0.9em; color: #2c3e50;">
-                <strong>💾 Database:</strong> <span style="color:#7209b7;">{db_size/1024:.1f} KB</span>
+            <p style="margin: 5px 0; font-size: 0.9em;">
+                <strong>💾 Database:</strong> {db_size/1024:.1f} KB
             </p>
-            <p style="margin: 5px 0; font-size: 0.9em; color: #2c3e50;">
+            <p style="margin: 5px 0; font-size: 0.9em;">
                 <strong>📂 Backup:</strong> {backup_status}
             </p>
         </div>
@@ -1370,7 +1384,7 @@ with st.sidebar:
         cart_total = sum(item[3] for item in st.session_state.cart)
         st.markdown("---")
         st.markdown(f"""
-        <div class="metric-card-customers" style="margin-top:15px;">
+        <div class="sales-card" style="margin-top:15px;">
             <h4>🛒 Current Cart</h4>
             <p><strong>Items:</strong> {len(st.session_state.cart)}</p>
             <p><strong>Total:</strong> ₹{cart_total:.2f}</p>
@@ -1424,16 +1438,16 @@ if menu == "📊 Dashboard":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>📊 Dashboard Overview</h2>
-        <div class="subtitle">Real-time Business Insights</div>
+        <div class="subtitle">Freshness You Can Feel</div>
     </div>
     """, unsafe_allow_html=True)
     
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        total_items = safe_read_sql("SELECT COUNT(*) as count FROM inventory WHERE quantity > 0", conn).iloc[0]['count']
+        total_items = pd.read_sql("SELECT COUNT(*) as count FROM inventory WHERE quantity > 0", conn).iloc[0]['count']
         st.markdown(f"""
-        <div class="metric-card-inventory">
+        <div class="metric-card">
             <h3>📦</h3>
             <h4>Stock Items</h4>
             <h2>{total_items}</h2>
@@ -1441,10 +1455,10 @@ if menu == "📊 Dashboard":
         """, unsafe_allow_html=True)
     
     with col2:
-        today_sales = safe_read_sql("SELECT COALESCE(SUM(total),0) as total FROM sales WHERE date=?", 
+        today_sales = pd.read_sql("SELECT COALESCE(SUM(total),0) as total FROM sales WHERE date=?", 
                                  conn, params=(selected_date.strftime("%Y-%m-%d"),)).iloc[0]['total']
         st.markdown(f"""
-        <div class="metric-card-sales">
+        <div class="sales-card">
             <h3>💰</h3>
             <h4>Today's Sales</h4>
             <h2>₹{today_sales:.2f}</h2>
@@ -1452,11 +1466,11 @@ if menu == "📊 Dashboard":
         """, unsafe_allow_html=True)
     
     with col3:
-        today_customers_df = safe_read_sql("SELECT COUNT(DISTINCT customer_name) as count FROM sales WHERE date=? AND customer_name IS NOT NULL", 
+        today_customers_df = pd.read_sql("SELECT COUNT(DISTINCT customer_name) as count FROM sales WHERE date=? AND customer_name IS NOT NULL", 
                                        conn, params=(selected_date.strftime("%Y-%m-%d"),)).iloc[0]['count']
         
         st.markdown(f"""
-        <div class="metric-card-customers">
+        <div class="metric-card">
             <h3>👥</h3>
             <h4>Today's Customers</h4>
             <h2>{today_customers_df}</h2>
@@ -1465,10 +1479,10 @@ if menu == "📊 Dashboard":
     
     with col4:
         threshold = st.session_state.shortage_threshold
-        low_stock_count = safe_read_sql("SELECT COUNT(*) as count FROM inventory WHERE quantity > 0 AND quantity < ?", 
+        low_stock_count = pd.read_sql("SELECT COUNT(*) as count FROM inventory WHERE quantity > 0 AND quantity < ?", 
                                      conn, params=(threshold,)).iloc[0]['count']
         st.markdown(f"""
-        <div class="metric-card-waste">
+        <div class="red-alert-card">
             <h3>⚠️</h3>
             <h4>Low Stock Items</h4>
             <h2>{low_stock_count}</h2>
@@ -1477,15 +1491,10 @@ if menu == "📊 Dashboard":
     
     st.markdown("---")
     
-    st.markdown("""
-    <div class="section-header">
-        📉 Low Stock Items Alert
-    </div>
-    """, unsafe_allow_html=True)
-    
+    st.markdown("### 📉 Low Stock Items Alert")
     threshold = st.session_state.shortage_threshold
     
-    inv_df = safe_read_sql("""
+    inv_df = pd.read_sql("""
         SELECT vegetable, quantity, selling_price, unit_type, category 
         FROM inventory 
         WHERE quantity > 0 
@@ -1548,12 +1557,7 @@ if menu == "📊 Dashboard":
     
     st.markdown("---")
     
-    st.markdown("""
-    <div class="section-header">
-        📋 Current Stock Details
-    </div>
-    """, unsafe_allow_html=True)
-    
+    st.markdown("### 📋 Current Stock Details")
     threshold = st.slider("Low Stock Alert Threshold (default unit)", 0.0, 50.0, 5.0, 0.5, 
                          help="Items below this quantity will be marked as low stock")
     st.session_state.shortage_threshold = threshold
@@ -1632,7 +1636,7 @@ if menu == "📊 Dashboard":
         # Summary
         col1, col2 = st.columns(2)
         with col1:
-            out_of_stock = safe_read_sql("SELECT COUNT(*) as count FROM inventory WHERE quantity = 0", conn).iloc[0]['count']
+            out_of_stock = pd.read_sql("SELECT COUNT(*) as count FROM inventory WHERE quantity = 0", conn).iloc[0]['count']
             st.info(f"**Out of Stock:** {out_of_stock} items")
         
         with col2:
@@ -1647,11 +1651,11 @@ elif menu == "🛒 Add Purchase":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>🛒 Add Purchase</h2>
-        <div class="subtitle">Stock Management System</div>
+        <div class="subtitle">Freshness You Can Feel</div>
     </div>
     """, unsafe_allow_html=True)
     
-    all_veg_df = safe_read_sql("SELECT vegetable, unit_type, category FROM inventory ORDER BY vegetable", conn)
+    all_veg_df = pd.read_sql("SELECT vegetable, unit_type, category FROM inventory ORDER BY vegetable", conn)
     
     if all_veg_df.empty:
         st.info("No vegetables in inventory. Please add vegetables first.")
@@ -1660,7 +1664,7 @@ elif menu == "🛒 Add Purchase":
         
         with tab1:
             st.markdown("### 📝 Bulk Purchase Entry")
-            purchase_df = safe_read_sql("SELECT vegetable, quantity as current_stock, selling_price, unit_type, category FROM inventory ORDER BY vegetable", conn)
+            purchase_df = pd.read_sql("SELECT vegetable, quantity as current_stock, selling_price, unit_type, category FROM inventory ORDER BY vegetable", conn)
             purchase_df['Current Stock (Editable)'] = purchase_df['current_stock']
             purchase_df['New Purchase'] = 0.0
             purchase_df['Amount (₹)'] = 0.0
@@ -1925,13 +1929,9 @@ elif menu == "🛒 Add Purchase":
                             st.success(f"✅ Added {total_qty:.2f} kg of {fruit}")
     
     st.markdown("---")
-    st.markdown(f"""
-    <div class="section-header">
-        📊 Today's Purchases ({selected_date.strftime('%d %B %Y')})
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(f"### 📊 Today's Purchases ({selected_date.strftime('%d %B %Y')})")
     
-    today_purchases = safe_read_sql("""
+    today_purchases = pd.read_sql("""
         SELECT vegetable, quantity, amount, supplier 
         FROM purchases 
         WHERE date=? 
@@ -1966,11 +1966,11 @@ elif menu == "🏷 Set Prices":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>🏷 Set Selling Prices</h2>
-        <div class="subtitle">Pricing Management System</div>
+        <div class="subtitle">Freshness You Can Feel</div>
     </div>
     """, unsafe_allow_html=True)
     
-    price_df = safe_read_sql("SELECT vegetable, selling_price, unit_type, category FROM inventory ORDER BY category, vegetable", conn)
+    price_df = pd.read_sql("SELECT vegetable, selling_price, unit_type, category FROM inventory ORDER BY category, vegetable", conn)
     
     if price_df.empty:
         st.info("No vegetables in inventory")
@@ -2069,7 +2069,7 @@ elif menu == "🏷 Set Prices":
         
         st.markdown("### ✏️ Individual Price Update")
         
-        all_items = safe_read_sql("SELECT vegetable, unit_type, category FROM inventory ORDER BY category, vegetable", conn)
+        all_items = pd.read_sql("SELECT vegetable, unit_type, category FROM inventory ORDER BY category, vegetable", conn)
         
         col1, col2 = st.columns(2)
         
@@ -2077,7 +2077,7 @@ elif menu == "🏷 Set Prices":
             selected_item = st.selectbox("Select Item", all_items['vegetable'])
             
             try:
-                current_data = safe_read_sql("SELECT selling_price, unit_type, category FROM inventory WHERE vegetable=?", 
+                current_data = pd.read_sql("SELECT selling_price, unit_type, category FROM inventory WHERE vegetable=?", 
                                           conn, params=(selected_item,)).iloc[0]
                 current_price = float(current_data['selling_price']) if current_data['selling_price'] is not None else 0.0
                 current_unit = current_data['unit_type'] if current_data['unit_type'] is not None else 'kg'
@@ -2116,11 +2116,11 @@ elif menu == "💵 Quick Sell":
     st.markdown("""
     <div style="text-align:center; margin-bottom:20px;">
         <h2>💵 Quick Selling</h2>
-        <div class="subtitle">Fast & Efficient Billing System</div>
+        <div class="subtitle">Freshness You Can Feel</div>
     </div>
     """, unsafe_allow_html=True)
     
-    available_veg = safe_read_sql("""
+    available_veg = pd.read_sql("""
         SELECT vegetable, quantity, selling_price, unit_type, category 
         FROM inventory 
         WHERE quantity > 0 AND selling_price > 0 
@@ -2170,11 +2170,7 @@ elif menu == "💵 Quick Sell":
         col1, col2 = st.columns([3, 2])
         
         with col1:
-            st.markdown("""
-            <div class="section-header">
-                🌿 Select Items
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown("### 🌿 Select Items")
             
             with st.expander("👤 Customer Information", expanded=True):
                 cust_col1, cust_col2 = st.columns(2)
@@ -2246,6 +2242,7 @@ elif menu == "💵 Quick Sell":
                                 if selected_kg_display and qty_kg > 0:
                                     if add_to_cart_simple(selected_kg['name'], qty_kg):
                                         st.success(f"Added {qty_kg:.3f} kg of {selected_kg['name']}")
+                                        st.rerun()
                 else:
                     st.info("No KG vegetables available")
             
@@ -2308,6 +2305,7 @@ elif menu == "💵 Quick Sell":
                                 if selected_piece_display and total_qty > 0:
                                     if add_to_cart_simple(selected_piece['name'], total_qty):
                                         st.success(f"Added {total_qty:.0f} pieces of {selected_piece['name']}")
+                                        st.rerun()
                 else:
                     st.info("No piece vegetables available")
             
@@ -2370,23 +2368,21 @@ elif menu == "💵 Quick Sell":
                                 if selected_fruit_display and qty_kg > 0:
                                     if add_to_cart_simple(selected_fruit['name'], qty_kg):
                                         st.success(f"Added {qty_kg:.3f} kg of {selected_fruit['name']}")
+                                        st.rerun()
                 else:
                     st.info("No fruits available")
         
         with col2:
-            st.markdown("""
-            <div class="section-header">
-                🛒 Current Bill
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown("### 🛒 Current Bill")
             
             if not st.session_state.cart:
                 st.info("🛒 Bill is Empty - Add items from the left")
             else:
-                # Display cart items in a TABLE format instead of horizontal cards
-                st.markdown("### 📋 Items in Bill")
+                # Display cart items in a table format
+                st.markdown("#### 📋 Items in Bill")
                 
-                cart_data = []
+                # Create a table for cart items
+                cart_table_data = []
                 total_amount = 0
                 
                 for veg, qty, price, item_total, unit_type, category in st.session_state.cart:
@@ -2402,7 +2398,7 @@ elif menu == "💵 Quick Sell":
                     
                     icon = "🥦" if category == 'vegetable' else "🍎"
                     
-                    cart_data.append({
+                    cart_table_data.append({
                         "Item": f"{icon} {veg}",
                         "Quantity": quantity_display,
                         "Unit Price": price_display,
@@ -2410,34 +2406,18 @@ elif menu == "💵 Quick Sell":
                     })
                     total_amount += item_total
                 
-                # Create a colorful DataFrame
-                cart_df = pd.DataFrame(cart_data)
-                
-                # Display the table with enhanced styling
+                # Display as a table
+                cart_df = pd.DataFrame(cart_table_data)
                 st.dataframe(
-                    cart_df.style
-                    .set_properties(**{'background-color': '#f8f9fa', 'color': '#2c3e50'})
-                    .set_table_styles([
-                        {'selector': 'th', 'props': [
-                            ('background', 'linear-gradient(135deg, #ff6b6b 0%, #ee5a52 100%)'), 
-                            ('color', 'white'), 
-                            ('font-weight', 'bold'),
-                            ('text-align', 'center'),
-                            ('padding', '12px'),
-                            ('border-radius', '8px')
-                        ]},
-                        {'selector': 'td', 'props': [
-                            ('text-align', 'center'),
-                            ('padding', '10px'),
-                            ('border-bottom', '1px solid #dee2e6')
-                        ]},
-                        {'selector': 'tr:hover', 'props': [
-                            ('background-color', '#e3f2fd'),
-                            ('transform', 'scale(1.01)')
-                        ]}
-                    ]),
+                    cart_df,
                     use_container_width=True,
-                    hide_index=True
+                    hide_index=True,
+                    column_config={
+                        "Item": st.column_config.TextColumn("Item"),
+                        "Quantity": st.column_config.TextColumn("Quantity"),
+                        "Unit Price": st.column_config.TextColumn("Unit Price"),
+                        "Total": st.column_config.TextColumn("Total")
+                    }
                 )
                 
                 # Quick remove option
@@ -2459,14 +2439,14 @@ elif menu == "💵 Quick Sell":
                 
                 st.markdown("---")
                 st.markdown(f"""
-                <div class="metric-card-sales" style="margin-top:15px;">
+                <div class="card" style="background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%); color:white; text-align:center; padding:20px;">
                     <h3 style="margin:0;">Bill Total</h3>
                     <h1 style="margin:10px 0;">₹{total_amount:.2f}</h1>
                     <p style="margin:0; font-size:0.9em;">{len(st.session_state.cart)} items</p>
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Complete Bill Button
+                # Complete Bill Button - Visible always
                 st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
                 if st.button("✅ Complete Bill", type="primary", use_container_width=True, key="complete_bill"):
                     if process_sale_simple(cust_name, cust_phone):
@@ -2478,7 +2458,7 @@ elif menu == "💵 Quick Sell":
             
             st.markdown("""
             <div style="text-align:center; margin:30px 0;">
-                <h2 style="color:#52b788;">✅ Sale Completed Successfully!</h2>
+                <h2 style="color:#27ae60;">✅ Sale Completed Successfully!</h2>
             </div>
             """, unsafe_allow_html=True)
             
@@ -2487,12 +2467,12 @@ elif menu == "💵 Quick Sell":
                 <div class="receipt">
                     <div style="text-align:center; margin-bottom:20px;">
                         <h2 style="color:#2c3e50;">🌿 FRESH BASKET</h2>
-                        <p style="color:#ff6b6b; margin:5px 0; font-weight:bold;">Freshness You Can Feel</p>
+                        <p style="color:#27ae60; margin:5px 0; font-weight:bold;">Freshness You Can Feel</p>
                         <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">No.4, Andal nagar, Adambakkam, Chennai - 600 088</p>
                         <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">📞 7904019948</p>
                         <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">Bill No: {sale['bill_no']}</p>
                     </div>
-                    <hr style="border:none; height:2px; background: linear-gradient(90deg, #ff6b6b, #48cae4); margin:15px 0;">
+                    <hr style="border:none; height:2px; background: linear-gradient(90deg, #27ae60, #2ecc71); margin:15px 0;">
                 """, unsafe_allow_html=True)
                 
                 col1, col2 = st.columns(2)
@@ -2536,22 +2516,15 @@ elif menu == "💵 Quick Sell":
                     items_df.style
                     .set_properties(**{'background-color': '#f8f9fa', 'color': '#2c3e50'})
                     .set_table_styles([
-                        {'selector': 'th', 'props': [
-                            ('background', 'linear-gradient(135deg, #48cae4 0%, #0096c7 100%)'), 
-                            ('color', 'white'), 
-                            ('font-weight', 'bold'),
-                            ('text-align', 'center')
-                        ]},
-                        {'selector': 'td', 'props': [
-                            ('text-align', 'center'),
-                            ('padding', '8px')
-                        ]}
+                        {'selector': 'th', 'props': [('background', '#27ae60'), ('color', 'white'), 
+                                                    ('font-weight', 'bold'), ('text-align', 'center')]},
+                        {'selector': 'td', 'props': [('text-align', 'center')]}
                     ]),
                     use_container_width=True,
                     hide_index=True
                 )
                 
-                st.markdown("<hr style='border:none; height:2px; background: linear-gradient(90deg, #ff6b6b, #48cae4); margin:20px 0;'>", unsafe_allow_html=True)
+                st.markdown("<hr style='border:none; height:2px; background: linear-gradient(90deg, #27ae60, #2ecc71); margin:20px 0;'>", unsafe_allow_html=True)
                 
                 col1, col2 = st.columns([3, 1])
                 with col2:
@@ -2587,12 +2560,12 @@ elif menu == "💵 Quick Sell":
                             <div style="padding:20px; font-family:Arial, sans-serif; max-width:500px; margin:0 auto;">
                                 <div style="text-align:center; margin-bottom:20px;">
                                     <h2 style="color:#2c3e50;">🌿 FRESH BASKET</h2>
-                                    <p style="color:#ff6b6b; margin:5px 0; font-weight:bold;">Freshness You Can Feel</p>
+                                    <p style="color:#27ae60; margin:5px 0; font-weight:bold;">Freshness You Can Feel</p>
                                     <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">No.4, Andal nagar, Adambakkam, Chennai - 600 088</p>
                                     <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">📞 7904019948</p>
                                     <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">Bill No: {sale['bill_no']}</p>
                                 </div>
-                                <hr style="border:none; height:2px; background:#ff6b6b; margin:15px 0;">
+                                <hr style="border:none; height:2px; background:#27ae60; margin:15px 0;">
                                 <div style="display:flex; justify-content:space-between;">
                                     <div><strong>Date:</strong> {sale['date']}</div>
                                     <div><strong>Time:</strong> {sale['time']}</div>
@@ -2600,7 +2573,7 @@ elif menu == "💵 Quick Sell":
                                 <hr style="border:none; height:1px; background:#e0e0e0; margin:15px 0;">
                                 <h3 style="text-align:center;">Items Purchased</h3>
                                 <table style="width:100%; border-collapse:collapse; margin:10px 0;">
-                                    <tr style="background:#48cae4; color:white;">
+                                    <tr style="background:#27ae60; color:white;">
                                         <th style="padding:8px; text-align:left;">Item</th>
                                         <th style="padding:8px; text-align:center;">Qty</th>
                                         <th style="padding:8px; text-align:center;">Price</th>
@@ -2625,7 +2598,7 @@ elif menu == "💵 Quick Sell":
                             
                             receiptHTML += `
                                 </table>
-                                <hr style="border:none; height:2px; background:#48cae4; margin:20px 0;">
+                                <hr style="border:none; height:2px; background:#27ae60; margin:20px 0;">
                                 <div style="text-align:right;">
                                     <h3 style="color:#2c3e50;">Total: ₹{sale['total'].toFixed(2)}</h3>
                                 </div>
@@ -2704,7 +2677,7 @@ elif menu == "💵 Quick Sell":
                             .header {{ text-align: center; margin-bottom: 20px; }}
                             .bill-info {{ display: flex; justify-content: space-between; margin-bottom: 15px; }}
                             table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
-                            th {{ background: #48cae4; color: white; padding: 10px; text-align: left; }}
+                            th {{ background: #27ae60; color: white; padding: 10px; text-align: left; }}
                             td {{ padding: 8px; border-bottom: 1px solid #ddd; }}
                             .total {{ text-align: right; font-weight: bold; font-size: 1.2em; margin-top: 20px; }}
                             .footer {{ text-align: center; margin-top: 30px; color: #666; font-size: 0.9em; }}
@@ -2716,7 +2689,7 @@ elif menu == "💵 Quick Sell":
                     <body>
                         <div class="header">
                             <h2>🌿 FRESH BASKET</h2>
-                            <p style="color:#ff6b6b; font-weight:bold;">Freshness You Can Feel</p>
+                            <p style="color:#27ae60; font-weight:bold;">Freshness You Can Feel</p>
                             <p>No.4, Andal nagar, Adambakkam, Chennai - 600 088</p>
                             <p>📞 7904019948</p>
                             <p>Bill No: {sale['bill_no']}</p>
@@ -2805,293 +2778,216 @@ elif menu == "💵 Quick Sell":
                 if st.button("📧 Email Receipt", use_container_width=True, key="email_receipt_btn"):
                     st.info("Email feature coming soon!")
 
-# ========================== CUSTOMERS PAGE ==========================
-elif menu == "👥 Customers":
+# ========================== INVENTORY ==========================
+elif menu == "📦 Inventory":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
-        <h2>👥 Customer Management</h2>
-        <div class="subtitle">Loyalty Program & Customer Insights</div>
+        <h2>📦 Inventory Management</h2>
+        <div class="subtitle">Freshness You Can Feel</div>
     </div>
     """, unsafe_allow_html=True)
     
-    try:
-        # Check if customers table exists and has data
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='customers'")
-        table_exists = c.fetchone()
+    st.markdown("### ✏️ Manage Items List")
+    with st.expander("Add/Remove Items", expanded=False):
+        col1, col2 = st.columns(2)
         
-        if not table_exists:
-            # Create customers table if it doesn't exist
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS customers (
-                    phone TEXT PRIMARY KEY, 
-                    name TEXT, 
-                    points INTEGER DEFAULT 0,
-                    total_spent REAL DEFAULT 0,
-                    last_visit TEXT,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            conn.commit()
-            st.info("📋 Customer loyalty program initialized. Customers will be added automatically when they make purchases with phone numbers.")
+        with col1:
+            st.markdown("#### ➕ Add New Item")
+            new_item_name = st.text_input("Item Name", key="new_item_name")
+            category = st.selectbox("Category", ["vegetable", "fruit"], key="new_item_category")
+            unit_type = st.selectbox("Unit Type", ["kg", "piece"], key="new_item_unit")
+            initial_qty = st.number_input("Initial Quantity", min_value=0.0, step=0.1, value=0.0, key="initial_qty")
+            initial_price = st.number_input("Initial Price ₹", min_value=0.0, step=1.0, value=0.0, key="initial_price")
+            
+            if st.button("Add to Inventory", use_container_width=True, key="add_item_btn"):
+                if new_item_name and new_item_name.strip():
+                    c.execute("INSERT OR REPLACE INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type, category) VALUES (?,?,?,?,?,?)", 
+                             (new_item_name.strip(), initial_qty, 0.0, initial_price, unit_type, category))
+                    conn.commit()
+                    unit_display = unit_type if unit_type != 'kg' else 'kg'
+                    st.success(f"✅ Added {new_item_name.strip()} to inventory ({category}, sold by {unit_display})")
+                    st.rerun()
         
-        # Safely get all customers
-        customers_df = safe_read_sql("""
-            SELECT phone, name, points, total_spent, last_visit, created_at
-            FROM customers 
-            WHERE phone IS NOT NULL AND phone != '' 
-            ORDER BY total_spent DESC
-        """, conn)
-        
-        if customers_df.empty:
-            st.info("📋 No customers in loyalty program yet. Customers will be added automatically when they make purchases with phone numbers.")
-        else:
-            total_points = customers_df['points'].sum()
-            total_customers = len(customers_df)
-            total_spent = customers_df['total_spent'].sum()
+        with col2:
+            st.markdown("#### 🗑️ Remove Item")
+            all_items = pd.read_sql("SELECT vegetable FROM inventory ORDER BY vegetable", conn)
             
-            # Display metrics in colorful cards
-            st.markdown("### 📊 Customer Overview")
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.markdown(f"""
-                <div class="metric-card-customers">
-                    <h3>👥</h3>
-                    <h4>Total Customers</h4>
-                    <h2>{total_customers}</h2>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            with col2:
-                st.markdown(f"""
-                <div class="metric-card-sales">
-                    <h3>💰</h3>
-                    <h4>Total Spent</h4>
-                    <h2>₹{total_spent:.2f}</h2>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            with col3:
-                st.markdown(f"""
-                <div class="metric-card-inventory">
-                    <h3>⭐</h3>
-                    <h4>Total Points</h4>
-                    <h2>{total_points}</h2>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            with col4:
-                avg_spent = total_spent / total_customers if total_customers > 0 else 0
-                st.markdown(f"""
-                <div class="metric-card-profit">
-                    <h3>📊</h3>
-                    <h4>Avg. Spent</h4>
-                    <h2>₹{avg_spent:.2f}</h2>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            st.markdown("---")
-            
-            # Show loyalty customers in a colorful table
-            st.markdown("### 🏆 Loyalty Customers")
-            
-            display_customers = customers_df.copy()
-            display_customers = display_customers.rename(columns={
-                "phone": "📱 Phone",
-                "name": "👤 Name",
-                "points": "⭐ Points",
-                "total_spent": "💰 Total Spent",
-                "last_visit": "📅 Last Visit",
-                "created_at": "📝 Joined On"
-            })
-            
-            # Format the dataframe display
-            st.dataframe(
-                display_customers.style.format({
-                    "💰 Total Spent": "₹{:.2f}"
-                }).set_properties(**{
-                    'background-color': '#f8f9fa',
-                    'color': '#2c3e50'
-                }).set_table_styles([
-                    {'selector': 'th', 'props': [
-                        ('background', 'linear-gradient(135deg, #7209b7 0%, #560bad 100%)'),
-                        ('color', 'white'),
-                        ('font-weight', 'bold'),
-                        ('text-align', 'center')
-                    ]},
-                    {'selector': 'td', 'props': [
-                        ('text-align', 'center'),
-                        ('padding', '10px'),
-                        ('border-bottom', '1px solid #dee2e6')
-                    ]},
-                    {'selector': 'tr:hover', 'props': [
-                        ('background-color', '#e3f2fd'),
-                        ('transform', 'scale(1.01)')
-                    ]}
-                ]),
-                use_container_width=True,
-                height=400
-            )
-            
-            st.markdown("---")
-            
-            # Customer details in colorful cards
-            st.markdown("### 📊 Customer Details")
-            cols = st.columns(2)
-            
-            for idx, row in customers_df.iterrows():
-                with cols[idx % 2]:
-                    # Determine badge color based on points
-                    if row['points'] >= 100:
-                        badge_color = "linear-gradient(135deg, #ffd166 0%, #ffb703 100%)"
-                        badge_text = "🥇 Gold Member"
-                    elif row['points'] >= 50:
-                        badge_color = "linear-gradient(135deg, #adb5bd 0%, #6c757d 100%)"
-                        badge_text = "🥈 Silver Member"
+            if not all_items.empty:
+                item_to_remove = st.selectbox("Select item to remove", all_items['vegetable'], key="item_to_remove")
+                confirm = st.checkbox("I confirm I want to remove this item", key="confirm_remove")
+                
+                if st.button("Remove from Inventory", use_container_width=True, type="secondary", disabled=not confirm, key="remove_item_btn"):
+                    stock, _, _, _, _ = get_stock(item_to_remove)
+                    if stock > 0:
+                        st.error(f"Cannot remove {item_to_remove} - it still has {stock:.2f} in stock")
                     else:
-                        badge_color = "linear-gradient(135deg, #cd7f32 0%, #a47148 100%)"
-                        badge_text = "🥉 Bronze Member"
-                    
-                    st.markdown(f"""
-                    <div class="card" style="margin-bottom:15px; border-left: 5px solid #7209b7;">
-                        <div style="display: flex; justify-content: space-between; align-items: start;">
-                            <div style="flex: 1;">
-                                <h4 style="margin:0 0 5px 0; color:#2c3e50;">{row['name']}</h4>
-                                <p style="margin:0 0 5px 0; color:#6c757d; font-size:0.9em;">
-                                    📱 {row['phone']}
-                                </p>
-                                <p style="margin:0 0 5px 0; color:#6c757d; font-size:0.9em;">
-                                    📅 Last Visit: {row['last_visit'] if row['last_visit'] else 'N/A'}
-                                </p>
-                            </div>
-                            <div style="text-align:right; min-width: 100px;">
-                                <span style="background: {badge_color}; 
-                                            color: {'#2c3e50' if row['points'] >= 100 else 'white'}; 
-                                            padding: 4px 10px; 
-                                            border-radius: 15px; 
-                                            font-size:0.8em; 
-                                            font-weight:600; 
-                                            margin-bottom:5px; 
-                                            display:block;">
-                                    {badge_text}
-                                </span>
-                                <span style="background: linear-gradient(135deg, #52b788 0%, #40916c 100%); 
-                                            color:white; 
-                                            padding: 4px 10px; 
-                                            border-radius: 15px; 
-                                            font-size:0.9em; 
-                                            font-weight:bold; 
-                                            margin-bottom:5px; 
-                                            display:block;">
-                                    ⭐ {row['points']} pts
-                                </span>
-                                <span style="background: linear-gradient(135deg, #48cae4 0%, #0096c7 100%); 
-                                            color:white; 
-                                            padding: 4px 10px; 
-                                            border-radius: 15px; 
-                                            font-size:0.9em; 
-                                            font-weight:bold; 
-                                            display:block;">
-                                    ₹{row['total_spent']:.2f}
-                                </span>
-                            </div>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-            
-            # Customer analytics
-            st.markdown("---")
-            st.markdown("### 📈 Customer Analytics")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Top spenders
-                top_spenders = customers_df.nlargest(5, 'total_spent')
-                st.markdown("#### 🏆 Top 5 Spenders")
-                for _, row in top_spenders.iterrows():
-                    st.markdown(f"""
-                    <div style="background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); 
-                                padding: 10px 15px; 
-                                border-radius: 10px; 
-                                margin: 5px 0; 
-                                border-left: 4px solid #52b788;">
-                        <strong>{row['name']}</strong> - ₹{row['total_spent']:.2f}
-                    </div>
-                    """, unsafe_allow_html=True)
-            
-            with col2:
-                # Recent customers
-                recent_customers = customers_df.sort_values('last_visit', ascending=False).head(5)
-                st.markdown("#### 📅 Recent Visitors")
-                for _, row in recent_customers.iterrows():
-                    st.markdown(f"""
-                    <div style="background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); 
-                                padding: 10px 15px; 
-                                border-radius: 10px; 
-                                margin: 5px 0; 
-                                border-left: 4px solid #48cae4;">
-                        <strong>{row['name']}</strong> - {row['last_visit'] if row['last_visit'] else 'N/A'}
-                    </div>
-                    """, unsafe_allow_html=True)
-            
-            # Manual customer management
-            st.markdown("---")
-            st.markdown("### ✏️ Manual Customer Management")
-            
-            with st.expander("Add/Edit Customer Details"):
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    phone = st.text_input("Phone Number", key="cust_phone_edit")
-                    name = st.text_input("Customer Name", key="cust_name_edit")
-                
-                with col2:
-                    points = st.number_input("Points", min_value=0, value=0, key="cust_points_edit")
-                    total_spent = st.number_input("Total Spent", min_value=0.0, value=0.0, key="cust_spent_edit")
-                
-                if st.button("💾 Save Customer", type="primary", use_container_width=True):
-                    if phone and name:
-                        try:
-                            c.execute("""
-                                INSERT OR REPLACE INTO customers (phone, name, points, total_spent, last_visit)
-                                VALUES (?, ?, ?, ?, ?)
-                            """, (phone, name, points, total_spent, selected_date.strftime("%Y-%m-%d")))
-                            conn.commit()
-                            st.success(f"✅ Customer {name} saved successfully!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Error saving customer: {e}")
-                    else:
-                        st.error("Please enter phone number and name")
+                        c.execute("DELETE FROM inventory WHERE vegetable=?", (item_to_remove,))
+                        conn.commit()
+                        st.success(f"✅ Removed {item_to_remove} from inventory")
+                        st.rerun()
     
-    except Exception as e:
-        st.error(f"Error loading customer data: {str(e)}")
-        st.info("Trying to create the customers table...")
+    st.markdown("### 📋 Current Inventory")
+    
+    inv_df = pd.read_sql("SELECT vegetable, quantity, selling_price, unit_type, category FROM inventory ORDER BY category, vegetable", conn)
+    
+    if inv_df.empty:
+        st.info("No inventory items")
+    else:
+        in_stock = len(inv_df[inv_df['quantity'] > 0])
+        out_of_stock = len(inv_df[inv_df['quantity'] == 0])
         
-        try:
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS customers (
-                    phone TEXT PRIMARY KEY, 
-                    name TEXT, 
-                    points INTEGER DEFAULT 0,
-                    total_spent REAL DEFAULT 0,
-                    last_visit TEXT,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Items", len(inv_df))
+        with col2:
+            st.metric("In Stock", in_stock)
+        with col3:
+            st.metric("Out of Stock", out_of_stock)
+        
+        # Separate tabs for vegetables and fruits
+        tab1, tab2 = st.tabs(["🥦 Vegetables", "🍎 Fruits"])
+        
+        with tab1:
+            veg_df = inv_df[inv_df['category'] == 'vegetable']
+            if not veg_df.empty:
+                st.markdown("#### 🥦 Edit Vegetable Quantities")
+                
+                edited_veg = st.data_editor(
+                    veg_df,
+                    column_config={
+                        "vegetable": st.column_config.TextColumn("🌿 Vegetable", disabled=True),
+                        "unit_type": st.column_config.TextColumn("📏 Unit", disabled=True),
+                        "quantity": st.column_config.NumberColumn(
+                            "⚖️ Quantity",
+                            min_value=0.0,
+                            step=0.1,
+                            format="%.2f"
+                        ),
+                        "selling_price": st.column_config.NumberColumn(
+                            "💰 Price (₹)",
+                            min_value=0.0,
+                            step=1.0,
+                            format="₹%.2f"
+                        )
+                    },
+                    use_container_width=True,
+                    num_rows="dynamic",
+                    hide_index=True,
+                    key="vegetable_editor"
                 )
-            """)
-            conn.commit()
-            st.success("✅ Customers table created successfully!")
-            st.rerun()
-        except Exception as e2:
-            st.error(f"❌ Could not create customers table: {e2}")
+            else:
+                st.info("No vegetables in inventory")
+        
+        with tab2:
+            fruit_df = inv_df[inv_df['category'] == 'fruit']
+            if not fruit_df.empty:
+                st.markdown("#### 🍎 Edit Fruit Quantities")
+                
+                edited_fruit = st.data_editor(
+                    fruit_df,
+                    column_config={
+                        "vegetable": st.column_config.TextColumn("🍎 Fruit", disabled=True),
+                        "unit_type": st.column_config.TextColumn("📏 Unit", disabled=True),
+                        "quantity": st.column_config.NumberColumn(
+                            "⚖️ Quantity",
+                            min_value=0.0,
+                            step=0.1,
+                            format="%.2f"
+                        ),
+                        "selling_price": st.column_config.NumberColumn(
+                            "💰 Price (₹)",
+                            min_value=0.0,
+                            step=1.0,
+                            format="₹%.2f"
+                        )
+                    },
+                    use_container_width=True,
+                    num_rows="dynamic",
+                    hide_index=True,
+                    key="fruit_editor"
+                )
+            else:
+                st.info("No fruits in inventory")
+        
+        if st.button("💾 Save Inventory Changes", type="primary", use_container_width=True, key="save_inv_changes"):
+            changes_made = 0
+            if 'edited_veg' in locals():
+                for _, row in edited_veg.iterrows():
+                    try:
+                        c.execute("UPDATE inventory SET quantity=?, selling_price=? WHERE vegetable=?", 
+                                 (row['quantity'], row['selling_price'], row['vegetable']))
+                        changes_made += 1
+                    except Exception as e:
+                        st.error(f"Error updating {row['vegetable']}: {e}")
+            
+            if 'edited_fruit' in locals():
+                for _, row in edited_fruit.iterrows():
+                    try:
+                        c.execute("UPDATE inventory SET quantity=?, selling_price=? WHERE vegetable=?", 
+                                 (row['quantity'], row['selling_price'], row['vegetable']))
+                        changes_made += 1
+                    except Exception as e:
+                        st.error(f"Error updating {row['vegetable']}: {e}")
+            
+            try:
+                conn.commit()
+                if changes_made > 0:
+                    st.success(f"✅ {changes_made} inventory items updated successfully!")
+                else:
+                    st.info("No changes were made to inventory.")
+            except Exception as e:
+                st.error(f"Error committing changes: {e}")
 
-# ========================== SALES PAGE ==========================
+# ========================== PURCHASES ==========================
+elif menu == "📋 Purchases":
+    st.markdown("""
+    <div style="text-align:center; margin-bottom:30px;">
+        <h2>📋 Purchase Records</h2>
+        <div class="subtitle">Freshness You Can Feel</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        view_date = st.date_input("View purchases for date", value=selected_date, key="purchases_date")
+    with col2:
+        show_all = st.checkbox("Show all dates", key="show_all_purchases")
+    
+    if show_all:
+        purchases_df = pd.read_sql("SELECT * FROM purchases ORDER BY date DESC, rowid DESC", conn)
+    else:
+        purchases_df = pd.read_sql("SELECT * FROM purchases WHERE date=? ORDER BY rowid DESC", 
+                                  conn, params=(view_date.strftime("%Y-%m-%d"),))
+    
+    if purchases_df.empty:
+        st.info(f"No purchases found for {view_date.strftime('%d %B %Y')}")
+    else:
+        total_amount = purchases_df['amount'].sum()
+        total_qty = purchases_df['quantity'].sum()
+        veg_count = purchases_df['vegetable'].nunique()
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("💰 Total Amount", f"₹{total_amount:.2f}")
+        with col2:
+            st.metric("⚖️ Total Quantity", f"{total_qty:.1f}")
+        with col3:
+            st.metric("🌿 Items Bought", veg_count)
+        
+        st.dataframe(
+            purchases_df.style.format({
+                "quantity": "{:.2f}",
+                "amount": "₹{:.2f}"
+            }),
+            use_container_width=True
+        )
+
+# ========================== SALES ==========================
 elif menu == "🧾 Sales":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>🧾 Sales Records</h2>
-        <div class="subtitle">Transaction History & Analysis</div>
+        <div class="subtitle">Freshness You Can Feel</div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -3102,9 +2998,9 @@ elif menu == "🧾 Sales":
         show_all_sales = st.checkbox("Show all dates", key="show_all_sales_view")
     
     if show_all_sales:
-        sales_df = safe_read_sql("SELECT * FROM sales ORDER BY date DESC, rowid DESC", conn)
+        sales_df = pd.read_sql("SELECT * FROM sales ORDER BY date DESC, rowid DESC", conn)
     else:
-        sales_df = safe_read_sql("SELECT * FROM sales WHERE date=? ORDER BY rowid DESC", 
+        sales_df = pd.read_sql("SELECT * FROM sales WHERE date=? ORDER BY rowid DESC", 
                               conn, params=(view_date.strftime("%Y-%m-%d"),))
     
     if sales_df.empty:
@@ -3112,35 +3008,15 @@ elif menu == "🧾 Sales":
     else:
         total_sales = sales_df['total'].sum()
         total_qty = sales_df['quantity_sold'].sum()
-        
-        # Get unique customers properly
-        if 'customer_name' in sales_df.columns:
-            customer_count = sales_df[sales_df['customer_name'].notna()]['customer_name'].nunique()
-        else:
-            customer_count = sales_df['customer'].nunique()
+        customer_count = sales_df['customer_name'].nunique()
         
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.markdown(f"""
-            <div class="metric-card-sales">
-                <h4>💰 Total Sales</h4>
-                <h2>₹{total_sales:.2f}</h2>
-            </div>
-            """, unsafe_allow_html=True)
+            st.metric("💰 Total Sales", f"₹{total_sales:.2f}")
         with col2:
-            st.markdown(f"""
-            <div class="metric-card-inventory">
-                <h4>⚖️ Quantity Sold</h4>
-                <h2>{total_qty:.1f}</h2>
-            </div>
-            """, unsafe_allow_html=True)
+            st.metric("⚖️ Quantity Sold", f"{total_qty:.1f}")
         with col3:
-            st.markdown(f"""
-            <div class="metric-card-customers">
-                <h4>👥 Customers</h4>
-                <h2>{customer_count}</h2>
-            </div>
-            """, unsafe_allow_html=True)
+            st.metric("👥 Customers", customer_count)
         
         display_df = sales_df.copy()
         
@@ -3155,188 +3031,312 @@ elif menu == "🧾 Sales":
         
         display_df['Quantity Display'] = display_df.apply(format_sales_row, axis=1)
         
-        # Clean customer names
-        def clean_customer_name(row):
-            if 'customer_name' in row and row['customer_name'] and pd.notna(row['customer_name']):
-                return row['customer_name']
-            elif 'customer' in row and row['customer']:
-                cust = str(row['customer'])
-                if '(' in cust:
-                    return cust.split('(')[0].strip()
-                return cust
-            return 'Guest'
-        
-        display_df['Customer'] = display_df.apply(clean_customer_name, axis=1)
-        
-        # Display columns based on what's available
-        display_columns = ['date', 'vegetable', 'Quantity Display', 'total', 'Customer']
-        if 'customer_phone' in display_df.columns:
-            display_columns.append('customer_phone')
-        
         st.dataframe(
-            display_df[display_columns].rename(columns={
-                'customer_phone': 'Phone',
-                'total': 'Amount'
+            display_df[['date', 'vegetable', 'Quantity Display', 'total', 'customer_name', 'customer_phone']].rename(columns={
+                'customer_name': 'Customer',
+                'customer_phone': 'Phone'
             }).style.format({
-                "Amount": "₹{:.2f}"
-            }).set_properties(**{
-                'background-color': '#f8f9fa',
-                'color': '#2c3e50'
-            }).set_table_styles([
-                {'selector': 'th', 'props': [
-                    ('background', 'linear-gradient(135deg, #ff6b6b 0%, #ee5a52 100%)'),
-                    ('color', 'white'),
-                    ('font-weight', 'bold'),
-                    ('text-align', 'center')
-                ]},
-                {'selector': 'td', 'props': [
-                    ('text-align', 'center'),
-                    ('padding', '8px')
-                ]}
-            ]),
-            use_container_width=True
-        )
-
-# ========================== FINANCIALS PAGE ==========================
-elif menu == "💰 Financials":
-    st.markdown("""
-    <div style="text-align:center; margin-bottom:30px;">
-        <h2>💰 Financial Summary</h2>
-        <div class="subtitle">Profit & Loss Analysis</div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    d = selected_date.strftime("%Y-%m-%d")
-    
-    sales_data = safe_read_sql("SELECT COALESCE(SUM(total),0) AS total FROM sales WHERE date=?", 
-                           conn, params=(d,)).iloc[0]['total']
-    cost_data = safe_read_sql("SELECT COALESCE(SUM(amount),0) AS total FROM purchases WHERE date=?", 
-                          conn, params=(d,)).iloc[0]['total']
-    expense_data = safe_read_sql("SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE date=?", 
-                             conn, params=(d,)).iloc[0]['total']
-    
-    profit = sales_data - cost_data - expense_data
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.markdown(f"""
-        <div class="metric-card-sales">
-            <h3>💰</h3>
-            <h4>Sales</h4>
-            <h2>₹{sales_data:.2f}</h2>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown(f"""
-        <div class="metric-card-expense">
-            <h3>📦</h3>
-            <h4>Cost</h4>
-            <h2>₹{cost_data:.2f}</h2>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col3:
-        st.markdown(f"""
-        <div class="metric-card-waste">
-            <h3>💸</h3>
-            <h4>Expenses</h4>
-            <h2>₹{expense_data:.2f}</h2>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col4:
-        profit_color = "#52b788" if profit >= 0 else "#f72585"
-        profit_icon = "📈" if profit >= 0 else "📉"
-        profit_text = "Profit" if profit >= 0 else "Loss"
-        
-        st.markdown(f"""
-        <div style="background: linear-gradient(135deg, {profit_color} 0%, {profit_color}90 100%);
-                    padding: 25px;
-                    border-radius: 20px;
-                    margin: 10px;
-                    color: white;
-                    text-align: center;
-                    box-shadow: 0 12px 30px {profit_color}40;">
-            <h3>{profit_icon}</h3>
-            <h4>{profit_text}</h4>
-            <h2>₹{abs(profit):.2f}</h2>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    st.markdown("---")
-    
-    st.markdown("""
-    <div class="section-header">
-        📊 Daily Breakdown
-    </div>
-    """, unsafe_allow_html=True)
-    
-    sales_by_veg = safe_read_sql("""
-        SELECT vegetable, SUM(quantity_sold) as qty, SUM(total) as revenue 
-        FROM sales WHERE date=? 
-        GROUP BY vegetable 
-        ORDER BY revenue DESC
-    """, conn, params=(d,))
-    
-    if not sales_by_veg.empty:
-        st.markdown("#### Top Selling Items")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.dataframe(
-                sales_by_veg.style.format({
-                    "qty": "{:.2f}",
-                    "revenue": "₹{:.2f}"
-                }),
-                use_container_width=True
-            )
-        with col2:
-            chart_data = sales_by_veg.head(10).set_index('vegetable')['revenue']
-            st.bar_chart(chart_data)
-    
-    st.markdown("### Recent Transactions")
-    recent_sales = safe_read_sql("SELECT * FROM sales WHERE date=? ORDER BY rowid DESC LIMIT 10", 
-                              conn, params=(d,))
-    if not recent_sales.empty:
-        display_sales = recent_sales.copy()
-        
-        def format_recent_sales(row):
-            unit_type = row.get('unit_type', 'kg')
-            if unit_type == 'kg':
-                return f"{row['quantity_sold']:.2f} kg"
-            elif unit_type == 'piece':
-                return f"{row['quantity_sold']:.0f} pieces"
-            else:
-                return f"{row['quantity_sold']:.2f} {unit_type}"
-        
-        def clean_customer_name(customer):
-            if not isinstance(customer, str):
-                return str(customer)
-            if '(' in customer:
-                return customer.split('(')[0].strip()
-            return customer
-        
-        display_sales['Quantity'] = display_sales.apply(format_recent_sales, axis=1)
-        display_sales['Customer'] = display_sales['customer_name'].apply(
-            lambda x: x if x and x != 'None' else 'Guest'
-        )
-        
-        st.dataframe(
-            display_sales[['vegetable', 'Quantity', 'total', 'Customer']].rename(columns={
-                'total': 'Amount'
-            }).style.format({
-                "Amount": "₹{:.2f}"
+                "total": "₹{:.2f}"
             }),
             use_container_width=True
         )
 
-# ========================== DOWNLOAD PAGE ==========================
+# ========================== EXPENSES ==========================
+elif menu == "💸 Expenses":
+    st.markdown("""
+    <div style="text-align:center; margin-bottom:30px;">
+        <h2>💸 Expense Management</h2>
+        <div class="subtitle">Freshness You Can Feel</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    with st.form("expense_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            category = st.selectbox("Category", 
+                                   ["Rent", "Electricity", "Water", "Transport", "Labor", 
+                                    "Packaging", "Maintenance", "Miscellaneous", "Others"],
+                                   key="expense_category")
+            amount = st.number_input("Amount ₹", min_value=0.0, step=10.0, value=0.0, key="expense_amount")
+        with col2:
+            description = st.text_input("Description", placeholder="What was this expense for?", key="expense_desc")
+        
+        submit_button = st.form_submit_button("💾 Save Expense", type="primary", use_container_width=True)
+        if submit_button:
+            if amount <= 0:
+                st.error("Enter amount > 0")
+            elif not description:
+                st.error("Enter description")
+            else:
+                d = selected_date.strftime("%Y-%m-%d")
+                c.execute("INSERT INTO expenses VALUES (?,?,?,?)", 
+                         (d, category, amount, description))
+                conn.commit()
+                st.success(f"✅ Expense recorded: {category} - ₹{amount:.2f}")
+    
+    st.markdown("### Today's Expenses")
+    expenses_df = pd.read_sql("SELECT * FROM expenses WHERE date=?", 
+                             conn, params=(selected_date.strftime("%Y-%m-%d"),))
+    
+    if expenses_df.empty:
+        st.info("No expenses today")
+    else:
+        total_expenses = expenses_df['amount'].sum()
+        st.metric("Total Expenses Today", f"₹{total_expenses:.2f}")
+        st.dataframe(expenses_df, use_container_width=True)
+
+# ========================== CUSTOMERS ==========================
+elif menu == "👥 Customers":
+    st.markdown("""
+    <div style="text-align:center; margin-bottom:30px;">
+        <h2>👥 Customer Management</h2>
+        <div class="subtitle">Freshness You Can Feel</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    try:
+        # Get all customers from sales table (all customers, not just those with phone)
+        customers_sql = """
+            SELECT 
+                COALESCE(customer_phone, 'No Phone') as phone,
+                COALESCE(customer_name, 'Guest') as name,
+                COUNT(*) as total_visits,
+                SUM(total) as total_spent,
+                MAX(date) as last_visit
+            FROM sales 
+            WHERE customer_name IS NOT NULL AND customer_name != ''
+            GROUP BY COALESCE(customer_phone, 'No Phone'), COALESCE(customer_name, 'Guest')
+            ORDER BY total_spent DESC
+        """
+        
+        customers_df = pd.read_sql(customers_sql, conn)
+        
+        if customers_df.empty:
+            st.info("No customer data available yet")
+        else:
+            # Also get customers from customers table for loyalty points
+            try:
+                loyalty_customers = pd.read_sql("SELECT phone, name, points, total_spent, last_visit FROM customers", conn)
+                
+                # Merge with sales data
+                if not loyalty_customers.empty:
+                    customers_df = customers_df.merge(
+                        loyalty_customers[['phone', 'points']], 
+                        on='phone', 
+                        how='left'
+                    )
+                    customers_df['points'] = customers_df['points'].fillna(0)
+                else:
+                    customers_df['points'] = 0
+            except:
+                customers_df['points'] = 0
+            
+            total_customers = len(customers_df)
+            total_spent = customers_df['total_spent'].sum()
+            total_points = customers_df['points'].sum()
+            
+            # Display metrics
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Customers", total_customers)
+            with col2:
+                st.metric("Total Spent", f"₹{total_spent:.2f}")
+            with col3:
+                avg_spent = total_spent / total_customers if total_customers > 0 else 0
+                st.metric("Avg Spent/Customer", f"₹{avg_spent:.2f}")
+            with col4:
+                st.metric("Total Points", total_points)
+            
+            # Show customers in a table
+            st.markdown("### 👥 All Customers")
+            
+            display_customers = customers_df.copy()
+            display_customers = display_customers.rename(columns={
+                "phone": "📱 Phone",
+                "name": "👤 Name",
+                "total_visits": "🛒 Visits",
+                "total_spent": "💰 Total Spent",
+                "last_visit": "📅 Last Visit",
+                "points": "⭐ Points"
+            })
+            
+            st.dataframe(
+                display_customers.style.format({
+                    "💰 Total Spent": "₹{:.2f}"
+                }),
+                use_container_width=True,
+                height=400
+            )
+            
+            # Show customer details in cards
+            st.markdown("### 📊 Customer Details")
+            for idx, row in customers_df.iterrows():
+                st.markdown(f"""
+                <div class="card" style="padding:15px; margin-bottom:10px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <h4 style="margin:0; color:#2c3e50;">{row['name']}</h4>
+                            <p style="margin:5px 0 0 0; color:#7f8c8d; font-size:0.9em;">📱 {row['phone']}</p>
+                            <p style="margin:5px 0 0 0; color:#7f8c8d; font-size:0.9em;">📅 Last Visit: {row['last_visit'] if row['last_visit'] else 'N/A'}</p>
+                            <p style="margin:5px 0 0 0; color:#7f8c8d; font-size:0.9em;">🛒 Total Visits: {row['total_visits']}</p>
+                        </div>
+                        <div style="text-align:right;">
+                            <span style="background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%); 
+                                        color:white; padding:5px 15px; border-radius:20px; font-weight:bold; margin-bottom:5px; display:block;">
+                                ⭐ {int(row['points'])} pts
+                            </span>
+                            <span style="background: linear-gradient(135deg, #3498db 0%, #2980b9 100%); 
+                                        color:white; padding:5px 15px; border-radius:20px; font-weight:bold; display:block;">
+                                ₹{row['total_spent']:.2f} spent
+                            </span>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+    except Exception as e:
+        st.error(f"Error loading customer data: {str(e)}")
+        import traceback
+        st.error(traceback.format_exc())
+
+# ========================== WASTE ==========================
+elif menu == "🗑 Waste":
+    st.markdown("""
+    <div style="text-align:center; margin-bottom:30px;">
+        <h2>🗑 Waste Management</h2>
+        <div class="subtitle">Freshness You Can Feel</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    all_veg = pd.read_sql("SELECT vegetable, unit_type, category FROM inventory ORDER BY category, vegetable", conn)
+    
+    tab1, tab2, tab3 = st.tabs(["🥦 Vegetables (KG)", "🧩 Vegetables (Piece)", "🍎 Fruits (KG)"])
+    
+    with tab1:
+        st.markdown("### 🥦 Vegetables (KG) Waste")
+        kg_vegetables = all_veg[(all_veg['unit_type'] == 'kg') & (all_veg['category'] == 'vegetable')]
+        
+        with st.form("kg_veg_waste_form"):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                veg = st.selectbox("Select Vegetable (KG)", kg_vegetables['vegetable'].tolist() if not kg_vegetables.empty else [], key="kg_veg_waste_veg")
+                if veg:
+                    st.info(f"Unit: kg")
+                    qty = st.number_input("Quantity (kg)", min_value=0.0, step=0.1, value=0.0, key="kg_veg_waste_qty")
+                else:
+                    qty = 0
+            with col2:
+                reason = st.selectbox("Reason", 
+                                     ["Spoiled", "Damaged", "Expired", "Overstock", "Other"],
+                                     key="kg_veg_waste_reason")
+                description = st.text_input("Details", key="kg_veg_waste_desc")
+            
+            with col3:
+                submit_button = st.form_submit_button("Record Waste", use_container_width=True, type="primary")
+                if submit_button:
+                    if qty <= 0:
+                        st.error("Enter quantity > 0")
+                    else:
+                        stock, _, _, _, _ = get_stock(veg)
+                        if qty > stock:
+                            st.error(f"Not enough stock! Available: {stock:.2f} kg")
+                        else:
+                            d = selected_date.strftime("%Y-%m-%d")
+                            c.execute("INSERT INTO waste VALUES (?,?,?,?)", 
+                                     (d, veg, qty, f"{reason}: {description}"))
+                            c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
+                            conn.commit()
+                            st.success(f"✅ Recorded waste: {qty} kg of {veg}")
+    
+    with tab2:
+        st.markdown("### 🧩 Vegetables (Piece) Waste")
+        piece_vegetables = all_veg[(all_veg['unit_type'] == 'piece') & (all_veg['category'] == 'vegetable')]
+        
+        with st.form("piece_veg_waste_form"):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                veg = st.selectbox("Select Vegetable (Piece)", piece_vegetables['vegetable'].tolist() if not piece_vegetables.empty else [], key="piece_veg_waste_veg")
+                if veg:
+                    st.info(f"Unit: pieces")
+                    qty = st.number_input("Quantity (pieces)", min_value=0, step=1, value=0, key="piece_veg_waste_qty")
+                else:
+                    qty = 0
+            with col2:
+                reason = st.selectbox("Reason", 
+                                     ["Spoiled", "Damaged", "Expired", "Overstock", "Other"],
+                                     key="piece_veg_waste_reason")
+                description = st.text_input("Details", key="piece_veg_waste_desc")
+            
+            with col3:
+                submit_button = st.form_submit_button("Record Waste", use_container_width=True, type="primary")
+                if submit_button:
+                    if qty <= 0:
+                        st.error("Enter quantity > 0")
+                    else:
+                        stock, _, _, _, _ = get_stock(veg)
+                        if qty > stock:
+                            st.error(f"Not enough stock! Available: {stock:.0f} pieces")
+                        else:
+                            d = selected_date.strftime("%Y-%m-%d")
+                            c.execute("INSERT INTO waste VALUES (?,?,?,?)", 
+                                     (d, veg, qty, f"{reason}: {description}"))
+                            c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
+                            conn.commit()
+                            st.success(f"✅ Recorded waste: {qty} pieces of {veg}")
+    
+    with tab3:
+        st.markdown("### 🍎 Fruits (KG) Waste")
+        kg_fruits = all_veg[(all_veg['unit_type'] == 'kg') & (all_veg['category'] == 'fruit')]
+        
+        with st.form("kg_fruit_waste_form"):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                veg = st.selectbox("Select Fruit (KG)", kg_fruits['vegetable'].tolist() if not kg_fruits.empty else [], key="kg_fruit_waste_veg")
+                if veg:
+                    st.info(f"Unit: kg")
+                    qty = st.number_input("Quantity (kg)", min_value=0.0, step=0.1, value=0.0, key="kg_fruit_waste_qty")
+                else:
+                    qty = 0
+            with col2:
+                reason = st.selectbox("Reason", 
+                                     ["Spoiled", "Damaged", "Expired", "Overstock", "Other"],
+                                     key="kg_fruit_waste_reason")
+                description = st.text_input("Details", key="kg_fruit_waste_desc")
+            
+            with col3:
+                submit_button = st.form_submit_button("Record Waste", use_container_width=True, type="primary")
+                if submit_button:
+                    if qty <= 0:
+                        st.error("Enter quantity > 0")
+                    else:
+                        stock, _, _, _, _ = get_stock(veg)
+                        if qty > stock:
+                            st.error(f"Not enough stock! Available: {stock:.2f} kg")
+                        else:
+                            d = selected_date.strftime("%Y-%m-%d")
+                            c.execute("INSERT INTO waste VALUES (?,?,?,?)", 
+                                     (d, veg, qty, f"{reason}: {description}"))
+                            c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
+                            conn.commit()
+                            st.success(f"✅ Recorded waste: {qty} kg of {veg}")
+    
+    st.markdown("---")
+    st.markdown(f"### Today's Waste ({selected_date.strftime('%d %B %Y')})")
+    waste_df = pd.read_sql("SELECT * FROM waste WHERE date=?", 
+                          conn, params=(selected_date.strftime("%Y-%m-%d"),))
+    
+    if waste_df.empty:
+        st.info("No waste recorded today")
+    else:
+        total_waste = waste_df['quantity'].sum()
+        st.metric("Total Waste Today", f"{total_waste:.2f}")
+        st.dataframe(waste_df, use_container_width=True)
+
+# ========================== DOWNLOAD ==========================
 elif menu == "⬇ Download":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>⬇ Download Reports</h2>
-        <div class="subtitle">Data Export & Analytics</div>
+        <div class="subtitle">Freshness You Can Feel</div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -3347,71 +3347,45 @@ elif menu == "⬇ Download":
         
         d = selected_date.strftime("%Y-%m-%d")
         
-        daily_sales = safe_read_sql("SELECT COALESCE(SUM(total),0) as total_sales FROM sales WHERE date=?", 
+        daily_sales = pd.read_sql("SELECT COALESCE(SUM(total),0) as total_sales FROM sales WHERE date=?", 
                                  conn, params=(d,)).iloc[0]['total_sales']
         
-        daily_purchases = safe_read_sql("SELECT COALESCE(SUM(amount),0) as total_purchases FROM purchases WHERE date=?", 
+        daily_purchases = pd.read_sql("SELECT COALESCE(SUM(amount),0) as total_purchases FROM purchases WHERE date=?", 
                                      conn, params=(d,)).iloc[0]['total_purchases']
         
-        daily_expenses = safe_read_sql("SELECT COALESCE(SUM(amount),0) as total_expenses FROM expenses WHERE date=?", 
+        daily_expenses = pd.read_sql("SELECT COALESCE(SUM(amount),0) as total_expenses FROM expenses WHERE date=?", 
                                     conn, params=(d,)).iloc[0]['total_expenses']
         
-        daily_waste = safe_read_sql("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE date=?", 
+        daily_waste = pd.read_sql("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE date=?", 
                                  conn, params=(d,)).iloc[0]['total_waste']
         
-        # Get customer details
-        daily_customers = safe_read_sql("""
-            SELECT 
-                COALESCE(customer_name, 'Guest') as customer_name,
-                COALESCE(customer_phone, '') as phone,
-                SUM(total) as total_spent,
-                COUNT(*) as total_visits
-            FROM sales 
-            WHERE date=?
-            GROUP BY COALESCE(customer_name, 'Guest'), COALESCE(customer_phone, '')
-            ORDER BY total_spent DESC
-        """, conn, params=(d,))
+        # Get customer details properly
+        try:
+            daily_customers = pd.read_sql("""
+                SELECT 
+                    COALESCE(customer_name, 'Guest') as customer_name,
+                    COALESCE(customer_phone, '') as phone,
+                    SUM(total) as total_spent,
+                    COUNT(*) as total_visits
+                FROM sales 
+                WHERE date=?
+                GROUP BY COALESCE(customer_name, 'Guest'), COALESCE(customer_phone, '')
+                ORDER BY total_spent DESC
+            """, conn, params=(d,))
+        except:
+            daily_customers = pd.DataFrame()
         
         daily_profit = daily_sales - daily_purchases - daily_expenses
         
-        # Display metrics in colorful cards
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.markdown(f"""
-            <div class="metric-card-sales">
-                <h4>💰 Sales</h4>
-                <h3>₹{daily_sales:.2f}</h3>
-            </div>
-            """, unsafe_allow_html=True)
+            st.metric("💰 Sales", f"₹{daily_sales:.2f}")
         with col2:
-            st.markdown(f"""
-            <div class="metric-card-expense">
-                <h4>🛒 Purchases</h4>
-                <h3>₹{daily_purchases:.2f}</h3>
-            </div>
-            """, unsafe_allow_html=True)
+            st.metric("🛒 Purchases", f"₹{daily_purchases:.2f}")
         with col3:
-            st.markdown(f"""
-            <div class="metric-card-waste">
-                <h4>💸 Expenses</h4>
-                <h3>₹{daily_expenses:.2f}</h3>
-            </div>
-            """, unsafe_allow_html=True)
+            st.metric("💸 Expenses", f"₹{daily_expenses:.2f}")
         with col4:
-            profit_color = "#52b788" if daily_profit >= 0 else "#f72585"
-            profit_icon = "📈" if daily_profit >= 0 else "📉"
-            st.markdown(f"""
-            <div style="background: linear-gradient(135deg, {profit_color} 0%, {profit_color}90 100%);
-                        padding: 20px;
-                        border-radius: 15px;
-                        margin: 5px;
-                        color: white;
-                        text-align: center;
-                        box-shadow: 0 8px 25px {profit_color}40;">
-                <h4>{profit_icon} Profit/Loss</h4>
-                <h3>₹{abs(daily_profit):.2f}</h3>
-            </div>
-            """, unsafe_allow_html=True)
+            st.metric("📈 Profit/Loss", f"₹{daily_profit:.2f}", delta_color="off")
         
         st.markdown("#### 👥 Customer Details")
         if not daily_customers.empty:
@@ -3435,7 +3409,7 @@ elif menu == "⬇ Download":
         
         for table_name, display_name, description in tables:
             with st.expander(f"{display_name} - {description}"):
-                df = safe_read_sql(f"SELECT * FROM {table_name} WHERE date=?", 
+                df = pd.read_sql(f"SELECT * FROM {table_name} WHERE date=?", 
                                 conn, params=(d,))
                 
                 if df.empty:
@@ -3450,6 +3424,443 @@ elif menu == "⬇ Download":
                         mime="text/csv",
                         use_container_width=True
                     )
+    
+    with tab2:
+        st.markdown("### 📊 Monthly Reports")
+        
+        months = pd.read_sql("SELECT DISTINCT strftime('%Y-%m', date) as month FROM sales UNION SELECT DISTINCT strftime('%Y-%m', date) as month FROM purchases ORDER BY month DESC", conn)
+        
+        if months.empty:
+            st.info("No monthly data available")
+        else:
+            selected_month = st.selectbox("Select Month", months['month'].tolist(), index=0)
+            
+            monthly_sales = pd.read_sql("SELECT COALESCE(SUM(total),0) as total_sales FROM sales WHERE strftime('%Y-%m', date)=?", 
+                                       conn, params=(selected_month,)).iloc[0]['total_sales']
+            
+            monthly_purchases = pd.read_sql("SELECT COALESCE(SUM(amount),0) as total_purchases FROM purchases WHERE strftime('%Y-%m', date)=?", 
+                                          conn, params=(selected_month,)).iloc[0]['total_purchases']
+            
+            monthly_expenses = pd.read_sql("SELECT COALESCE(SUM(amount),0) as total_expenses FROM expenses WHERE strftime('%Y-%m', date)=?", 
+                                         conn, params=(selected_month,)).iloc[0]['total_expenses']
+            
+            monthly_waste = pd.read_sql("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE strftime('%Y-%m', date)=?", 
+                                       conn, params=(selected_month,)).iloc[0]['total_waste']
+            
+            # Get monthly customer details properly
+            try:
+                monthly_customers = pd.read_sql("""
+                    SELECT 
+                        COALESCE(customer_name, 'Guest') as customer_name,
+                        COALESCE(customer_phone, '') as phone,
+                        SUM(total) as total_spent,
+                        COUNT(*) as total_visits
+                    FROM sales 
+                    WHERE strftime('%Y-%m', date)=?
+                    GROUP BY COALESCE(customer_name, 'Guest'), COALESCE(customer_phone, '')
+                    ORDER BY total_spent DESC
+                """, conn, params=(selected_month,))
+            except:
+                monthly_customers = pd.DataFrame()
+            
+            monthly_profit = monthly_sales - monthly_purchases - monthly_expenses
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("💰 Monthly Sales", f"₹{monthly_sales:.2f}")
+            with col2:
+                st.metric("🛒 Monthly Purchases", f"₹{monthly_purchases:.2f}")
+            with col3:
+                st.metric("💸 Monthly Expenses", f"₹{monthly_expenses:.2f}")
+            with col4:
+                st.metric("📈 Monthly Profit/Loss", f"₹{monthly_profit:.2f}", delta_color="off")
+            
+            st.markdown("#### 👥 Monthly Customer Details")
+            if not monthly_customers.empty:
+                st.dataframe(
+                    monthly_customers.style.format({
+                        "total_spent": "₹{:.2f}"
+                    }),
+                    use_container_width=True
+                )
+            else:
+                st.info("No customer data for this month")
+            
+            st.markdown("#### Daily Breakdown for the Month")
+            
+            daily_sales_month = pd.read_sql("""
+                SELECT date, SUM(total) as daily_sales 
+                FROM sales 
+                WHERE strftime('%Y-%m', date)=? 
+                GROUP BY date 
+                ORDER BY date
+            """, conn, params=(selected_month,))
+            
+            if not daily_sales_month.empty:
+                st.line_chart(daily_sales_month.set_index('date')['daily_sales'])
+                
+                st.dataframe(
+                    daily_sales_month.style.format({
+                        "daily_sales": "₹{:.2f}"
+                    }),
+                    use_container_width=True
+                )
+            
+            st.markdown("#### Download Monthly Report")
+            
+            monthly_data = {
+                'Metric': ['Total Sales', 'Total Purchases', 'Total Expenses', 'Total Waste', 'Net Profit/Loss', 'Total Customers', 'Total Customer Spent'],
+                'Amount': [f"₹{monthly_sales:.2f}", f"₹{monthly_purchases:.2f}", 
+                          f"₹{monthly_expenses:.2f}", f"{monthly_waste:.2f}", f"₹{monthly_profit:.2f}",
+                          f"{len(monthly_customers)}", f"₹{monthly_customers['total_spent'].sum():.2f}"]
+            }
+            
+            monthly_report_df = pd.DataFrame(monthly_data)
+            
+            csv = monthly_report_df.to_csv(index=False).encode()
+            st.download_button(
+                "📥 Download Monthly Summary",
+                data=csv,
+                file_name=f"monthly_report_{selected_month}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+            
+            if not monthly_customers.empty:
+                customer_csv = monthly_customers.to_csv(index=False).encode()
+                st.download_button(
+                    "📥 Download Monthly Customer Data",
+                    data=customer_csv,
+                    file_name=f"monthly_customers_{selected_month}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+    
+    with tab3:
+        st.markdown("### 📋 Data Export")
+        st.markdown("Export complete database tables")
+        
+        tables = [
+            ("inventory", "📦 Inventory", "Current stock levels"),
+            ("customers", "👥 Customers", "Customer database"),
+            ("purchases", "🛒 Purchases", "All purchase records"),
+            ("sales", "💰 Sales", "All sales transactions"),
+            ("waste", "🗑 Waste", "All waste records"),
+            ("expenses", "💸 Expenses", "All expense records")
+        ]
+        
+        for table_name, display_name, description in tables:
+            with st.expander(f"{display_name} - {description}"):
+                try:
+                    df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+                    
+                    if df.empty:
+                        st.info(f"No {display_name.lower()} data")
+                    else:
+                        st.dataframe(df, use_container_width=True)
+                        csv = df.to_csv(index=False).encode()
+                        st.download_button(
+                            f"Download {display_name}",
+                            data=csv,
+                            file_name=f"{table_name}_full_export.csv",
+                            mime="text/csv",
+                            use_container_width=True
+                        )
+                except Exception as e:
+                    st.error(f"Error loading {table_name}: {str(e)}")
+
+# ========================== FINANCIALS ==========================
+elif menu == "💰 Financials":
+    st.markdown("""
+    <div style="text-align:center; margin-bottom:30px;">
+        <h2>💰 Financial Summary</h2>
+        <div class="subtitle">Freshness You Can Feel</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    d = selected_date.strftime("%Y-%m-%d")
+    
+    sales_data = pd.read_sql("SELECT COALESCE(SUM(total),0) AS total FROM sales WHERE date=?", 
+                           conn, params=(d,)).iloc[0]['total']
+    cost_data = pd.read_sql("SELECT COALESCE(SUM(amount),0) AS total FROM purchases WHERE date=?", 
+                          conn, params=(d,)).iloc[0]['total']
+    expense_data = pd.read_sql("SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE date=?", 
+                             conn, params=(d,)).iloc[0]['total']
+    
+    profit = sales_data - cost_data - expense_data
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.markdown(f"""
+        <div class="sales-card">
+            <h3>💰</h3>
+            <h4>Sales</h4>
+            <h2>₹{sales_data:.2f}</h2>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown(f"""
+        <div class="purchase-card">
+            <h3>📦</h3>
+            <h4>Cost</h4>
+            <h2>₹{cost_data:.2f}</h2>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown(f"""
+        <div class="card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color:white;">
+            <h3>💸</h3>
+            <h4>Expenses</h4>
+            <h2>₹{expense_data:.2f}</h2>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col4:
+        profit_bg = "#27ae60" if profit >= 0 else "#e74c3c"
+        profit_text = "Profit" if profit >= 0 else "Loss"
+        profit_icon = "📈" if profit >= 0 else "📉"
+        
+        st.markdown(f"""
+        <div class="red-alert-card">
+            <h3>{profit_icon}</h3>
+            <h4>{profit_text}</h4>
+            <h2>₹{abs(profit):.2f}</h2>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("### 📊 Daily Breakdown")
+    
+    sales_by_veg = pd.read_sql("""
+        SELECT vegetable, SUM(quantity_sold) as qty, SUM(total) as revenue 
+        FROM sales WHERE date=? 
+        GROUP BY vegetable 
+        ORDER BY revenue DESC
+    """, conn, params=(d,))
+    
+    if not sales_by_veg.empty:
+        st.markdown("#### Top Selling Items")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.dataframe(
+                sales_by_veg.style.format({
+                    "qty": "{:.2f}",
+                    "revenue": "₹{:.2f}"
+                }),
+                use_container_width=True
+            )
+        with col2:
+            chart_data = sales_by_veg.head(10).set_index('vegetable')['revenue']
+            st.bar_chart(chart_data)
+    
+    st.markdown("### Recent Transactions")
+    recent_sales = pd.read_sql("SELECT * FROM sales WHERE date=? ORDER BY rowid DESC LIMIT 10", 
+                              conn, params=(d,))
+    if not recent_sales.empty:
+        display_sales = recent_sales.copy()
+        
+        def format_recent_sales(row):
+            unit_type = row.get('unit_type', 'kg')
+            if unit_type == 'kg':
+                return f"{row['quantity_sold']:.2f} kg"
+            elif unit_type == 'piece':
+                return f"{row['quantity_sold']:.0f} pieces"
+            else:
+                return f"{row['quantity_sold']:.2f} {unit_type}"
+        
+        def clean_customer_name(customer):
+            if not isinstance(customer, str):
+                return str(customer)
+            if '(' in customer:
+                return customer.split('(')[0].strip()
+            return customer
+        
+        display_sales['Quantity'] = display_sales.apply(format_recent_sales, axis=1)
+        display_sales['Customer'] = display_sales['customer_name'].apply(lambda x: x if x and x != 'None' else 'Guest')
+        
+        st.dataframe(
+            display_sales[['vegetable', 'Quantity', 'total', 'Customer']].style.format({
+                "total": "₹{:.2f}"
+            }),
+            use_container_width=True
+        )
+
+# ========================== DATABASE TOOLS ==========================
+elif menu == "🔧 Database Tools":
+    st.markdown("""
+    <div style="text-align:center; margin-bottom:30px;">
+        <h2>🔧 Enhanced Database Tools</h2>
+        <div class="subtitle">Permanent Data Storage System</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("### 📍 Database Location")
+    st.code(f"""
+    Database File: {DB_FILE}
+    Backup File: {BACKUP_FILE}
+    Export Directory: {EXPORT_DIR}
+    """, language="bash")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### 📊 Current Status")
+        if os.path.exists(DB_FILE):
+            size_kb = os.path.getsize(DB_FILE) / 1024
+            modified = datetime.fromtimestamp(os.path.getmtime(DB_FILE))
+            st.success(f"""
+            **✅ Database Active**
+            Size: {size_kb:.1f} KB
+            Last Modified: {modified.strftime('%Y-%m-%d %H:%M:%S')}
+            """)
+        else:
+            st.error("**❌ Database Not Found**")
+    
+    with col2:
+        st.markdown("#### 📂 Backup Status")
+        if os.path.exists(BACKUP_FILE):
+            size_kb = os.path.getsize(BACKUP_FILE) / 1024
+            modified = datetime.fromtimestamp(os.path.getmtime(BACKUP_FILE))
+            st.success(f"""
+            **✅ Backup Active**
+            Size: {size_kb:.1f} KB
+            Last Backup: {modified.strftime('%Y-%m-%d %H:%M:%S')}
+            """)
+        else:
+            st.warning("**⚠️ No Backup Found**")
+    
+    st.markdown("---")
+    st.markdown("### 💾 Enhanced Backup System")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("🔄 Create Full Backup", use_container_width=True, type="primary"):
+            if create_backup():
+                st.success("✅ Full backup created!")
+                st.rerun()
+            else:
+                st.error("❌ Backup failed!")
+    
+    with col2:
+        if st.button("📤 Export to JSON", use_container_width=True):
+            json_file = export_backup()
+            if json_file:
+                st.success(f"✅ Exported to: {json_file}")
+                with open(json_file, 'rb') as f:
+                    st.download_button(
+                        label="📥 Download JSON",
+                        data=f,
+                        file_name=os.path.basename(json_file),
+                        mime="application/json",
+                        use_container_width=True
+                    )
+            else:
+                st.error("❌ Export failed!")
+    
+    with col3:
+        if st.button("🔍 Recover Data", use_container_width=True):
+            if recover_database():
+                st.success("✅ Data recovery attempted!")
+                st.rerun()
+            else:
+                st.error("❌ Recovery failed!")
+    
+    st.markdown("---")
+    st.markdown("### 📈 Detailed Statistics")
+    
+    try:
+        stats_data = []
+        tables = ["inventory", "sales", "purchases", "customers", "expenses", "waste"]
+        
+        for table in tables:
+            try:
+                c.execute(f"SELECT COUNT(*) FROM {table}")
+                count = c.fetchone()[0]
+                
+                if table == "sales":
+                    c.execute("SELECT COALESCE(SUM(total), 0) FROM sales")
+                    total_sales = c.fetchone()[0]
+                    stats_data.append({
+                        "Table": table,
+                        "Records": count,
+                        "Total Amount": f"₹{total_sales:.2f}",
+                        "Last Record": get_last_record_date(table)
+                    })
+                elif table == "purchases":
+                    c.execute("SELECT COALESCE(SUM(amount), 0) FROM purchases")
+                    total_purchases = c.fetchone()[0]
+                    stats_data.append({
+                        "Table": table,
+                        "Records": count,
+                        "Total Amount": f"₹{total_purchases:.2f}",
+                        "Last Record": get_last_record_date(table)
+                    })
+                else:
+                    stats_data.append({
+                        "Table": table,
+                        "Records": count,
+                        "Total Amount": "-",
+                        "Last Record": get_last_record_date(table)
+                    })
+            except:
+                stats_data.append({
+                    "Table": table,
+                    "Records": 0,
+                    "Total Amount": "-",
+                    "Last Record": "N/A"
+                })
+        
+        stats_df = pd.DataFrame(stats_data)
+        st.dataframe(stats_df, use_container_width=True)
+        
+        st.markdown("#### ✅ Data Validation")
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            c.execute("SELECT COUNT(*) FROM sales WHERE date=?", (today,))
+            today_sales = c.fetchone()[0]
+            
+            c.execute("SELECT COUNT(*) FROM inventory WHERE quantity > 0")
+            in_stock = c.fetchone()[0]
+            
+            st.info(f"""
+            **Data Health Check:**
+            • Today's Sales Records: {today_sales}
+            • Items in Stock: {in_stock}
+            • Total Database Records: {stats_df['Records'].sum():,}
+            """)
+        except Exception as e:
+            st.warning(f"Data validation incomplete: {e}")
+            
+    except Exception as e:
+        st.error(f"Error fetching statistics: {e}")
+    
+    st.markdown("---")
+    st.markdown("### 🧹 Database Cleanup")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        days_to_keep = st.number_input("Days to keep sales data", min_value=30, max_value=365, value=90, step=30)
+        if st.button("🗑️ Clean Old Sales Data", use_container_width=True, type="secondary", key="clean_sales"):
+            cutoff_date = (datetime.now() - timedelta(days=days_to_keep)).strftime("%Y-%m-%d")
+            try:
+                c.execute("DELETE FROM sales WHERE date < ?", (cutoff_date,))
+                conn.commit()
+                st.success(f"✅ Sales data older than {cutoff_date} removed!")
+            except Exception as e:
+                st.error(f"❌ Cleanup failed: {e}")
+    
+    with col2:
+        if st.button("⚡ Vacuum Database", use_container_width=True, key="vacuum_db"):
+            try:
+                c.execute("VACUUM")
+                conn.commit()
+                st.success("✅ Database optimized and compacted!")
+            except Exception as e:
+                st.error(f"❌ Vacuum failed: {e}")
 
 # ========================== ENHANCED BACKUP ON EXIT ==========================
 @atexit.register
@@ -3463,9 +3874,6 @@ st.markdown("---")
 st.markdown(f"""
 <div class="footer">
     <p>🌿 Fresh Basket — Freshness You Can Feel | Quality Vegetables Daily ✅</p>
-    <p style="font-size:0.8em; color:#6c757d; margin-top:10px;">
-        📍 No.4, Andal nagar, Adambakkam, Chennai - 600 088 | 📞 7904019948
-    </p>
 </div>
 """, unsafe_allow_html=True)
 
