@@ -450,7 +450,6 @@ st.markdown("""
     /* Headers */
     h1 {text-align:center; color:#2c3e50; font-size:2.8em; margin-bottom:5px;}
     .subtitle {text-align:center; color:#27ae60; font-size:1.2em; margin-bottom:10px; font-weight:500;}
-    .address {text-align:center; color:#7f8c8d; font-size:0.9em; margin-bottom:20px;}
     
     /* Buttons */
     .stButton>button {
@@ -701,15 +700,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Header with address
+# Header WITHOUT address and phone (moved to receipt only)
 st.markdown("""
 <div style="text-align:center; margin-bottom:30px;">
     <h1>🌿 Fresh Basket</h1>
     <div class="subtitle">Freshness You Can Feel</div>
-    <div class="address">
-        No.4, Andal nagar, Adambakkam, Chennai - 600 088<br>
-        📞 7904019948
-    </div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -2366,7 +2361,7 @@ elif menu == "💵 Quick Sell":
                 
                 # Complete Bill Button - Fixed to be always visible
                 st.markdown("<div style='margin-top: 30px;'></div>", unsafe_allow_html=True)
-                if st.button("✅ Complete Bill", type="primary", use_container_width=True, key="complete_bill", use_container_width=True):
+                if st.button("✅ Complete Bill", type="primary", use_container_width=True, key="complete_bill"):
                     if process_sale_simple(cust_name, cust_phone):
                         st.success("✅ Bill completed successfully!")
                         st.rerun()
@@ -3753,7 +3748,6 @@ st.markdown("---")
 st.markdown(f"""
 <div class="footer">
     <p>🌿 Fresh Basket — Freshness You Can Feel | Quality Vegetables Daily ✅</p>
-    <p style="font-size:0.8em; color:#95a5a6;">No.4, Andal nagar, Adambakkam, Chennai - 600 088 | 📞 7904019948</p>
 </div>
 """, unsafe_allow_html=True)
 
