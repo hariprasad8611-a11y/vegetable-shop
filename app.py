@@ -1177,7 +1177,7 @@ def print_universal(bill_data, method="auto"):
     return False
 
 def format_bill_universal(bill_data):
-    """Format bill for all printer sizes"""
+    """Format bill for all printer sizes - REMOVED MOBILE NUMBER"""
     lines = []
     lines.append("=" * 48)
     lines.append(center_text("🌿 FRESH BASKET", 48))
@@ -1217,10 +1217,7 @@ def format_bill_universal(bill_data):
     lines.append(center_text(total_text, 48))
     lines.append("-" * 48)
     
-    if bill_data.get('customer_phone'):
-        phone = bill_data['customer_phone']
-        lines.append(f"Phone: {phone}")
-    
+    # REMOVED MOBILE NUMBER FROM BILL
     lines.append("-" * 48)
     lines.append(center_text("Thank you for your purchase!", 48))
     lines.append(center_text("Visit Again 🌿", 48))
@@ -1767,11 +1764,15 @@ elif menu == "🛒 Add Purchase":
                         total_qty = qty_kg
                     
                     with col2:
-                        amount = st.number_input("Total Amount ₹", min_value=0.0, step=10.0, value=0.0, key="kg_amount")
+                        # CHANGED: Removed default value, made box empty
+                        amount = st.number_input("Total Amount ₹", min_value=0.0, step=10.0, value=None, placeholder="Enter amount", key="kg_amount")
+                        if amount is None:
+                            amount = 0.0
                         supplier = st.text_input("Supplier Name", key="kg_supplier")
                         unit_price = amount / total_qty if total_qty > 0 else 0
                         
-                        st.info(f"**Unit Price:** ₹{unit_price:.2f}/kg")
+                        if amount > 0:
+                            st.info(f"**Unit Price:** ₹{unit_price:.2f}/kg")
                     
                     submit_button = st.form_submit_button("💾 Save Purchase", type="primary", use_container_width=True)
                     if submit_button:
@@ -1830,11 +1831,15 @@ elif menu == "🛒 Add Purchase":
                             total_qty = 0
                     
                     with col2:
-                        amount = st.number_input("Total Amount ₹", min_value=0.0, step=10.0, value=0.0, key="piece_amount")
+                        # CHANGED: Removed default value, made box empty
+                        amount = st.number_input("Total Amount ₹", min_value=0.0, step=10.0, value=None, placeholder="Enter amount", key="piece_amount")
+                        if amount is None:
+                            amount = 0.0
                         supplier = st.text_input("Supplier Name", key="piece_supplier")
                         unit_price = amount / total_qty if total_qty > 0 else 0
                         
-                        st.info(f"**Unit Price:** ₹{unit_price:.2f}/piece")
+                        if amount > 0:
+                            st.info(f"**Unit Price:** ₹{unit_price:.2f}/piece")
                     
                     submit_button = st.form_submit_button("💾 Save Purchase", type="primary", use_container_width=True)
                     if submit_button:
@@ -1894,11 +1899,15 @@ elif menu == "🛒 Add Purchase":
                         total_qty = qty_kg
                     
                     with col2:
-                        amount = st.number_input("Total Amount ₹", min_value=0.0, step=10.0, value=0.0, key="fruit_amount")
+                        # CHANGED: Removed default value, made box empty
+                        amount = st.number_input("Total Amount ₹", min_value=0.0, step=10.0, value=None, placeholder="Enter amount", key="fruit_amount")
+                        if amount is None:
+                            amount = 0.0
                         supplier = st.text_input("Supplier Name", key="fruit_supplier")
                         unit_price = amount / total_qty if total_qty > 0 else 0
                         
-                        st.info(f"**Unit Price:** ₹{unit_price:.2f}/kg")
+                        if amount > 0:
+                            st.info(f"**Unit Price:** ₹{unit_price:.2f}/kg")
                     
                     submit_button = st.form_submit_button("💾 Save Purchase", type="primary", use_container_width=True)
                     if submit_button:
@@ -1983,7 +1992,9 @@ elif menu == "🏷 Set Prices":
                 category = st.selectbox("Category", ["vegetable", "fruit"], help="Select item category")
             with col2:
                 unit_type = st.selectbox("Unit Type", ["kg", "piece"], help="Select how this item is sold")
-                new_price = st.number_input("Initial Selling Price ₹", min_value=0.0, step=1.0, value=0.0)
+                new_price = st.number_input("Initial Selling Price ₹", min_value=0.0, step=1.0, value=None, placeholder="Enter price")
+                if new_price is None:
+                    new_price = 0.0
             
             submitted = st.form_submit_button("➕ Add Item", use_container_width=True)
             if submitted:
@@ -2099,7 +2110,10 @@ elif menu == "🏷 Set Prices":
                 current_unit = 'kg'
         
         with col2:
-            new_price = st.number_input("New Price ₹", value=current_price, min_value=0.0, step=1.0)
+            # CHANGED: Removed default value, made box empty
+            new_price = st.number_input("New Price ₹", min_value=0.0, step=1.0, value=None, placeholder="Enter new price")
+            if new_price is None:
+                new_price = 0.0
             
             if st.button("💾 Update Price", type="primary", use_container_width=True):
                 c.execute("UPDATE inventory SET selling_price=? WHERE vegetable=?", (new_price, selected_item))
@@ -2482,8 +2496,6 @@ elif menu == "💵 Quick Sell":
                         st.markdown(f"**⏰ Time:** {sale['time']} (IST)")
                 with col2:
                     st.markdown(f"**🧾 Bill No:** {sale['bill_no']}")
-                    if sale['customer_phone']:
-                        st.markdown(f"**📱 Phone:** {sale['customer_phone']}")
                 
                 st.markdown("<hr style='border:none; height:1px; background:#e0e0e0; margin:15px 0;'>", unsafe_allow_html=True)
                 
@@ -3057,7 +3069,10 @@ elif menu == "💸 Expenses":
                                    ["Rent", "Electricity", "Water", "Transport", "Labor", 
                                     "Packaging", "Maintenance", "Miscellaneous", "Others"],
                                    key="expense_category")
-            amount = st.number_input("Amount ₹", min_value=0.0, step=10.0, value=0.0, key="expense_amount")
+            # CHANGED: Removed default value, made box empty
+            amount = st.number_input("Amount ₹", min_value=0.0, step=10.0, value=None, placeholder="Enter amount", key="expense_amount")
+            if amount is None:
+                amount = 0.0
         with col2:
             description = st.text_input("Description", placeholder="What was this expense for?", key="expense_desc")
         
@@ -3095,108 +3110,143 @@ elif menu == "👥 Customers":
     """, unsafe_allow_html=True)
     
     try:
-        # Get all customers from sales table (all customers, not just those with phone)
-        customers_sql = """
-            SELECT 
-                COALESCE(customer_phone, 'No Phone') as phone,
-                COALESCE(customer_name, 'Guest') as name,
-                COUNT(*) as total_visits,
-                SUM(total) as total_spent,
-                MAX(date) as last_visit
-            FROM sales 
-            WHERE customer_name IS NOT NULL AND customer_name != ''
-            GROUP BY COALESCE(customer_phone, 'No Phone'), COALESCE(customer_name, 'Guest')
-            ORDER BY total_spent DESC
-        """
+        # Date selection for customer details
+        col1, col2 = st.columns(2)
+        with col1:
+            customer_view_date = st.date_input("View customers for date", value=selected_date, key="customer_date_view")
+        with col2:
+            show_all_customers = st.checkbox("Show all dates", key="show_all_customers_view")
         
-        customers_df = pd.read_sql(customers_sql, conn)
-        
-        if customers_df.empty:
-            st.info("No customer data available yet")
-        else:
-            # Also get customers from customers table for loyalty points
-            try:
-                loyalty_customers = pd.read_sql("SELECT phone, name, points, total_spent, last_visit FROM customers", conn)
+        if show_all_customers:
+            # Get all customers with date-wise aggregation
+            customers_sql = """
+                SELECT 
+                    date,
+                    COALESCE(customer_phone, 'No Phone') as phone,
+                    COALESCE(customer_name, 'Guest') as name,
+                    COUNT(*) as total_visits,
+                    SUM(total) as total_spent,
+                    MAX(customer_name) as customer_name,
+                    MAX(customer_phone) as customer_phone
+                FROM sales 
+                WHERE customer_name IS NOT NULL AND customer_name != ''
+                GROUP BY date, COALESCE(customer_phone, 'No Phone'), COALESCE(customer_name, 'Guest')
+                ORDER BY date DESC, total_spent DESC
+            """
+            
+            customers_df = pd.read_sql(customers_sql, conn)
+            
+            if customers_df.empty:
+                st.info("No customer data available yet")
+            else:
+                st.markdown("### 📅 All Customers (Date-wise)")
                 
-                # Merge with sales data
-                if not loyalty_customers.empty:
-                    customers_df = customers_df.merge(
-                        loyalty_customers[['phone', 'points']], 
-                        on='phone', 
-                        how='left'
-                    )
-                    customers_df['points'] = customers_df['points'].fillna(0)
-                else:
-                    customers_df['points'] = 0
-            except:
-                customers_df['points'] = 0
+                # Group by date for better organization
+                dates = customers_df['date'].unique()
+                
+                for sale_date in dates:
+                    date_customers = customers_df[customers_df['date'] == sale_date]
+                    
+                    with st.expander(f"📅 {sale_date} - {len(date_customers)} customers"):
+                        date_total = date_customers['total_spent'].sum()
+                        date_visits = date_customers['total_visits'].sum()
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric(f"Total Sales on {sale_date}", f"₹{date_total:.2f}")
+                        with col2:
+                            st.metric("Total Customer Visits", date_visits)
+                        
+                        display_customers = date_customers.copy()
+                        display_customers = display_customers.rename(columns={
+                            "phone": "📱 Phone",
+                            "name": "👤 Name",
+                            "total_visits": "🛒 Visits",
+                            "total_spent": "💰 Total Spent"
+                        })
+                        
+                        st.dataframe(
+                            display_customers[['👤 Name', '📱 Phone', '🛒 Visits', '💰 Total Spent']].style.format({
+                                "💰 Total Spent": "₹{:.2f}"
+                            }),
+                            use_container_width=True
+                        )
+        else:
+            # Get customers for specific date
+            d = customer_view_date.strftime("%Y-%m-%d")
+            customers_sql = """
+                SELECT 
+                    COALESCE(customer_phone, 'No Phone') as phone,
+                    COALESCE(customer_name, 'Guest') as name,
+                    COUNT(*) as total_visits,
+                    SUM(total) as total_spent,
+                    MAX(customer_name) as customer_name,
+                    MAX(customer_phone) as customer_phone
+                FROM sales 
+                WHERE date=? AND customer_name IS NOT NULL AND customer_name != ''
+                GROUP BY COALESCE(customer_phone, 'No Phone'), COALESCE(customer_name, 'Guest')
+                ORDER BY total_spent DESC
+            """
             
-            total_customers = len(customers_df)
-            total_spent = customers_df['total_spent'].sum()
-            total_points = customers_df['points'].sum()
+            customers_df = pd.read_sql(customers_sql, conn, params=(d,))
             
-            # Display metrics
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Customers", total_customers)
-            with col2:
-                st.metric("Total Spent", f"₹{total_spent:.2f}")
-            with col3:
-                avg_spent = total_spent / total_customers if total_customers > 0 else 0
-                st.metric("Avg Spent/Customer", f"₹{avg_spent:.2f}")
-            with col4:
-                st.metric("Total Points", total_points)
-            
-            # Show customers in a table
-            st.markdown("### 👥 All Customers")
-            
-            display_customers = customers_df.copy()
-            display_customers = display_customers.rename(columns={
-                "phone": "📱 Phone",
-                "name": "👤 Name",
-                "total_visits": "🛒 Visits",
-                "total_spent": "💰 Total Spent",
-                "last_visit": "📅 Last Visit",
-                "points": "⭐ Points"
-            })
-            
-            st.dataframe(
-                display_customers.style.format({
-                    "💰 Total Spent": "₹{:.2f}"
-                }),
-                use_container_width=True,
-                height=400
-            )
-            
-            # Show customer details in cards
-            st.markdown("### 📊 Customer Details")
-            for idx, row in customers_df.iterrows():
-                st.markdown(f"""
-                <div class="card" style="padding:15px; margin-bottom:10px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <div>
-                            <h4 style="margin:0; color:#2c3e50;">{row['name']}</h4>
-                            <p style="margin:5px 0 0 0; color:#7f8c8d; font-size:0.9em;">📱 {row['phone']}</p>
-                            <p style="margin:5px 0 0 0; color:#7f8c8d; font-size:0.9em;">📅 Last Visit: {row['last_visit'] if row['last_visit'] else 'N/A'}</p>
-                            <p style="margin:5px 0 0 0; color:#7f8c8d; font-size:0.9em;">🛒 Total Visits: {row['total_visits']}</p>
-                        </div>
-                        <div style="text-align:right;">
-                            <span style="background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%); 
-                                        color:white; padding:5px 15px; border-radius:20px; font-weight:bold; margin-bottom:5px; display:block;">
-                                ⭐ {int(row['points'])} pts
-                            </span>
-                            <span style="background: linear-gradient(135deg, #3498db 0%, #2980b9 100%); 
-                                        color:white; padding:5px 15px; border-radius:20px; font-weight:bold; display:block;">
-                                ₹{row['total_spent']:.2f} spent
-                            </span>
+            if customers_df.empty:
+                st.info(f"No customer data available for {customer_view_date.strftime('%d %B %Y')}")
+            else:
+                total_customers = len(customers_df)
+                total_spent = customers_df['total_spent'].sum()
+                
+                # Display metrics
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Customers", total_customers)
+                with col2:
+                    st.metric("Total Spent", f"₹{total_spent:.2f}")
+                with col3:
+                    avg_spent = total_spent / total_customers if total_customers > 0 else 0
+                    st.metric("Avg Spent/Customer", f"₹{avg_spent:.2f}")
+                
+                # Show customers in a table
+                st.markdown(f"### 👥 Customers on {customer_view_date.strftime('%d %B %Y')}")
+                
+                display_customers = customers_df.copy()
+                display_customers = display_customers.rename(columns={
+                    "phone": "📱 Phone",
+                    "name": "👤 Name",
+                    "total_visits": "🛒 Visits",
+                    "total_spent": "💰 Total Spent"
+                })
+                
+                st.dataframe(
+                    display_customers[['👤 Name', '📱 Phone', '🛒 Visits', '💰 Total Spent']].style.format({
+                        "💰 Total Spent": "₹{:.2f}"
+                    }),
+                    use_container_width=True,
+                    height=400
+                )
+                
+                # Show customer details in cards
+                st.markdown("### 📊 Customer Details")
+                for idx, row in customers_df.iterrows():
+                    st.markdown(f"""
+                    <div class="card" style="padding:15px; margin-bottom:10px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <h4 style="margin:0; color:#2c3e50;">{row['name']}</h4>
+                                <p style="margin:5px 0 0 0; color:#7f8c8d; font-size:0.9em;">📱 {row['phone']}</p>
+                                <p style="margin:5px 0 0 0; color:#7f8c8d; font-size:0.9em;">🛒 Visits: {row['total_visits']}</p>
+                            </div>
+                            <div style="text-align:right;">
+                                <span style="background: linear-gradient(135deg, #3498db 0%, #2980b9 100%); 
+                                            color:white; padding:5px 15px; border-radius:20px; font-weight:bold; display:block;">
+                                    ₹{row['total_spent']:.2f} spent
+                                </span>
+                            </div>
                         </div>
                     </div>
-                </div>
-                """, unsafe_allow_html=True)
+                    """, unsafe_allow_html=True)
     except Exception as e:
         st.error(f"Error loading customer data: {str(e)}")
-        import traceback
-        st.error(traceback.format_exc())
 
 # ========================== WASTE ==========================
 elif menu == "🗑 Waste":
@@ -3221,7 +3271,10 @@ elif menu == "🗑 Waste":
                 veg = st.selectbox("Select Vegetable (KG)", kg_vegetables['vegetable'].tolist() if not kg_vegetables.empty else [], key="kg_veg_waste_veg")
                 if veg:
                     st.info(f"Unit: kg")
-                    qty = st.number_input("Quantity (kg)", min_value=0.0, step=0.1, value=0.0, key="kg_veg_waste_qty")
+                    # CHANGED: Removed default value, made box empty
+                    qty = st.number_input("Quantity (kg)", min_value=0.0, step=0.1, value=None, placeholder="Enter kg", key="kg_veg_waste_qty")
+                    if qty is None:
+                        qty = 0.0
                 else:
                     qty = 0
             with col2:
@@ -3257,7 +3310,9 @@ elif menu == "🗑 Waste":
                 veg = st.selectbox("Select Vegetable (Piece)", piece_vegetables['vegetable'].tolist() if not piece_vegetables.empty else [], key="piece_veg_waste_veg")
                 if veg:
                     st.info(f"Unit: pieces")
-                    qty = st.number_input("Quantity (pieces)", min_value=0, step=1, value=0, key="piece_veg_waste_qty")
+                    qty = st.number_input("Quantity (pieces)", min_value=0, step=1, value=None, placeholder="Enter pieces", key="piece_veg_waste_qty")
+                    if qty is None:
+                        qty = 0
                 else:
                     qty = 0
             with col2:
@@ -3293,7 +3348,10 @@ elif menu == "🗑 Waste":
                 veg = st.selectbox("Select Fruit (KG)", kg_fruits['vegetable'].tolist() if not kg_fruits.empty else [], key="kg_fruit_waste_veg")
                 if veg:
                     st.info(f"Unit: kg")
-                    qty = st.number_input("Quantity (kg)", min_value=0.0, step=0.1, value=0.0, key="kg_fruit_waste_qty")
+                    # CHANGED: Removed default value, made box empty
+                    qty = st.number_input("Quantity (kg)", min_value=0.0, step=0.1, value=None, placeholder="Enter kg", key="kg_fruit_waste_qty")
+                    if qty is None:
+                        qty = 0.0
                 else:
                     qty = 0
             with col2:
@@ -3451,14 +3509,15 @@ elif menu == "⬇ Download":
             try:
                 monthly_customers = pd.read_sql("""
                     SELECT 
+                        date,
                         COALESCE(customer_name, 'Guest') as customer_name,
                         COALESCE(customer_phone, '') as phone,
                         SUM(total) as total_spent,
                         COUNT(*) as total_visits
                     FROM sales 
                     WHERE strftime('%Y-%m', date)=?
-                    GROUP BY COALESCE(customer_name, 'Guest'), COALESCE(customer_phone, '')
-                    ORDER BY total_spent DESC
+                    GROUP BY date, COALESCE(customer_name, 'Guest'), COALESCE(customer_phone, '')
+                    ORDER BY date DESC, total_spent DESC
                 """, conn, params=(selected_month,))
             except:
                 monthly_customers = pd.DataFrame()
@@ -3475,14 +3534,38 @@ elif menu == "⬇ Download":
             with col4:
                 st.metric("📈 Monthly Profit/Loss", f"₹{monthly_profit:.2f}", delta_color="off")
             
-            st.markdown("#### 👥 Monthly Customer Details")
+            st.markdown("#### 👥 Monthly Customer Details (Date-wise)")
             if not monthly_customers.empty:
-                st.dataframe(
-                    monthly_customers.style.format({
-                        "total_spent": "₹{:.2f}"
-                    }),
-                    use_container_width=True
-                )
+                # Group by date
+                dates = monthly_customers['date'].unique()
+                
+                for sale_date in dates:
+                    date_customers = monthly_customers[monthly_customers['date'] == sale_date]
+                    
+                    with st.expander(f"📅 {sale_date} - {len(date_customers)} customers"):
+                        date_total = date_customers['total_spent'].sum()
+                        date_visits = date_customers['total_visits'].sum()
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric(f"Total Sales", f"₹{date_total:.2f}")
+                        with col2:
+                            st.metric("Total Visits", date_visits)
+                        
+                        display_customers = date_customers.copy()
+                        display_customers = display_customers.rename(columns={
+                            "customer_name": "👤 Name",
+                            "phone": "📱 Phone",
+                            "total_visits": "🛒 Visits",
+                            "total_spent": "💰 Total Spent"
+                        })
+                        
+                        st.dataframe(
+                            display_customers[['👤 Name', '📱 Phone', '🛒 Visits', '💰 Total Spent']].style.format({
+                                "💰 Total Spent": "₹{:.2f}"
+                            }),
+                            use_container_width=True
+                        )
             else:
                 st.info("No customer data for this month")
             
@@ -3540,9 +3623,57 @@ elif menu == "⬇ Download":
         st.markdown("### 📋 Data Export")
         st.markdown("Export complete database tables")
         
+        # Add date selection for customer data export
+        st.markdown("#### 👥 Customer Data Export (Date-wise)")
+        col1, col2 = st.columns(2)
+        with col1:
+            export_start_date = st.date_input("Start Date", value=selected_date - timedelta(days=30), key="export_start_date")
+        with col2:
+            export_end_date = st.date_input("End Date", value=selected_date, key="export_end_date")
+        
+        if st.button("📥 Export Customer Data by Date", use_container_width=True):
+            start_d = export_start_date.strftime("%Y-%m-%d")
+            end_d = export_end_date.strftime("%Y-%m-%d")
+            
+            customer_export_sql = """
+                SELECT 
+                    date,
+                    COALESCE(customer_name, 'Guest') as customer_name,
+                    COALESCE(customer_phone, '') as phone,
+                    COUNT(*) as total_visits,
+                    SUM(total) as total_spent
+                FROM sales 
+                WHERE date BETWEEN ? AND ? AND customer_name IS NOT NULL AND customer_name != ''
+                GROUP BY date, COALESCE(customer_name, 'Guest'), COALESCE(customer_phone, '')
+                ORDER BY date DESC, total_spent DESC
+            """
+            
+            customer_export_df = pd.read_sql(customer_export_sql, conn, params=(start_d, end_d))
+            
+            if customer_export_df.empty:
+                st.info(f"No customer data available between {export_start_date.strftime('%d %B %Y')} and {export_end_date.strftime('%d %B %Y')}")
+            else:
+                st.dataframe(
+                    customer_export_df.style.format({
+                        "total_spent": "₹{:.2f}"
+                    }),
+                    use_container_width=True
+                )
+                
+                csv = customer_export_df.to_csv(index=False).encode()
+                st.download_button(
+                    "📥 Download Customer Data",
+                    data=csv,
+                    file_name=f"customer_data_{start_d}_to_{end_d}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+        
+        st.markdown("---")
+        st.markdown("#### Other Data Tables")
+        
         tables = [
             ("inventory", "📦 Inventory", "Current stock levels"),
-            ("customers", "👥 Customers", "Customer database"),
             ("purchases", "🛒 Purchases", "All purchase records"),
             ("sales", "💰 Sales", "All sales transactions"),
             ("waste", "🗑 Waste", "All waste records"),
