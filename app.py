@@ -429,7 +429,7 @@ if not st.session_state.logged_in:
 # ========================== PAGE SETUP ==========================
 st.set_page_config(page_title="Fresh Basket", page_icon="🌿", layout="wide")
 
-# Custom CSS for beautiful UI
+# Custom CSS for beautiful UI with red color boxes
 st.markdown("""
 <style>
     /* Main background */
@@ -521,6 +521,16 @@ st.markdown("""
         margin: 10px;
         color: white;
         box-shadow: 0 8px 25px rgba(243, 156, 18, 0.3);
+    }
+    
+    /* Red alert card */
+    .red-alert-card {
+        background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%) !important;
+        padding: 20px;
+        border-radius: 15px;
+        margin: 10px;
+        color: white;
+        box-shadow: 0 8px 25px rgba(231, 76, 60, 0.3);
     }
     
     /* Tables */
@@ -780,25 +790,31 @@ tables_sql = {
 }
 
 for table_name, sql in tables_sql.items():
-    c.execute(sql)
+    try:
+        c.execute(sql)
+    except Exception as e:
+        print(f"Error creating table {table_name}: {e}")
 
 # Check if columns exist
-c.execute("PRAGMA table_info(inventory)")
-columns = [column[1] for column in c.fetchall()]
-if 'category' not in columns:
-    try:
-        c.execute("ALTER TABLE inventory ADD COLUMN category TEXT DEFAULT 'vegetable'")
-    except Exception as e:
-        pass
+try:
+    c.execute("PRAGMA table_info(inventory)")
+    columns = [column[1] for column in c.fetchall()]
+    if 'category' not in columns:
+        try:
+            c.execute("ALTER TABLE inventory ADD COLUMN category TEXT DEFAULT 'vegetable'")
+        except Exception as e:
+            pass
 
-c.execute("PRAGMA table_info(sales)")
-sales_columns = [column[1] for column in c.fetchall()]
-if 'customer_name' not in sales_columns:
-    try:
-        c.execute("ALTER TABLE sales ADD COLUMN customer_name TEXT")
-        c.execute("ALTER TABLE sales ADD COLUMN customer_phone TEXT")
-    except Exception as e:
-        pass
+    c.execute("PRAGMA table_info(sales)")
+    sales_columns = [column[1] for column in c.fetchall()]
+    if 'customer_name' not in sales_columns:
+        try:
+            c.execute("ALTER TABLE sales ADD COLUMN customer_name TEXT")
+            c.execute("ALTER TABLE sales ADD COLUMN customer_phone TEXT")
+        except Exception as e:
+            pass
+except Exception as e:
+    print(f"Error checking columns: {e}")
 
 # ========================== DEFAULT VEGETABLES AND FRUITS ==========================
 kg_vegetables = [
@@ -831,45 +847,39 @@ fruits_kg = [
 
 # Initialize default items with categories
 for veg in kg_vegetables:
-    c.execute("SELECT vegetable FROM inventory WHERE vegetable=?", (veg,))
-    if not c.fetchone():
-        try:
+    try:
+        c.execute("SELECT vegetable FROM inventory WHERE vegetable=?", (veg,))
+        if not c.fetchone():
             c.execute("INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type, category) VALUES (?, 0, 0, 0, '', 'kg', 'vegetable')", (veg,))
-        except:
-            pass
-    else:
-        try:
+        else:
             c.execute("UPDATE inventory SET category='vegetable' WHERE vegetable=?", (veg,))
-        except:
-            pass
+    except:
+        pass
 
 for veg in piece_vegetables:
-    c.execute("SELECT vegetable FROM inventory WHERE vegetable=?", (veg,))
-    if not c.fetchone():
-        try:
+    try:
+        c.execute("SELECT vegetable FROM inventory WHERE vegetable=?", (veg,))
+        if not c.fetchone():
             c.execute("INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type, category) VALUES (?, 0, 0, 0, '', 'piece', 'vegetable')", (veg,))
-        except:
-            pass
-    else:
-        try:
+        else:
             c.execute("UPDATE inventory SET category='vegetable' WHERE vegetable=?", (veg,))
-        except:
-            pass
+    except:
+        pass
 
 for fruit in fruits_kg:
-    c.execute("SELECT vegetable FROM inventory WHERE vegetable=?", (fruit,))
-    if not c.fetchone():
-        try:
+    try:
+        c.execute("SELECT vegetable FROM inventory WHERE vegetable=?", (fruit,))
+        if not c.fetchone():
             c.execute("INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type, category) VALUES (?, 0, 0, 0, '', 'kg', 'fruit')", (fruit,))
-        except:
-            pass
-    else:
-        try:
+        else:
             c.execute("UPDATE inventory SET category='fruit' WHERE vegetable=?", (fruit,))
-        except:
-            pass
+    except:
+        pass
 
-conn.commit()
+try:
+    conn.commit()
+except:
+    pass
 
 # ========================== HELPER FUNCTIONS ==========================
 def get_stock(veg):
@@ -1134,8 +1144,6 @@ def format_bill_universal(bill_data):
     lines.append(center_text(total_text, 48))
     lines.append("-" * 48)
     
-    if bill_data.get('customer_name'):
-        lines.append(f"Customer: {bill_data['customer_name']}")
     if bill_data.get('customer_phone'):
         phone = bill_data['customer_phone']
         lines.append(f"Phone: {phone}")
@@ -1401,7 +1409,7 @@ if menu == "📊 Dashboard":
         low_stock_count = pd.read_sql("SELECT COUNT(*) as count FROM inventory WHERE quantity > 0 AND quantity < ?", 
                                      conn, params=(threshold,)).iloc[0]['count']
         st.markdown(f"""
-        <div class="alert-warning" style="padding:20px; border-radius:15px; text-align:center;">
+        <div class="red-alert-card">
             <h3>⚠️</h3>
             <h4>Low Stock Items</h4>
             <h2>{low_stock_count}</h2>
@@ -2359,8 +2367,8 @@ elif menu == "💵 Quick Sell":
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Complete Bill Button - Fixed to be always visible
-                st.markdown("<div style='margin-top: 30px;'></div>", unsafe_allow_html=True)
+                # Complete Bill Button - Visible always
+                st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
                 if st.button("✅ Complete Bill", type="primary", use_container_width=True, key="complete_bill"):
                     if process_sale_simple(cust_name, cust_phone):
                         st.success("✅ Bill completed successfully!")
@@ -2395,8 +2403,6 @@ elif menu == "💵 Quick Sell":
                         st.markdown(f"**⏰ Time:** {sale['time']} (IST)")
                 with col2:
                     st.markdown(f"**🧾 Bill No:** {sale['bill_no']}")
-                    if sale['customer_name']:
-                        st.markdown(f"**👤 Customer:** {sale['customer_name']}")
                     if sale['customer_phone']:
                         st.markdown(f"**📱 Phone:** {sale['customer_phone']}")
                 
@@ -3009,77 +3015,81 @@ elif menu == "👥 Customers":
     </div>
     """, unsafe_allow_html=True)
     
-    # Get all customers from customers table
-    customers_df = pd.read_sql("""
-        SELECT phone, name, points, total_spent, last_visit 
-        FROM customers 
-        WHERE phone IS NOT NULL AND phone != '' 
-        ORDER BY total_spent DESC
-    """, conn)
-    
-    if customers_df.empty:
-        st.info("No customers in loyalty program")
-    else:
-        total_points = customers_df['points'].sum()
-        total_customers = len(customers_df)
-        total_spent = customers_df['total_spent'].sum()
+    try:
+        # Get all customers from customers table
+        customers_df = pd.read_sql("""
+            SELECT phone, name, points, total_spent, last_visit 
+            FROM customers 
+            WHERE phone IS NOT NULL AND phone != '' AND phone != 'None'
+            ORDER BY total_spent DESC
+        """, conn)
         
-        # Display metrics
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Total Loyalty Customers", total_customers)
-        with col2:
-            st.metric("Total Points", total_points)
-        with col3:
-            avg_points = total_points / total_customers if total_customers > 0 else 0
-            st.metric("Avg Points/Customer", f"{avg_points:.0f}")
-        with col4:
-            st.metric("Total Spent", f"₹{total_spent:.2f}")
-        
-        # Show loyalty customers in a table
-        st.markdown("### 🏆 Loyalty Customers")
-        
-        display_customers = customers_df.copy()
-        display_customers = display_customers.rename(columns={
-            "phone": "📱 Phone",
-            "name": "👤 Name",
-            "points": "⭐ Points",
-            "total_spent": "💰 Total Spent",
-            "last_visit": "📅 Last Visit"
-        })
-        
-        st.dataframe(
-            display_customers.style.format({
-                "💰 Total Spent": "₹{:.2f}"
-            }),
-            use_container_width=True,
-            height=400
-        )
-        
-        # Also show customer details
-        st.markdown("### 📊 Customer Details")
-        for idx, row in customers_df.iterrows():
-            st.markdown(f"""
-            <div class="card" style="padding:15px; margin-bottom:10px;">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div>
-                        <h4 style="margin:0; color:#2c3e50;">{row['name']}</h4>
-                        <p style="margin:5px 0 0 0; color:#7f8c8d; font-size:0.9em;">📱 {row['phone']}</p>
-                        <p style="margin:5px 0 0 0; color:#7f8c8d; font-size:0.9em;">📅 Last Visit: {row['last_visit'] if row['last_visit'] else 'N/A'}</p>
-                    </div>
-                    <div style="text-align:right;">
-                        <span style="background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%); 
-                                    color:white; padding:5px 15px; border-radius:20px; font-weight:bold; margin-bottom:5px; display:block;">
-                            ⭐ {row['points']} pts
-                        </span>
-                        <span style="background: linear-gradient(135deg, #3498db 0%, #2980b9 100%); 
-                                    color:white; padding:5px 15px; border-radius:20px; font-weight:bold; display:block;">
-                            ₹{row['total_spent']:.2f} spent
-                        </span>
+        if customers_df.empty:
+            st.info("No customers in loyalty program")
+        else:
+            total_points = customers_df['points'].sum()
+            total_customers = len(customers_df)
+            total_spent = customers_df['total_spent'].sum()
+            
+            # Display metrics
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Loyalty Customers", total_customers)
+            with col2:
+                st.metric("Total Points", total_points)
+            with col3:
+                avg_points = total_points / total_customers if total_customers > 0 else 0
+                st.metric("Avg Points/Customer", f"{avg_points:.0f}")
+            with col4:
+                st.metric("Total Spent", f"₹{total_spent:.2f}")
+            
+            # Show loyalty customers in a table
+            st.markdown("### 🏆 Loyalty Customers")
+            
+            display_customers = customers_df.copy()
+            display_customers = display_customers.rename(columns={
+                "phone": "📱 Phone",
+                "name": "👤 Name",
+                "points": "⭐ Points",
+                "total_spent": "💰 Total Spent",
+                "last_visit": "📅 Last Visit"
+            })
+            
+            st.dataframe(
+                display_customers.style.format({
+                    "💰 Total Spent": "₹{:.2f}"
+                }),
+                use_container_width=True,
+                height=400
+            )
+            
+            # Also show customer details
+            st.markdown("### 📊 Customer Details")
+            for idx, row in customers_df.iterrows():
+                st.markdown(f"""
+                <div class="card" style="padding:15px; margin-bottom:10px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <h4 style="margin:0; color:#2c3e50;">{row['name']}</h4>
+                            <p style="margin:5px 0 0 0; color:#7f8c8d; font-size:0.9em;">📱 {row['phone']}</p>
+                            <p style="margin:5px 0 0 0; color:#7f8c8d; font-size:0.9em;">📅 Last Visit: {row['last_visit'] if row['last_visit'] else 'N/A'}</p>
+                        </div>
+                        <div style="text-align:right;">
+                            <span style="background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%); 
+                                        color:white; padding:5px 15px; border-radius:20px; font-weight:bold; margin-bottom:5px; display:block;">
+                                ⭐ {row['points']} pts
+                            </span>
+                            <span style="background: linear-gradient(135deg, #3498db 0%, #2980b9 100%); 
+                                        color:white; padding:5px 15px; border-radius:20px; font-weight:bold; display:block;">
+                                ₹{row['total_spent']:.2f} spent
+                            </span>
+                        </div>
                     </div>
                 </div>
-            </div>
-            """, unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
+    except Exception as e:
+        st.error(f"Error loading customer data: {str(e)}")
+        st.info("The customers table might not exist yet. It will be created automatically when you make your first sale with a customer phone number.")
 
 # ========================== WASTE ==========================
 elif menu == "🗑 Waste":
@@ -3242,18 +3252,21 @@ elif menu == "⬇ Download":
         daily_waste = pd.read_sql("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE date=?", 
                                  conn, params=(d,)).iloc[0]['total_waste']
         
-        # FIXED: Get customer details properly
-        daily_customers = pd.read_sql("""
-            SELECT 
-                COALESCE(customer_name, 'Guest') as customer_name,
-                COALESCE(customer_phone, '') as phone,
-                SUM(total) as total_spent,
-                COUNT(*) as total_visits
-            FROM sales 
-            WHERE date=?
-            GROUP BY COALESCE(customer_name, 'Guest'), COALESCE(customer_phone, '')
-            ORDER BY total_spent DESC
-        """, conn, params=(d,))
+        # Get customer details properly
+        try:
+            daily_customers = pd.read_sql("""
+                SELECT 
+                    COALESCE(customer_name, 'Guest') as customer_name,
+                    COALESCE(customer_phone, '') as phone,
+                    SUM(total) as total_spent,
+                    COUNT(*) as total_visits
+                FROM sales 
+                WHERE date=?
+                GROUP BY COALESCE(customer_name, 'Guest'), COALESCE(customer_phone, '')
+                ORDER BY total_spent DESC
+            """, conn, params=(d,))
+        except:
+            daily_customers = pd.DataFrame()
         
         daily_profit = daily_sales - daily_purchases - daily_expenses
         
@@ -3327,18 +3340,21 @@ elif menu == "⬇ Download":
             monthly_waste = pd.read_sql("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE strftime('%Y-%m', date)=?", 
                                        conn, params=(selected_month,)).iloc[0]['total_waste']
             
-            # FIXED: Get monthly customer details properly
-            monthly_customers = pd.read_sql("""
-                SELECT 
-                    COALESCE(customer_name, 'Guest') as customer_name,
-                    COALESCE(customer_phone, '') as phone,
-                    SUM(total) as total_spent,
-                    COUNT(*) as total_visits
-                FROM sales 
-                WHERE strftime('%Y-%m', date)=?
-                GROUP BY COALESCE(customer_name, 'Guest'), COALESCE(customer_phone, '')
-                ORDER BY total_spent DESC
-            """, conn, params=(selected_month,))
+            # Get monthly customer details properly
+            try:
+                monthly_customers = pd.read_sql("""
+                    SELECT 
+                        COALESCE(customer_name, 'Guest') as customer_name,
+                        COALESCE(customer_phone, '') as phone,
+                        SUM(total) as total_spent,
+                        COUNT(*) as total_visits
+                    FROM sales 
+                    WHERE strftime('%Y-%m', date)=?
+                    GROUP BY COALESCE(customer_name, 'Guest'), COALESCE(customer_phone, '')
+                    ORDER BY total_spent DESC
+                """, conn, params=(selected_month,))
+            except:
+                monthly_customers = pd.DataFrame()
             
             monthly_profit = monthly_sales - monthly_purchases - monthly_expenses
             
@@ -3428,20 +3444,23 @@ elif menu == "⬇ Download":
         
         for table_name, display_name, description in tables:
             with st.expander(f"{display_name} - {description}"):
-                df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
-                
-                if df.empty:
-                    st.info(f"No {display_name.lower()} data")
-                else:
-                    st.dataframe(df, use_container_width=True)
-                    csv = df.to_csv(index=False).encode()
-                    st.download_button(
-                        f"Download {display_name}",
-                        data=csv,
-                        file_name=f"{table_name}_full_export.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
+                try:
+                    df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+                    
+                    if df.empty:
+                        st.info(f"No {display_name.lower()} data")
+                    else:
+                        st.dataframe(df, use_container_width=True)
+                        csv = df.to_csv(index=False).encode()
+                        st.download_button(
+                            f"Download {display_name}",
+                            data=csv,
+                            file_name=f"{table_name}_full_export.csv",
+                            mime="text/csv",
+                            use_container_width=True
+                        )
+                except Exception as e:
+                    st.error(f"Error loading {table_name}: {str(e)}")
 
 # ========================== FINANCIALS ==========================
 elif menu == "💰 Financials":
@@ -3498,7 +3517,7 @@ elif menu == "💰 Financials":
         profit_icon = "📈" if profit >= 0 else "📉"
         
         st.markdown(f"""
-        <div class="card" style="background: linear-gradient(135deg, {profit_bg} 0%, #38f9d7 100%); color:white;">
+        <div class="red-alert-card">
             <h3>{profit_icon}</h3>
             <h4>{profit_text}</h4>
             <h2>₹{abs(profit):.2f}</h2>
