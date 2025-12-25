@@ -431,7 +431,7 @@ if not st.session_state.logged_in:
 # ========================== PAGE SETUP ==========================
 st.set_page_config(page_title="Fresh Basket", page_icon="🌿", layout="wide")
 
-# Custom CSS for beautiful UI with red color boxes
+# Custom CSS for beautiful UI with red color boxes - UPDATED TO REMOVE "PRESS ENTER" MESSAGE
 st.markdown("""
 <style>
     /* Main background */
@@ -652,9 +652,45 @@ st.markdown("""
         font-weight: bold !important;
     }
     
-    /* Remove the "Press Enter..." message from number inputs */
+    /* FIX: Remove the "Press Enter..." message from number inputs */
     .stNumberInput input[type="number"]::placeholder {
         color: transparent !important;
+    }
+    
+    /* FIX: Hide the "Press Enter to submit form" message */
+    [data-testid="stNumberInput"] input[type="number"]::placeholder,
+    input[type="number"]::-webkit-input-placeholder,
+    input[type="number"]::-moz-placeholder,
+    input[type="number"]:-ms-input-placeholder,
+    input[type="number"]:-moz-placeholder {
+        color: transparent !important;
+        opacity: 0 !important;
+    }
+    
+    /* FIX: Specifically target the number input placeholder */
+    .stNumberInput input::-webkit-input-placeholder {
+        color: transparent !important;
+    }
+    
+    .stNumberInput input:-moz-placeholder {
+        color: transparent !important;
+    }
+    
+    .stNumberInput input::-moz-placeholder {
+        color: transparent !important;
+    }
+    
+    .stNumberInput input:-ms-input-placeholder {
+        color: transparent !important;
+    }
+    
+    /* FIX: Hide the helper text that says "Press Enter to submit form" */
+    .stNumberInput div[data-baseweb="form-control"] > div:nth-child(2) {
+        visibility: hidden !important;
+        height: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        min-height: 0 !important;
     }
     
     /* Fix for print preview */
@@ -1764,7 +1800,6 @@ elif menu == "🛒 Add Purchase":
                         total_qty = qty_kg
                     
                     with col2:
-                        # CHANGED: Removed default value, made box empty
                         amount = st.number_input("Total Amount ₹", min_value=0.0, step=10.0, value=None, placeholder="Enter amount", key="kg_amount")
                         if amount is None:
                             amount = 0.0
@@ -1831,7 +1866,6 @@ elif menu == "🛒 Add Purchase":
                             total_qty = 0
                     
                     with col2:
-                        # CHANGED: Removed default value, made box empty
                         amount = st.number_input("Total Amount ₹", min_value=0.0, step=10.0, value=None, placeholder="Enter amount", key="piece_amount")
                         if amount is None:
                             amount = 0.0
@@ -1899,7 +1933,6 @@ elif menu == "🛒 Add Purchase":
                         total_qty = qty_kg
                     
                     with col2:
-                        # CHANGED: Removed default value, made box empty
                         amount = st.number_input("Total Amount ₹", min_value=0.0, step=10.0, value=None, placeholder="Enter amount", key="fruit_amount")
                         if amount is None:
                             amount = 0.0
@@ -2110,7 +2143,6 @@ elif menu == "🏷 Set Prices":
                 current_unit = 'kg'
         
         with col2:
-            # CHANGED: Removed default value, made box empty
             new_price = st.number_input("New Price ₹", min_value=0.0, step=1.0, value=None, placeholder="Enter new price")
             if new_price is None:
                 new_price = 0.0
@@ -3069,7 +3101,6 @@ elif menu == "💸 Expenses":
                                    ["Rent", "Electricity", "Water", "Transport", "Labor", 
                                     "Packaging", "Maintenance", "Miscellaneous", "Others"],
                                    key="expense_category")
-            # CHANGED: Removed default value, made box empty
             amount = st.number_input("Amount ₹", min_value=0.0, step=10.0, value=None, placeholder="Enter amount", key="expense_amount")
             if amount is None:
                 amount = 0.0
@@ -3271,7 +3302,6 @@ elif menu == "🗑 Waste":
                 veg = st.selectbox("Select Vegetable (KG)", kg_vegetables['vegetable'].tolist() if not kg_vegetables.empty else [], key="kg_veg_waste_veg")
                 if veg:
                     st.info(f"Unit: kg")
-                    # CHANGED: Removed default value, made box empty
                     qty = st.number_input("Quantity (kg)", min_value=0.0, step=0.1, value=None, placeholder="Enter kg", key="kg_veg_waste_qty")
                     if qty is None:
                         qty = 0.0
@@ -3348,7 +3378,6 @@ elif menu == "🗑 Waste":
                 veg = st.selectbox("Select Fruit (KG)", kg_fruits['vegetable'].tolist() if not kg_fruits.empty else [], key="kg_fruit_waste_veg")
                 if veg:
                     st.info(f"Unit: kg")
-                    # CHANGED: Removed default value, made box empty
                     qty = st.number_input("Quantity (kg)", min_value=0.0, step=0.1, value=None, placeholder="Enter kg", key="kg_fruit_waste_qty")
                     if qty is None:
                         qty = 0.0
