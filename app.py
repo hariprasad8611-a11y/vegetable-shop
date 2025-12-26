@@ -12,6 +12,7 @@ import json
 import requests
 import tempfile
 import logging
+import psycopg2
 
 # ========================== DEBUG LOGGING ==========================
 # Setup detailed logging
