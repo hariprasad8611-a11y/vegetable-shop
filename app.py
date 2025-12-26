@@ -11,6 +11,27 @@ import hashlib
 import json
 import requests
 import tempfile
+import logging
+
+# ========================== DEBUG LOGGING ==========================
+# Setup detailed logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Log startup
+logger.info("=" * 50)
+logger.info("FRESH BASKET APP STARTING")
+logger.info("=" * 50)
+logger.info(f"Python version: {sys.version}")
+logger.info(f"Streamlit version: {st.__version__}")
+logger.info(f"Working directory: {os.getcwd()}")
+logger.info(f"Files in directory: {os.listdir('.')}")
+logger.info(f"Has .streamlit folder: {os.path.exists('.streamlit')}")
+if os.path.exists('.streamlit'):
+    logger.info(f"Files in .streamlit: {os.listdir('.streamlit')}")
 
 # ========================== AUTO-CREATE CONFIG.TOML ==========================
 def create_streamlit_config():
@@ -61,47 +82,96 @@ class ExternalDatabaseManager:
     def init_database(self):
         """Initialize database connection based on available configuration"""
         try:
+            logger.info("🔍 INITIALIZING DATABASE...")
+            
+            # First, check if we can access secrets at all
+            logger.info("Checking for Streamlit secrets...")
+            
+            secrets_available = False
+            try:
+                if hasattr(st, 'secrets'):
+                    logger.info(f"st.secrets object exists: {type(st.secrets)}")
+                    # Try to list all top-level secrets
+                    try:
+                        secrets_dict = dict(st.secrets)
+                        logger.info(f"Top-level secrets keys: {list(secrets_dict.keys())}")
+                        secrets_available = True
+                    except Exception as e:
+                        logger.error(f"Error reading secrets dict: {e}")
+                else:
+                    logger.warning("st.secrets attribute does NOT exist")
+            except Exception as e:
+                logger.error(f"Error checking secrets: {e}")
+            
             # First, try to get configuration from Streamlit Secrets (production)
             try:
-                # Check for Supabase configuration
-                if hasattr(st, 'secrets') and 'supabase' in st.secrets:
-                    self.db_type = "supabase"
-                    self.db_config = {
-                        'url': st.secrets.supabase.url,
-                        'key': st.secrets.supabase.key,
-                        'db_url': st.secrets.supabase.db_url
-                    }
-                    print("✅ Using Supabase database from secrets")
-                    return True
+                logger.info("Looking for Supabase configuration...")
                 
-                # Check for direct PostgreSQL connection
-                elif hasattr(st, 'secrets') and 'postgresql' in st.secrets:
-                    self.db_type = "postgresql"
-                    self.db_config = {
-                        'host': st.secrets.postgresql.host,
-                        'port': st.secrets.postgresql.port,
-                        'database': st.secrets.postgresql.database,
-                        'user': st.secrets.postgresql.user,
-                        'password': st.secrets.postgresql.password
-                    }
-                    print("✅ Using PostgreSQL database from secrets")
-                    return True
+                if hasattr(st, 'secrets'):
+                    # Check for Supabase configuration
+                    if 'supabase' in st.secrets:
+                        logger.info("✅ Found 'supabase' in st.secrets!")
+                        
+                        # Log what's in supabase config
+                        try:
+                            supabase_config = dict(st.secrets.supabase)
+                            logger.info(f"Supabase config keys: {list(supabase_config.keys())}")
+                            
+                            # Check for critical fields
+                            required_fields = ['url', 'key', 'db_url']
+                            for field in required_fields:
+                                if field in supabase_config:
+                                    value = supabase_config[field]
+                                    masked = value[:20] + "..." if len(value) > 20 else value
+                                    logger.info(f"  {field}: {masked}")
+                                else:
+                                    logger.warning(f"  Missing field: {field}")
+                            
+                            self.db_type = "supabase"
+                            self.db_config = supabase_config
+                            logger.info("✅ Using Supabase database from secrets")
+                            return True
+                            
+                        except Exception as e:
+                            logger.error(f"Error reading supabase config: {e}")
                     
-                # Check for SQLite Cloud configuration
-                elif hasattr(st, 'secrets') and 'sqlite_cloud' in st.secrets:
-                    self.db_type = "sqlite_cloud"
-                    self.db_config = {
-                        'url': st.secrets.sqlite_cloud.url,
-                        'token': st.secrets.sqlite_cloud.token
-                    }
-                    print("✅ Using SQLite Cloud database from secrets")
-                    return True
+                    # Check for direct PostgreSQL connection
+                    elif 'postgresql' in st.secrets:
+                        logger.info("Found PostgreSQL configuration")
+                        self.db_type = "postgresql"
+                        self.db_config = {
+                            'host': st.secrets.postgresql.host,
+                            'port': st.secrets.postgresql.port,
+                            'database': st.secrets.postgresql.database,
+                            'user': st.secrets.postgresql.user,
+                            'password': st.secrets.postgresql.password
+                        }
+                        logger.info("✅ Using PostgreSQL database from secrets")
+                        return True
+                        
+                    # Check for SQLite Cloud configuration
+                    elif 'sqlite_cloud' in st.secrets:
+                        logger.info("Found SQLite Cloud configuration")
+                        self.db_type = "sqlite_cloud"
+                        self.db_config = {
+                            'url': st.secrets.sqlite_cloud.url,
+                            'token': st.secrets.sqlite_cloud.token
+                        }
+                        logger.info("✅ Using SQLite Cloud database from secrets")
+                        return True
+                    else:
+                        logger.warning("No database secrets found (checked: supabase, postgresql, sqlite_cloud)")
+                        
+                else:
+                    logger.warning("st.secrets attribute not available")
                     
             except Exception as e:
-                print(f"No database secrets found: {e}")
+                logger.error(f"No database secrets found: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
             
             # If no external DB configured, use enhanced local SQLite with cloud sync
-            print("⚠️ Using enhanced local SQLite with cloud backup capability")
+            logger.info("⚠️ Using enhanced local SQLite with cloud backup capability")
             self.db_type = "local"
             
             # Create a persistent local database path that survives app restarts
@@ -122,11 +192,13 @@ class ExternalDatabaseManager:
             self.backup_dir = os.path.join(PERSISTENT_DIR, "backups")
             os.makedirs(self.backup_dir, exist_ok=True)
             
-            print(f"✅ Local database path: {self.local_db_path}")
+            logger.info(f"✅ Local database path: {self.local_db_path}")
             return True
             
         except Exception as e:
-            print(f"❌ Database initialization failed: {e}")
+            logger.error(f"❌ Database initialization failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
     
     def get_connection(self):
@@ -175,28 +247,31 @@ class ExternalDatabaseManager:
                 return None
     
     def _get_supabase_connection(self):
-        """Get Supabase PostgreSQL connection"""
+        """Get Supabase PostgreSQL connection - FIXED VERSION"""
         try:
             import psycopg2
-            from psycopg2 import pool
             
-            # Create connection pool
-            connection_pool = psycopg2.pool.SimpleConnectionPool(
-                1, 20,
-                host=self.db_config.get('host', self.db_config.get('url', '')),
+            # Method 1: Try direct db_url first
+            db_url = self.db_config.get('db_url')
+            if db_url:
+                conn = psycopg2.connect(db_url)
+                self._create_supabase_tables(conn)
+                print("✅ Supabase connected via db_url")
+                return conn
+            
+            # Method 2: Try individual parameters
+            conn = psycopg2.connect(
+                host=self.db_config.get('host', ''),
                 port=self.db_config.get('port', 5432),
                 database=self.db_config.get('database', 'postgres'),
                 user=self.db_config.get('user', 'postgres'),
-                password=self.db_config.get('password', self.db_config.get('key', ''))
+                password=self.db_config.get('password', '')
             )
             
-            if connection_pool:
-                conn = connection_pool.getconn()
-                self._create_supabase_tables(conn)
-                return conn
-            else:
-                raise Exception("Failed to create connection pool")
-                
+            self._create_supabase_tables(conn)
+            print("✅ Supabase connected via parameters")
+            return conn
+            
         except Exception as e:
             print(f"❌ Supabase connection failed: {e}")
             # Fallback to local SQLite
@@ -1439,7 +1514,7 @@ with st.sidebar:
         "",
         ["📊 Dashboard", "🛒 Add Purchase", "🏷 Set Prices", "💵 Quick Sell", "📦 Inventory", 
          "📋 Purchases", "🧾 Sales", "💸 Expenses", "👥 Customers", "🗑 Waste", 
-         "⬇ Download", "💰 Financials", "🔧 Database Tools"],
+         "⬇ Download", "💰 Financials", "🔧 Database Tools", "🔍 Secrets Debug"],  # ADDED Secrets Debug
         label_visibility="collapsed"
     )
     
@@ -1612,6 +1687,48 @@ with st.sidebar:
                 st.success("✅ Test print successful! Printer is working.")
             else:
                 st.error("❌ Test print failed. Check printer connection.")
+    
+    # ========================== TEMPORARY DEBUG ==========================
+    # Force test Supabase on every run
+    if st.session_state.get('logged_in'):
+        st.markdown("---")
+        if st.button("🔄 Force Check Supabase", key="force_check"):
+            st.info("Checking Supabase connection...")
+            
+            # Direct test
+            if hasattr(st, 'secrets') and 'supabase' in st.secrets:
+                st.success("✅ Supabase config found in secrets!")
+                
+                try:
+                    import psycopg2
+                    db_url = st.secrets.supabase.db_url
+                    st.info(f"Connecting to: {db_url[:50]}...")
+                    
+                    conn_test = psycopg2.connect(db_url)
+                    cursor = conn_test.cursor()
+                    cursor.execute("SELECT 1 as test;")
+                    result = cursor.fetchone()
+                    
+                    cursor.close()
+                    conn_test.close()
+                    
+                    st.success(f"✅ Connection test passed: {result}")
+                    st.balloons()
+                    
+                except ImportError:
+                    st.error("Install psycopg2-binary: `pip install psycopg2-binary`")
+                except Exception as e:
+                    st.error(f"❌ Connection failed: {str(e)}")
+            else:
+                st.error("❌ Supabase config not found in secrets")
+                
+                # Show what IS in secrets
+                if hasattr(st, 'secrets'):
+                    try:
+                        secrets_dict = dict(st.secrets)
+                        st.write("Available secrets:", list(secrets_dict.keys()))
+                    except:
+                        st.write("Cannot read secrets dict")
 
 # ========================== DASHBOARD ==========================
 if menu == "📊 Dashboard":
@@ -4228,6 +4345,190 @@ elif menu == "🔧 Database Tools":
                     st.info("✅ External database automatically optimized by provider")
             except Exception as e:
                 st.error(f"❌ Optimization failed: {e}")
+
+# ========================== SECRETS DEBUG ==========================
+elif menu == "🔍 Secrets Debug":
+    st.markdown("""
+    <div style="text-align:center; margin-bottom:30px;">
+        <h2>🔍 Secrets Debug</h2>
+        <div class="subtitle">Debug Supabase Connection Issues</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    with st.expander("🔐 Check Current Secrets", expanded=True):
+        st.markdown("### Streamlit Secrets Status")
+        
+        # Check if secrets object exists
+        if hasattr(st, 'secrets'):
+            st.success("✅ `st.secrets` object exists")
+            
+            # Try to list all secrets
+            try:
+                secrets_dict = dict(st.secrets)
+                st.info(f"Total top-level secrets: {len(secrets_dict)}")
+                
+                if secrets_dict:
+                    st.markdown("#### 📋 All Secrets (masked):")
+                    for key, value in secrets_dict.items():
+                        if hasattr(value, '__dict__') or hasattr(value, '__iter__'):
+                            # It's a section
+                            try:
+                                subsection = dict(value)
+                                st.write(f"**{key}:** (subsection with {len(subsection)} keys)")
+                                for subkey in subsection:
+                                    st.write(f"  - {subkey}")
+                            except:
+                                st.write(f"**{key}:** [complex object]")
+                        else:
+                            # It's a simple value
+                            if value and isinstance(value, str):
+                                masked = value[:10] + "..." if len(value) > 10 else value
+                                st.write(f"**{key}:** `{masked}`")
+                            else:
+                                st.write(f"**{key}:** `{value}`")
+                else:
+                    st.warning("No secrets found (empty dict)")
+                    
+            except Exception as e:
+                st.error(f"Error reading secrets: {e}")
+        else:
+            st.error("❌ `st.secrets` object does NOT exist")
+    
+    with st.expander("📁 Check .streamlit/secrets.toml", expanded=True):
+        secrets_path = ".streamlit/secrets.toml"
+        if os.path.exists(secrets_path):
+            st.success(f"✅ Found {secrets_path}")
+            
+            # Show file size
+            file_size = os.path.getsize(secrets_path)
+            st.info(f"File size: {file_size} bytes")
+            
+            # Show file content (masked)
+            try:
+                with open(secrets_path, 'r') as f:
+                    content = f.read()
+                
+                # Mask passwords for security
+                import re
+                masked_content = content
+                # Mask passwords in connection strings
+                masked_content = re.sub(r':([^@]+)@', ':[HIDDEN]@', masked_content)
+                # Mask API keys
+                masked_content = re.sub(r'key\s*=\s*"[^"]+"', 'key = "[HIDDEN]"', masked_content)
+                masked_content = re.sub(r'password\s*=\s*"[^"]+"', 'password = "[HIDDEN]"', masked_content)
+                
+                st.code(masked_content, language="toml")
+                
+            except Exception as e:
+                st.error(f"Error reading file: {e}")
+        else:
+            st.error(f"❌ {secrets_path} does not exist")
+            st.info("Current directory contents:")
+            st.write(os.listdir('.'))
+            if os.path.exists('.streamlit'):
+                st.info(".streamlit folder contents:")
+                st.write(os.listdir('.streamlit'))
+    
+    with st.expander("🔌 Test Supabase Connection", expanded=True):
+        st.markdown("### Direct Connection Test")
+        
+        # Manual connection test
+        supabase_url = st.text_input("Supabase URL (postgresql://...)", 
+                                    value=st.secrets.supabase.db_url if hasattr(st, 'secrets') and 'supabase' in st.secrets else "")
+        
+        if st.button("Test Connection", key="test_supabase_manual"):
+            if not supabase_url:
+                st.error("Enter Supabase connection URL")
+            else:
+                try:
+                    import psycopg2
+                    
+                    # Test connection
+                    conn_test = psycopg2.connect(supabase_url)
+                    cursor = conn_test.cursor()
+                    
+                    # Test 1: Version
+                    cursor.execute("SELECT version();")
+                    version = cursor.fetchone()[0]
+                    
+                    # Test 2: List tables
+                    cursor.execute("""
+                        SELECT table_name 
+                        FROM information_schema.tables 
+                        WHERE table_schema = 'public'
+                        ORDER BY table_name;
+                    """)
+                    tables = cursor.fetchall()
+                    
+                    # Test 3: Current time
+                    cursor.execute("SELECT NOW();")
+                    current_time = cursor.fetchone()[0]
+                    
+                    cursor.close()
+                    conn_test.close()
+                    
+                    st.success("✅ Connection successful!")
+                    st.info(f"**Database:** {version.split(',')[0]}")
+                    st.info(f"**Server Time:** {current_time}")
+                    st.info(f"**Tables in public schema:** {len(tables)}")
+                    
+                    if tables:
+                        table_list = [t[0] for t in tables]
+                        st.write("Table list:", ", ".join(table_list))
+                    
+                except ImportError:
+                    st.error("Install psycopg2-binary: `pip install psycopg2-binary`")
+                except Exception as e:
+                    st.error(f"❌ Connection failed: {str(e)}")
+    
+    with st.expander("📊 Environment Variables", expanded=False):
+        st.markdown("### Relevant Environment Variables")
+        
+        env_vars = dict(os.environ)
+        relevant_vars = {}
+        
+        for key, value in env_vars.items():
+            key_lower = key.lower()
+            if any(term in key_lower for term in ['supabase', 'postgres', 'pg', 'database', 'db']):
+                # Mask sensitive values
+                if 'pass' in key_lower or 'key' in key_lower or 'token' in key_lower:
+                    masked = value[:5] + "..." if len(value) > 5 else "***"
+                    relevant_vars[key] = masked
+                else:
+                    relevant_vars[key] = value
+        
+        if relevant_vars:
+            for key, value in relevant_vars.items():
+                st.write(f"**{key}:** `{value}`")
+        else:
+            st.info("No relevant environment variables found")
+    
+    with st.expander("🔧 Quick Fix", expanded=True):
+        st.markdown("### If Supabase Still Not Connecting")
+        
+        st.code("""
+# Try this in your .streamlit/secrets.toml:
+
+[supabase]
+url = "https://your-project-ref.supabase.co"
+key = "your-anon-key"
+db_url = "postgresql://postgres:[YOUR-PASSWORD]@db.your-project-ref.supabase.co:5432/postgres"
+
+# IMPORTANT: Get the correct connection string from:
+# Supabase Dashboard → Settings → Database → Connection String → URI
+# Make sure it starts with: postgresql://postgres:
+        """, language="toml")
+        
+        if st.button("Copy Sample Config", key="copy_sample"):
+            st.info("Check the console for the sample config to copy")
+            print("\n" + "="*50)
+            print("SAMPLE .streamlit/secrets.toml:")
+            print("="*50)
+            print("""[supabase]
+url = "https://your-project-ref.supabase.co"
+key = "your-anon-key"
+db_url = "postgresql://postgres:your-password@db.your-project-ref.supabase.co:5432/postgres"
+""")
 
 # ========================== ENHANCED BACKUP ON EXIT ==========================
 @atexit.register
