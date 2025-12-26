@@ -84,102 +84,91 @@ class ExternalDatabaseManager:
         try:
             logger.info("🔍 INITIALIZING DATABASE...")
             
-            # First, check if we can access secrets at all
-            logger.info("Checking for Streamlit secrets...")
-            
-            secrets_available = False
-            try:
-                if hasattr(st, 'secrets'):
-                    logger.info(f"st.secrets object exists: {type(st.secrets)}")
-                    # Try to list all top-level secrets
-                    try:
-                        secrets_dict = dict(st.secrets)
-                        logger.info(f"Top-level secrets keys: {list(secrets_dict.keys())}")
-                        secrets_available = True
-                    except Exception as e:
-                        logger.error(f"Error reading secrets dict: {e}")
-                else:
-                    logger.warning("st.secrets attribute does NOT exist")
-            except Exception as e:
-                logger.error(f"Error checking secrets: {e}")
-            
-            # First, try to get configuration from Streamlit Secrets (production)
-            try:
-                logger.info("Looking for Supabase configuration...")
-                
-                if hasattr(st, 'secrets'):
-                    # Check for Supabase configuration
+            # Check for Supabase configuration in secrets
+            if hasattr(st, 'secrets'):
+                try:
+                    # Check for supabase configuration
                     if 'supabase' in st.secrets:
                         logger.info("✅ Found 'supabase' in st.secrets!")
                         
-                        # Log what's in supabase config
-                        try:
-                            supabase_config = dict(st.secrets.supabase)
-                            logger.info(f"Supabase config keys: {list(supabase_config.keys())}")
-                            
-                            # Check for critical fields
-                            required_fields = ['url', 'key', 'db_url']
-                            for field in required_fields:
-                                if field in supabase_config:
-                                    value = supabase_config[field]
-                                    masked = value[:20] + "..." if len(value) > 20 else value
-                                    logger.info(f"  {field}: {masked}")
-                                else:
-                                    logger.warning(f"  Missing field: {field}")
-                            
+                        # Get supabase config
+                        supabase_config = {}
+                        
+                        # Try to get individual parameters
+                        if hasattr(st.secrets.supabase, 'db_url'):
+                            supabase_config['db_url'] = st.secrets.supabase.db_url
+                            logger.info("Found db_url in supabase config")
+                        
+                        if hasattr(st.secrets.supabase, 'url'):
+                            supabase_config['url'] = st.secrets.supabase.url
+                            logger.info("Found url in supabase config")
+                        
+                        if hasattr(st.secrets.supabase, 'key'):
+                            supabase_config['key'] = st.secrets.supabase.key
+                            logger.info("Found key in supabase config")
+                        
+                        # Also check for direct PostgreSQL connection
+                        if hasattr(st.secrets.supabase, 'host'):
+                            supabase_config['host'] = st.secrets.supabase.host
+                            logger.info("Found host in supabase config")
+                        
+                        if hasattr(st.secrets.supabase, 'database'):
+                            supabase_config['database'] = st.secrets.supabase.database
+                            logger.info("Found database in supabase config")
+                        
+                        if hasattr(st.secrets.supabase, 'user'):
+                            supabase_config['user'] = st.secrets.supabase.user
+                            logger.info("Found user in supabase config")
+                        
+                        if hasattr(st.secrets.supabase, 'password'):
+                            supabase_config['password'] = st.secrets.supabase.password
+                            logger.info("Found password in supabase config")
+                        
+                        if supabase_config:
                             self.db_type = "supabase"
                             self.db_config = supabase_config
                             logger.info("✅ Using Supabase database from secrets")
                             return True
-                            
-                        except Exception as e:
-                            logger.error(f"Error reading supabase config: {e}")
-                    
+                        
                     # Check for direct PostgreSQL connection
                     elif 'postgresql' in st.secrets:
                         logger.info("Found PostgreSQL configuration")
                         self.db_type = "postgresql"
-                        self.db_config = {
-                            'host': st.secrets.postgresql.host,
-                            'port': st.secrets.postgresql.port,
-                            'database': st.secrets.postgresql.database,
-                            'user': st.secrets.postgresql.user,
-                            'password': st.secrets.postgresql.password
-                        }
+                        self.db_config = {}
+                        
+                        if hasattr(st.secrets.postgresql, 'db_url'):
+                            self.db_config['db_url'] = st.secrets.postgresql.db_url
+                        
+                        if hasattr(st.secrets.postgresql, 'host'):
+                            self.db_config['host'] = st.secrets.postgresql.host
+                        
+                        if hasattr(st.secrets.postgresql, 'port'):
+                            self.db_config['port'] = st.secrets.postgresql.port
+                        
+                        if hasattr(st.secrets.postgresql, 'database'):
+                            self.db_config['database'] = st.secrets.postgresql.database
+                        
+                        if hasattr(st.secrets.postgresql, 'user'):
+                            self.db_config['user'] = st.secrets.postgresql.user
+                        
+                        if hasattr(st.secrets.postgresql, 'password'):
+                            self.db_config['password'] = st.secrets.postgresql.password
+                        
                         logger.info("✅ Using PostgreSQL database from secrets")
                         return True
                         
-                    # Check for SQLite Cloud configuration
-                    elif 'sqlite_cloud' in st.secrets:
-                        logger.info("Found SQLite Cloud configuration")
-                        self.db_type = "sqlite_cloud"
-                        self.db_config = {
-                            'url': st.secrets.sqlite_cloud.url,
-                            'token': st.secrets.sqlite_cloud.token
-                        }
-                        logger.info("✅ Using SQLite Cloud database from secrets")
-                        return True
-                    else:
-                        logger.warning("No database secrets found (checked: supabase, postgresql, sqlite_cloud)")
-                        
-                else:
-                    logger.warning("st.secrets attribute not available")
-                    
-            except Exception as e:
-                logger.error(f"No database secrets found: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
+                except Exception as e:
+                    logger.error(f"Error reading secrets: {e}")
             
-            # If no external DB configured, use enhanced local SQLite with cloud sync
-            logger.info("⚠️ Using enhanced local SQLite with cloud backup capability")
+            # If no external DB configured, use local SQLite
+            logger.info("⚠️ Using local SQLite database")
             self.db_type = "local"
             
-            # Create a persistent local database path that survives app restarts
-            # Use /tmp directory in Streamlit Cloud (persists across sessions)
+            # Create a persistent local database path
             if sys.platform == "win32":
                 PERSISTENT_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "FreshBasket")
             elif "streamlit" in sys.modules or "STREAMLIT_SHARING" in os.environ:
-                # Streamlit Cloud environment - use /tmp which persists
+                # Streamlit Cloud environment
                 PERSISTENT_DIR = "/tmp/freshbasket_data"
             else:
                 # Local development
@@ -187,10 +176,6 @@ class ExternalDatabaseManager:
             
             os.makedirs(PERSISTENT_DIR, exist_ok=True)
             self.local_db_path = os.path.join(PERSISTENT_DIR, "shop.db")
-            
-            # Create automatic backups
-            self.backup_dir = os.path.join(PERSISTENT_DIR, "backups")
-            os.makedirs(self.backup_dir, exist_ok=True)
             
             logger.info(f"✅ Local database path: {self.local_db_path}")
             return True
@@ -205,22 +190,14 @@ class ExternalDatabaseManager:
         """Get a database connection based on configuration"""
         if self.db_type == "local":
             return self._get_local_connection()
-        elif self.db_type == "supabase":
-            return self._get_supabase_connection()
-        elif self.db_type == "postgresql":
+        elif self.db_type == "supabase" or self.db_type == "postgresql":
             return self._get_postgresql_connection()
-        elif self.db_type == "sqlite_cloud":
-            return self._get_sqlite_cloud_connection()
         else:
-            # Fallback to local SQLite
             return self._get_local_connection()
     
     def _get_local_connection(self):
         """Get local SQLite connection with automatic recovery"""
         try:
-            # First, try to recover if needed
-            self._recover_local_database()
-            
             # Connect with WAL mode for better concurrency
             conn = sqlite3.connect(self.local_db_path, check_same_thread=False)
             conn.execute("PRAGMA journal_mode=WAL")
@@ -230,9 +207,6 @@ class ExternalDatabaseManager:
             
             # Create tables if they don't exist
             self._create_tables(conn)
-            
-            # Create backup
-            self._create_local_backup()
             
             return conn
         except Exception as e:
@@ -246,8 +220,8 @@ class ExternalDatabaseManager:
                 print(f"❌ Critical: Could not create database: {e2}")
                 return None
     
-    def _get_supabase_connection(self):
-        """Get Supabase PostgreSQL connection - FIXED VERSION"""
+    def _get_postgresql_connection(self):
+        """Get PostgreSQL/Supabase connection"""
         try:
             import psycopg2
             
@@ -255,64 +229,47 @@ class ExternalDatabaseManager:
             db_url = self.db_config.get('db_url')
             if db_url:
                 conn = psycopg2.connect(db_url)
-                self._create_supabase_tables(conn)
-                print("✅ Supabase connected via db_url")
+                print("✅ Connected to PostgreSQL via db_url")
+                self._create_postgresql_tables(conn)
                 return conn
             
             # Method 2: Try individual parameters
-            conn = psycopg2.connect(
-                host=self.db_config.get('host', ''),
-                port=self.db_config.get('port', 5432),
-                database=self.db_config.get('database', 'postgres'),
-                user=self.db_config.get('user', 'postgres'),
-                password=self.db_config.get('password', '')
-            )
+            host = self.db_config.get('host', '')
+            port = self.db_config.get('port', 5432)
+            database = self.db_config.get('database', 'postgres')
+            user = self.db_config.get('user', 'postgres')
+            password = self.db_config.get('password', '')
             
-            self._create_supabase_tables(conn)
-            print("✅ Supabase connected via parameters")
-            return conn
+            if host and database and user and password:
+                conn = psycopg2.connect(
+                    host=host,
+                    port=port,
+                    database=database,
+                    user=user,
+                    password=password
+                )
+                print("✅ Connected to PostgreSQL via parameters")
+                self._create_postgresql_tables(conn)
+                return conn
             
-        except Exception as e:
-            print(f"❌ Supabase connection failed: {e}")
-            # Fallback to local SQLite
-            print("⚠️ Falling back to local SQLite")
+            # If we reach here, connection failed
+            print("⚠️ PostgreSQL connection failed, falling back to local SQLite")
             self.db_type = "local"
             return self._get_local_connection()
-    
-    def _get_postgresql_connection(self):
-        """Get PostgreSQL connection"""
-        try:
-            import psycopg2
             
-            conn = psycopg2.connect(
-                host=self.db_config['host'],
-                port=self.db_config['port'],
-                database=self.db_config['database'],
-                user=self.db_config['user'],
-                password=self.db_config['password']
-            )
-            
-            self._create_postgresql_tables(conn)
-            return conn
-            
+        except ImportError:
+            print("❌ psycopg2 not installed. Installing...")
+            import subprocess
+            import sys
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "psycopg2-binary"])
+            print("✅ psycopg2-binary installed. Please restart the app.")
+            self.db_type = "local"
+            return self._get_local_connection()
         except Exception as e:
             print(f"❌ PostgreSQL connection failed: {e}")
             # Fallback to local SQLite
             print("⚠️ Falling back to local SQLite")
             self.db_type = "local"
-            return self._get_local_connection()
-    
-    def _get_sqlite_cloud_connection(self):
-        """Get SQLite Cloud connection"""
-        try:
-            # SQLite Cloud uses HTTP API
-            # For now, fallback to local and sync
-            print("⚠️ SQLite Cloud API not fully implemented, using local with sync")
-            self.db_type = "local"
-            return self._get_local_connection()
-            
-        except Exception as e:
-            print(f"❌ SQLite Cloud connection failed: {e}")
             return self._get_local_connection()
     
     def _create_tables(self, conn):
@@ -395,166 +352,111 @@ class ExternalDatabaseManager:
         
         conn.commit()
     
-    def _create_supabase_tables(self, conn):
-        """Create tables in Supabase/PostgreSQL"""
-        c = conn.cursor()
-        
-        tables_sql = [
-            """CREATE TABLE IF NOT EXISTS inventory (
-                vegetable TEXT PRIMARY KEY,
-                quantity REAL,
-                cost_price REAL,
-                selling_price REAL,
-                image_url TEXT,
-                unit_type TEXT DEFAULT 'kg',
-                category TEXT DEFAULT 'vegetable'
-            )""",
-            """CREATE TABLE IF NOT EXISTS purchases (
-                id SERIAL PRIMARY KEY,
-                date TEXT, 
-                vegetable TEXT, 
-                quantity REAL, 
-                amount REAL, 
-                supplier TEXT
-            )""",
-            """CREATE TABLE IF NOT EXISTS sales (
-                id SERIAL PRIMARY KEY,
-                date TEXT, 
-                vegetable TEXT, 
-                quantity_sold REAL, 
-                sale_price REAL, 
-                total REAL, 
-                customer TEXT,
-                unit_type TEXT,
-                customer_name TEXT,
-                customer_phone TEXT,
-                bill_no TEXT
-            )""",
-            """CREATE TABLE IF NOT EXISTS waste (
-                id SERIAL PRIMARY KEY,
-                date TEXT, 
-                vegetable TEXT, 
-                quantity REAL, 
-                reason TEXT
-            )""",
-            """CREATE TABLE IF NOT EXISTS customers (
-                id SERIAL PRIMARY KEY,
-                phone TEXT, 
-                name TEXT, 
-                points INTEGER DEFAULT 0,
-                total_spent REAL DEFAULT 0,
-                last_visit TEXT,
-                UNIQUE(phone, name)
-            )""",
-            """CREATE TABLE IF NOT EXISTS expenses (
-                id SERIAL PRIMARY KEY,
-                date TEXT, 
-                category TEXT, 
-                amount REAL, 
-                description TEXT
-            )"""
-        ]
-        
-        for sql in tables_sql:
-            try:
-                c.execute(sql)
-            except Exception as e:
-                print(f"Error creating table: {e}")
-        
-        conn.commit()
-    
     def _create_postgresql_tables(self, conn):
-        """Same as Supabase tables"""
-        self._create_supabase_tables(conn)
-    
-    def _recover_local_database(self):
-        """Recover local database from backup if needed"""
+        """Create tables in PostgreSQL/Supabase"""
         try:
-            # If main DB exists and has data, use it
-            if os.path.exists(self.local_db_path) and os.path.getsize(self.local_db_path) > 1024:
-                return True
+            c = conn.cursor()
             
-            # Try to find latest backup
-            if os.path.exists(self.backup_dir):
-                backup_files = [f for f in os.listdir(self.backup_dir) if f.endswith('.db')]
-                if backup_files:
-                    backup_files.sort(reverse=True)
-                    latest_backup = os.path.join(self.backup_dir, backup_files[0])
-                    
-                    if os.path.getsize(latest_backup) > 1024:
-                        shutil.copy2(latest_backup, self.local_db_path)
-                        print(f"✅ Recovered database from backup: {latest_backup}")
-                        return True
+            # Check if tables exist
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS inventory (
+                    vegetable TEXT PRIMARY KEY,
+                    quantity REAL,
+                    cost_price REAL,
+                    selling_price REAL,
+                    image_url TEXT,
+                    unit_type TEXT DEFAULT 'kg',
+                    category TEXT DEFAULT 'vegetable'
+                )
+            """)
             
-            # No backup found, create fresh
-            print("ℹ️ No backup found, creating fresh database")
-            return False
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS purchases (
+                    id SERIAL PRIMARY KEY,
+                    date TEXT, 
+                    vegetable TEXT, 
+                    quantity REAL, 
+                    amount REAL, 
+                    supplier TEXT
+                )
+            """)
+            
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS sales (
+                    id SERIAL PRIMARY KEY,
+                    date TEXT, 
+                    vegetable TEXT, 
+                    quantity_sold REAL, 
+                    sale_price REAL, 
+                    total REAL, 
+                    customer TEXT,
+                    unit_type TEXT,
+                    customer_name TEXT,
+                    customer_phone TEXT,
+                    bill_no TEXT
+                )
+            """)
+            
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS waste (
+                    id SERIAL PRIMARY KEY,
+                    date TEXT, 
+                    vegetable TEXT, 
+                    quantity REAL, 
+                    reason TEXT
+                )
+            """)
+            
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS customers (
+                    id SERIAL PRIMARY KEY,
+                    phone TEXT, 
+                    name TEXT, 
+                    points INTEGER DEFAULT 0,
+                    total_spent REAL DEFAULT 0,
+                    last_visit TEXT,
+                    UNIQUE(phone, name)
+                )
+            """)
+            
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS expenses (
+                    id SERIAL PRIMARY KEY,
+                    date TEXT, 
+                    category TEXT, 
+                    amount REAL, 
+                    description TEXT
+                )
+            """)
+            
+            conn.commit()
+            print("✅ PostgreSQL tables created/verified")
             
         except Exception as e:
-            print(f"❌ Recovery failed: {e}")
-            return False
+            print(f"Error creating PostgreSQL tables: {e}")
+            conn.rollback()
     
     def _create_local_backup(self):
         """Create backup of local database"""
         try:
             if self.local_db_path and os.path.exists(self.local_db_path) and os.path.getsize(self.local_db_path) > 0:
-                # Create dated backup
-                backup_file = os.path.join(self.backup_dir, f"shop_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db")
+                backup_dir = os.path.join(os.path.dirname(self.local_db_path), "backups")
+                os.makedirs(backup_dir, exist_ok=True)
+                
+                backup_file = os.path.join(backup_dir, f"shop_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db")
                 shutil.copy2(self.local_db_path, backup_file)
                 
                 # Keep only last 7 backups
-                backup_files = [f for f in os.listdir(self.backup_dir) if f.endswith('.db')]
+                backup_files = [f for f in os.listdir(backup_dir) if f.endswith('.db')]
                 if len(backup_files) > 7:
                     backup_files.sort()
                     for old_backup in backup_files[:-7]:
-                        os.remove(os.path.join(self.backup_dir, old_backup))
+                        os.remove(os.path.join(backup_dir, old_backup))
                 
                 return True
         except Exception as e:
             print(f"⚠️ Backup failed: {e}")
         return False
-    
-    def export_database(self):
-        """Export database to downloadable format"""
-        try:
-            conn = self.get_connection()
-            if conn:
-                export_data = {}
-                tables = ["inventory", "purchases", "sales", "waste", "customers", "expenses"]
-                
-                for table in tables:
-                    try:
-                        if self.db_type == "local":
-                            df = pd.read_sql(f"SELECT * FROM {table}", conn)
-                        else:
-                            # For PostgreSQL/Supabase
-                            df = pd.read_sql_query(f"SELECT * FROM {table}", conn)
-                        export_data[table] = df.to_dict('records')
-                    except:
-                        export_data[table] = []
-                
-                conn.close()
-                
-                # Save as JSON
-                json_file = os.path.join(tempfile.gettempdir(), f"freshbasket_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
-                with open(json_file, 'w') as f:
-                    json.dump(export_data, f, indent=2, default=str)
-                
-                return json_file
-        except Exception as e:
-            print(f"❌ Export failed: {e}")
-        return None
-    
-    def sync_to_cloud(self):
-        """Sync local database to cloud storage (Google Drive, Dropbox, etc.)"""
-        try:
-            # This is a placeholder for cloud sync functionality
-            # You can implement sync to Google Drive, Dropbox, AWS S3, etc.
-            print("⚠️ Cloud sync not implemented yet")
-            return False
-        except Exception as e:
-            print(f"❌ Cloud sync failed: {e}")
-            return False
 
 # Initialize database manager
 db_manager = ExternalDatabaseManager()
@@ -1514,7 +1416,7 @@ with st.sidebar:
         "",
         ["📊 Dashboard", "🛒 Add Purchase", "🏷 Set Prices", "💵 Quick Sell", "📦 Inventory", 
          "📋 Purchases", "🧾 Sales", "💸 Expenses", "👥 Customers", "🗑 Waste", 
-         "⬇ Download", "💰 Financials", "🔧 Database Tools", "🔍 Secrets Debug"],  # ADDED Secrets Debug
+         "⬇ Download", "💰 Financials", "🔧 Database Tools", "🔍 Secrets Debug"],
         label_visibility="collapsed"
     )
     
@@ -1531,26 +1433,20 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
     
-    # Database Info
+    # Database Info - SIMPLIFIED VERSION
     st.markdown("---")
     st.markdown("### 💾 Database Status")
     
     try:
-        # Get database statistics
-        db_status_class = "db-status-success"
-        db_status_text = "✅ Connected"
-        
+        # Get database type
         if db_manager.db_type == "local":
-            db_type_text = "Local SQLite (Enhanced)"
-            db_status_text = "✅ Local DB with Cloud Backup Ready"
-        elif db_manager.db_type == "supabase":
-            db_type_text = "Supabase PostgreSQL"
-            db_status_class = "db-status-success"
-        elif db_manager.db_type == "postgresql":
-            db_type_text = "PostgreSQL"
-            db_status_class = "db-status-success"
-        else:
             db_type_text = "Local SQLite"
+            db_status_class = "db-status-warning"
+            db_status_text = "Local SQLite"
+        else:
+            db_type_text = f"{db_manager.db_type.upper()}"
+            db_status_class = "db-status-success"
+            db_status_text = f"Connected to {db_manager.db_type.upper()}"
         
         # Get counts
         c.execute("SELECT COUNT(*) FROM inventory")
@@ -1558,12 +1454,6 @@ with st.sidebar:
         
         c.execute("SELECT COUNT(*) FROM sales")
         sales_count = c.fetchone()[0]
-        
-        c.execute("SELECT COUNT(*) FROM purchases")
-        purchases_count = c.fetchone()[0]
-        
-        # Check if we have external database configured
-        has_external_db = db_manager.db_type != "local"
         
         st.markdown(f"""
         <div style="background: white; padding: 15px; border-radius: 10px; margin: 10px 0;">
@@ -1576,60 +1466,19 @@ with st.sidebar:
             <p style="margin: 5px 0; font-size: 0.9em;">
                 <strong>💰 Sales:</strong> {sales_count}
             </p>
-            <p style="margin: 5px 0; font-size: 0.9em;">
-                <strong>🛒 Purchases:</strong> {purchases_count}
-            </p>
             <div class="{db_status_class}" style="margin: 10px 0; padding: 8px; border-radius: 8px;">
                 <strong>{db_status_text}</strong>
-                {"🛡️ No Data Loss" if has_external_db else "⚠️ Local (Backup Active)"}
             </div>
         </div>
         """, unsafe_allow_html=True)
         
-        # External database setup button
-        if not has_external_db:
-            with st.expander("⚙️ Setup External Database"):
-                st.info("""
-                **For permanent data storage (no data loss when app sleeps):**
-                
-                1. Sign up for a free database service:
-                   - [Supabase](https://supabase.com) (Recommended)
-                   - [Neon PostgreSQL](https://neon.tech)
-                   - [Railway PostgreSQL](https://railway.app)
-                
-                2. Create a new project and get connection details
-                
-                3. Add to Streamlit Secrets (`.streamlit/secrets.toml`):
-                ```toml
-                [supabase]
-                url = "your-project-url"
-                key = "your-anon-key"
-                db_url = "postgresql://..."
-                ```
-                """)
-        
-        # Manual backup button
-        if st.button("💾 Manual Backup", use_container_width=True, key="manual_backup"):
-            if db_manager._create_local_backup():
-                st.success("✅ Backup created!")
-            else:
-                st.warning("⚠️ Backup may have failed")
-        
-        # Download backup button
-        if st.button("📥 Download Data", use_container_width=True, key="download_backup"):
-            json_file = db_manager.export_database()
-            if json_file and os.path.exists(json_file):
-                with open(json_file, 'rb') as f:
-                    st.download_button(
-                        label="📥 Download All Data",
-                        data=f,
-                        file_name=f"freshbasket_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                        mime="application/json",
-                        use_container_width=True,
-                        key="download_data_btn"
-                    )
-            else:
-                st.error("❌ Could not create data file")
+        # Manual backup button (only for local)
+        if db_manager.db_type == "local":
+            if st.button("💾 Create Backup", use_container_width=True, key="manual_backup"):
+                if db_manager._create_local_backup():
+                    st.success("✅ Backup created!")
+                else:
+                    st.warning("⚠️ Backup may have failed")
     
     except Exception as e:
         st.error(f"Database error: {e}")
@@ -4116,87 +3965,48 @@ elif menu == "💰 Financials":
 elif menu == "🔧 Database Tools":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
-        <h2>🔧 Enhanced Database Tools</h2>
-        <div class="subtitle">Permanent Data Storage System</div>
+        <h2>🔧 Database Tools</h2>
+        <div class="subtitle">Freshness You Can Feel</div>
     </div>
     """, unsafe_allow_html=True)
     
     st.markdown("### 📍 Database Configuration")
     
     db_status_class = "db-status-success" if db_manager.db_type != "local" else "db-status-warning"
-    db_status_text = f"✅ Connected to {db_manager.db_type.upper()}" if db_manager.db_type != "local" else "⚠️ Using Local SQLite (Enhanced)"
+    db_status_text = f"Connected to {db_manager.db_type.upper()}" if db_manager.db_type != "local" else "Using Local SQLite"
     
     st.markdown(f"""
     <div class="{db_status_class}" style="padding:15px; border-radius:10px; margin-bottom:20px;">
         <h4 style="margin:0;">{db_status_text}</h4>
-        <p style="margin:5px 0 0 0;">
-            {"🛡️ No data loss when app sleeps" if db_manager.db_type != "local" else "⚠️ Local storage with automatic backups"}
-        </p>
     </div>
     """, unsafe_allow_html=True)
     
     # Database setup instructions
-    with st.expander("⚙️ Setup External Database (Recommended)"):
+    with st.expander("⚙️ Setup External Database"):
         st.markdown("""
-        ### **For Permanent Data Storage (No Data Loss)**
+        ### **Setup External Database**
         
-        **Step 1: Choose a Database Service**
-        
-        1. **Supabase (Recommended & Free)**
-           - Sign up at [supabase.com](https://supabase.com)
-           - Create a new project
-           - Go to Settings > Database to get connection details
-        
-        2. **PostgreSQL on Railway (Free)**
-           - Sign up at [railway.app](https://railway.app)
-           - Create PostgreSQL service
-           - Get connection URL
-        
-        3. **Neon PostgreSQL (Free)**
-           - Sign up at [neon.tech](https://neon.tech)
-           - Create PostgreSQL database
-        
-        **Step 2: Configure Streamlit Secrets**
-        
-        Create `.streamlit/secrets.toml` file with your database details:
+        1. Create a `.streamlit/secrets.toml` file
+        2. Add your Supabase connection details:
         
         ```toml
-        # For Supabase
         [supabase]
-        url = "your-project-url.supabase.co"
-        key = "your-anon-key"
-        db_url = "postgresql://postgres:[password]@[host]:5432/postgres"
-        
-        # OR for PostgreSQL
-        [postgresql]
-        host = "your-host"
-        port = 5432
-        database = "your-db"
-        user = "your-user"
-        password = "your-password"
-        
-        # OR for SQLite Cloud
-        [sqlite_cloud]
-        url = "your-cloud-url"
-        token = "your-token"
+        db_url = "postgresql://postgres:yourpassword@db.yourproject.supabase.co:5432/postgres"
         ```
         
-        **Step 3: Restart Your App**
-        
-        The app will automatically detect and use the external database!
+        3. Restart the app
         """)
         
-        if st.button("🔄 Check for External Database Configuration", use_container_width=True):
+        if st.button("🔄 Check for External Database", use_container_width=True):
             if db_manager.db_type == "local":
                 st.warning("⚠️ No external database configured. Using local SQLite.")
-                st.info("Follow the steps above to set up an external database for permanent storage.")
             else:
                 st.success(f"✅ External database detected: {db_manager.db_type.upper()}")
     
     st.markdown("---")
     st.markdown("### 💾 Backup & Recovery")
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     
     with col1:
         if st.button("🔄 Create Full Backup", use_container_width=True, type="primary"):
@@ -4207,22 +4017,6 @@ elif menu == "🔧 Database Tools":
                 st.error("❌ Backup failed!")
     
     with col2:
-        if st.button("📤 Export to JSON", use_container_width=True):
-            json_file = db_manager.export_database()
-            if json_file:
-                st.success(f"✅ Exported to: {json_file}")
-                with open(json_file, 'rb') as f:
-                    st.download_button(
-                        label="📥 Download JSON",
-                        data=f,
-                        file_name=os.path.basename(json_file),
-                        mime="application/json",
-                        use_container_width=True
-                    )
-            else:
-                st.error("❌ Export failed!")
-    
-    with col3:
         if st.button("🔍 Check Database Health", use_container_width=True):
             try:
                 # Run health checks
@@ -4296,55 +4090,8 @@ elif menu == "🔧 Database Tools":
         stats_df = pd.DataFrame(stats_data)
         st.dataframe(stats_df, use_container_width=True)
         
-        st.markdown("#### ✅ Data Validation")
-        try:
-            today = datetime.now().strftime("%Y-%m-%d")
-            c.execute("SELECT COUNT(*) FROM sales WHERE date=?", (today,))
-            today_sales = c.fetchone()[0]
-            
-            c.execute("SELECT COUNT(*) FROM inventory WHERE quantity > 0")
-            in_stock = c.fetchone()[0]
-            
-            st.info(f"""
-            **Data Health Check:**
-            • Today's Sales Records: {today_sales}
-            • Items in Stock: {in_stock}
-            • Total Database Records: {stats_df['Records'].sum():,}
-            • Database Type: {db_manager.db_type.upper()}
-            """)
-        except Exception as e:
-            st.warning(f"Data validation incomplete: {e}")
-            
     except Exception as e:
         st.error(f"Error fetching statistics: {e}")
-    
-    st.markdown("---")
-    st.markdown("### 🧹 Database Maintenance")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        days_to_keep = st.number_input("Days to keep sales data", min_value=30, max_value=365, value=90, step=30)
-        if st.button("🗑️ Clean Old Sales Data", use_container_width=True, type="secondary", key="clean_sales"):
-            cutoff_date = (datetime.now() - timedelta(days=days_to_keep)).strftime("%Y-%m-%d")
-            try:
-                c.execute("DELETE FROM sales WHERE date < ?", (cutoff_date,))
-                conn.commit()
-                st.success(f"✅ Sales data older than {cutoff_date} removed!")
-            except Exception as e:
-                st.error(f"❌ Cleanup failed: {e}")
-    
-    with col2:
-        if st.button("⚡ Optimize Database", use_container_width=True, key="optimize_db"):
-            try:
-                if db_manager.db_type == "local":
-                    c.execute("VACUUM")
-                    conn.commit()
-                    st.success("✅ Database optimized and compacted!")
-                else:
-                    st.info("✅ External database automatically optimized by provider")
-            except Exception as e:
-                st.error(f"❌ Optimization failed: {e}")
 
 # ========================== SECRETS DEBUG ==========================
 elif menu == "🔍 Secrets Debug":
@@ -4370,22 +4117,7 @@ elif menu == "🔍 Secrets Debug":
                 if secrets_dict:
                     st.markdown("#### 📋 All Secrets (masked):")
                     for key, value in secrets_dict.items():
-                        if hasattr(value, '__dict__') or hasattr(value, '__iter__'):
-                            # It's a section
-                            try:
-                                subsection = dict(value)
-                                st.write(f"**{key}:** (subsection with {len(subsection)} keys)")
-                                for subkey in subsection:
-                                    st.write(f"  - {subkey}")
-                            except:
-                                st.write(f"**{key}:** [complex object]")
-                        else:
-                            # It's a simple value
-                            if value and isinstance(value, str):
-                                masked = value[:10] + "..." if len(value) > 10 else value
-                                st.write(f"**{key}:** `{masked}`")
-                            else:
-                                st.write(f"**{key}:** `{value}`")
+                        st.write(f"**{key}:** [exists]")
                 else:
                     st.warning("No secrets found (empty dict)")
                     
@@ -4403,31 +4135,25 @@ elif menu == "🔍 Secrets Debug":
             file_size = os.path.getsize(secrets_path)
             st.info(f"File size: {file_size} bytes")
             
-            # Show file content (masked)
+            # Show file content
             try:
                 with open(secrets_path, 'r') as f:
                     content = f.read()
                 
-                # Mask passwords for security
-                import re
-                masked_content = content
-                # Mask passwords in connection strings
-                masked_content = re.sub(r':([^@]+)@', ':[HIDDEN]@', masked_content)
-                # Mask API keys
-                masked_content = re.sub(r'key\s*=\s*"[^"]+"', 'key = "[HIDDEN]"', masked_content)
-                masked_content = re.sub(r'password\s*=\s*"[^"]+"', 'password = "[HIDDEN]"', masked_content)
-                
-                st.code(masked_content, language="toml")
-                
+                if content.strip():
+                    st.code(content, language="toml")
+                else:
+                    st.warning("File is empty!")
+                    
             except Exception as e:
                 st.error(f"Error reading file: {e}")
         else:
             st.error(f"❌ {secrets_path} does not exist")
-            st.info("Current directory contents:")
-            st.write(os.listdir('.'))
-            if os.path.exists('.streamlit'):
-                st.info(".streamlit folder contents:")
-                st.write(os.listdir('.streamlit'))
+            st.info("Create this file with your Supabase connection details:")
+            st.code("""
+[supabase]
+db_url = "postgresql://postgres:yourpassword@db.yourproject.supabase.co:5432/postgres"
+            """, language="toml")
     
     with st.expander("🔌 Test Supabase Connection", expanded=True):
         st.markdown("### Direct Connection Test")
@@ -4460,16 +4186,11 @@ elif menu == "🔍 Secrets Debug":
                     """)
                     tables = cursor.fetchall()
                     
-                    # Test 3: Current time
-                    cursor.execute("SELECT NOW();")
-                    current_time = cursor.fetchone()[0]
-                    
                     cursor.close()
                     conn_test.close()
                     
                     st.success("✅ Connection successful!")
                     st.info(f"**Database:** {version.split(',')[0]}")
-                    st.info(f"**Server Time:** {current_time}")
                     st.info(f"**Tables in public schema:** {len(tables)}")
                     
                     if tables:
@@ -4481,61 +4202,43 @@ elif menu == "🔍 Secrets Debug":
                 except Exception as e:
                     st.error(f"❌ Connection failed: {str(e)}")
     
-    with st.expander("📊 Environment Variables", expanded=False):
-        st.markdown("### Relevant Environment Variables")
-        
-        env_vars = dict(os.environ)
-        relevant_vars = {}
-        
-        for key, value in env_vars.items():
-            key_lower = key.lower()
-            if any(term in key_lower for term in ['supabase', 'postgres', 'pg', 'database', 'db']):
-                # Mask sensitive values
-                if 'pass' in key_lower or 'key' in key_lower or 'token' in key_lower:
-                    masked = value[:5] + "..." if len(value) > 5 else "***"
-                    relevant_vars[key] = masked
-                else:
-                    relevant_vars[key] = value
-        
-        if relevant_vars:
-            for key, value in relevant_vars.items():
-                st.write(f"**{key}:** `{value}`")
-        else:
-            st.info("No relevant environment variables found")
-    
     with st.expander("🔧 Quick Fix", expanded=True):
         st.markdown("### If Supabase Still Not Connecting")
         
         st.code("""
-# Try this in your .streamlit/secrets.toml:
+# Create .streamlit/secrets.toml with this content:
 
 [supabase]
-url = "https://your-project-ref.supabase.co"
-key = "your-anon-key"
-db_url = "postgresql://postgres:[YOUR-PASSWORD]@db.your-project-ref.supabase.co:5432/postgres"
+db_url = "postgresql://postgres:Freshbasket2026@db.wdgmxpglhzyinxhsxcfi.supabase.co:5432/postgres"
 
-# IMPORTANT: Get the correct connection string from:
-# Supabase Dashboard → Settings → Database → Connection String → URI
-# Make sure it starts with: postgresql://postgres:
+# Make sure:
+# 1. The file is in .streamlit folder
+# 2. The connection string is correct
+# 3. There are no extra spaces or quotes
         """, language="toml")
         
-        if st.button("Copy Sample Config", key="copy_sample"):
-            st.info("Check the console for the sample config to copy")
-            print("\n" + "="*50)
-            print("SAMPLE .streamlit/secrets.toml:")
-            print("="*50)
-            print("""[supabase]
-url = "https://your-project-ref.supabase.co"
-key = "your-anon-key"
-db_url = "postgresql://postgres:your-password@db.your-project-ref.supabase.co:5432/postgres"
+        if st.button("Create Sample Config", key="create_sample"):
+            config_dir = ".streamlit"
+            config_file = os.path.join(config_dir, "secrets.toml")
+            
+            os.makedirs(config_dir, exist_ok=True)
+            
+            with open(config_file, "w") as f:
+                f.write("""[supabase]
+db_url = "postgresql://postgres:Freshbasket2026@db.wdgmxpglhzyinxhsxcfi.supabase.co:5432/postgres"
 """)
+            
+            st.success(f"✅ Created {config_file}")
+            st.info("Now restart the Streamlit app!")
 
 # ========================== ENHANCED BACKUP ON EXIT ==========================
 @atexit.register
 def cleanup():
     """Create final backup on exit"""
-    db_manager._create_local_backup()
-    db_manager.export_database()
+    try:
+        db_manager._create_local_backup()
+    except:
+        pass
 
 # Footer
 st.markdown("---")
@@ -4544,7 +4247,7 @@ st.markdown(f"""
     <p>🌿 Fresh Basket — Freshness You Can Feel | Quality Vegetables Daily ✅</p>
     <p style="font-size:0.8em; color:#95a5a6;">
         Database: {db_manager.db_type.upper()} | 
-        {"🛡️ No Data Loss" if db_manager.db_type != "local" else "⚠️ Local Storage with Backups"}
+        {"🛡️ External Database" if db_manager.db_type != "local" else "⚠️ Local Storage"}
     </p>
 </div>
 """, unsafe_allow_html=True)
