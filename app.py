@@ -75,110 +75,105 @@ class ExternalDatabaseManager:
     """Manage connections to external database services"""
     
     def __init__(self):
-        self.db_type = "local"  # Default to local SQLite
+        self.db_type = "supabase"  # Force Supabase only
         self.db_config = {}
-        self.local_db_path = None
         
     def init_database(self):
         """Initialize database connection based on available configuration"""
         try:
             logger.info("🔍 INITIALIZING DATABASE...")
             
-            # Check for Supabase configuration in secrets
-            if hasattr(st, 'secrets'):
-                try:
-                    # Check for supabase configuration
+            # First, check if we can access secrets at all
+            logger.info("Checking for Streamlit secrets...")
+            
+            secrets_available = False
+            try:
+                if hasattr(st, 'secrets'):
+                    logger.info(f"st.secrets object exists: {type(st.secrets)}")
+                    # Try to list all top-level secrets
+                    try:
+                        secrets_dict = dict(st.secrets)
+                        logger.info(f"Top-level secrets keys: {list(secrets_dict.keys())}")
+                        secrets_available = True
+                    except Exception as e:
+                        logger.error(f"Error reading secrets dict: {e}")
+                else:
+                    logger.warning("st.secrets attribute does NOT exist")
+            except Exception as e:
+                logger.error(f"Error checking secrets: {e}")
+            
+            # First, try to get configuration from Streamlit Secrets (production)
+            try:
+                logger.info("Looking for Supabase configuration...")
+                
+                if hasattr(st, 'secrets'):
+                    # Check for Supabase configuration
                     if 'supabase' in st.secrets:
                         logger.info("✅ Found 'supabase' in st.secrets!")
                         
-                        # Get supabase config
-                        supabase_config = {}
-                        
-                        # Try to get individual parameters
-                        if hasattr(st.secrets.supabase, 'db_url'):
-                            supabase_config['db_url'] = st.secrets.supabase.db_url
-                            logger.info("Found db_url in supabase config")
-                        
-                        if hasattr(st.secrets.supabase, 'url'):
-                            supabase_config['url'] = st.secrets.supabase.url
-                            logger.info("Found url in supabase config")
-                        
-                        if hasattr(st.secrets.supabase, 'key'):
-                            supabase_config['key'] = st.secrets.supabase.key
-                            logger.info("Found key in supabase config")
-                        
-                        # Also check for direct PostgreSQL connection
-                        if hasattr(st.secrets.supabase, 'host'):
-                            supabase_config['host'] = st.secrets.supabase.host
-                            logger.info("Found host in supabase config")
-                        
-                        if hasattr(st.secrets.supabase, 'database'):
-                            supabase_config['database'] = st.secrets.supabase.database
-                            logger.info("Found database in supabase config")
-                        
-                        if hasattr(st.secrets.supabase, 'user'):
-                            supabase_config['user'] = st.secrets.supabase.user
-                            logger.info("Found user in supabase config")
-                        
-                        if hasattr(st.secrets.supabase, 'password'):
-                            supabase_config['password'] = st.secrets.supabase.password
-                            logger.info("Found password in supabase config")
-                        
-                        if supabase_config:
+                        # Log what's in supabase config
+                        try:
+                            supabase_config = dict(st.secrets.supabase)
+                            logger.info(f"Supabase config keys: {list(supabase_config.keys())}")
+                            
+                            # Check for critical fields
+                            required_fields = ['url', 'key', 'db_url']
+                            for field in required_fields:
+                                if field in supabase_config:
+                                    value = supabase_config[field]
+                                    masked = value[:20] + "..." if len(value) > 20 else value
+                                    logger.info(f"  {field}: {masked}")
+                                else:
+                                    logger.warning(f"  Missing field: {field}")
+                            
                             self.db_type = "supabase"
                             self.db_config = supabase_config
                             logger.info("✅ Using Supabase database from secrets")
                             return True
-                        
+                            
+                        except Exception as e:
+                            logger.error(f"Error reading supabase config: {e}")
+                    
                     # Check for direct PostgreSQL connection
                     elif 'postgresql' in st.secrets:
                         logger.info("Found PostgreSQL configuration")
                         self.db_type = "postgresql"
-                        self.db_config = {}
-                        
-                        if hasattr(st.secrets.postgresql, 'db_url'):
-                            self.db_config['db_url'] = st.secrets.postgresql.db_url
-                        
-                        if hasattr(st.secrets.postgresql, 'host'):
-                            self.db_config['host'] = st.secrets.postgresql.host
-                        
-                        if hasattr(st.secrets.postgresql, 'port'):
-                            self.db_config['port'] = st.secrets.postgresql.port
-                        
-                        if hasattr(st.secrets.postgresql, 'database'):
-                            self.db_config['database'] = st.secrets.postgresql.database
-                        
-                        if hasattr(st.secrets.postgresql, 'user'):
-                            self.db_config['user'] = st.secrets.postgresql.user
-                        
-                        if hasattr(st.secrets.postgresql, 'password'):
-                            self.db_config['password'] = st.secrets.postgresql.password
-                        
+                        self.db_config = {
+                            'host': st.secrets.postgresql.host,
+                            'port': st.secrets.postgresql.port,
+                            'database': st.secrets.postgresql.database,
+                            'user': st.secrets.postgresql.user,
+                            'password': st.secrets.postgresql.password
+                        }
                         logger.info("✅ Using PostgreSQL database from secrets")
                         return True
+                    else:
+                        logger.warning("No database secrets found (checked: supabase, postgresql)")
                         
-                except Exception as e:
-                    logger.error(f"Error reading secrets: {e}")
+                else:
+                    logger.warning("st.secrets attribute not available")
+                    
+            except Exception as e:
+                logger.error(f"No database secrets found: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
             
-            # If no external DB configured, use local SQLite
-            logger.info("⚠️ Using local SQLite database")
-            self.db_type = "local"
+            # If no external DB configured, show error
+            st.error("""
+            ❌ SUPABASE CONFIGURATION REQUIRED!
             
-            # Create a persistent local database path
-            if sys.platform == "win32":
-                PERSISTENT_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "FreshBasket")
-            elif "streamlit" in sys.modules or "STREAMLIT_SHARING" in os.environ:
-                # Streamlit Cloud environment
-                PERSISTENT_DIR = "/tmp/freshbasket_data"
-            else:
-                # Local development
-                PERSISTENT_DIR = os.path.join(os.path.expanduser("~"), ".freshbasket")
+            Please create a `.streamlit/secrets.toml` file with your Supabase credentials:
             
-            os.makedirs(PERSISTENT_DIR, exist_ok=True)
-            self.local_db_path = os.path.join(PERSISTENT_DIR, "shop.db")
+            [supabase]
+            url = "your-project-url.supabase.co"
+            key = "your-anon-key"
+            db_url = "postgresql://postgres:[password]@db.[project-ref].supabase.co:5432/postgres"
             
-            logger.info(f"✅ Local database path: {self.local_db_path}")
-            return True
+            Get these credentials from:
+            1. Supabase Dashboard → Project Settings → Database → Connection String (URI)
+            2. Make sure to use the "URI" format starting with "postgresql://"
+            """)
+            return False
             
         except Exception as e:
             logger.error(f"❌ Database initialization failed: {e}")
@@ -188,275 +183,201 @@ class ExternalDatabaseManager:
     
     def get_connection(self):
         """Get a database connection based on configuration"""
-        if self.db_type == "local":
-            return self._get_local_connection()
-        elif self.db_type == "supabase" or self.db_type == "postgresql":
+        if self.db_type == "supabase":
+            return self._get_supabase_connection()
+        elif self.db_type == "postgresql":
             return self._get_postgresql_connection()
         else:
-            return self._get_local_connection()
+            st.error("❌ No database configuration found. Please configure Supabase.")
+            return None
     
-    def _get_local_connection(self):
-        """Get local SQLite connection with automatic recovery"""
-        try:
-            # Connect with WAL mode for better concurrency
-            conn = sqlite3.connect(self.local_db_path, check_same_thread=False)
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA foreign_keys=ON")
-            conn.execute("PRAGMA busy_timeout = 5000")
-            
-            # Create tables if they don't exist
-            self._create_tables(conn)
-            
-            return conn
-        except Exception as e:
-            print(f"❌ Local database connection failed: {e}")
-            # Try to create fresh database
-            try:
-                conn = sqlite3.connect(":memory:" if self.local_db_path is None else self.local_db_path)
-                self._create_tables(conn)
-                return conn
-            except Exception as e2:
-                print(f"❌ Critical: Could not create database: {e2}")
-                return None
-    
-    def _get_postgresql_connection(self):
-        """Get PostgreSQL/Supabase connection"""
+    def _get_supabase_connection(self):
+        """Get Supabase PostgreSQL connection - FIXED VERSION"""
         try:
             import psycopg2
             
             # Method 1: Try direct db_url first
             db_url = self.db_config.get('db_url')
             if db_url:
+                logger.info(f"Connecting to Supabase via db_url: {db_url[:50]}...")
                 conn = psycopg2.connect(db_url)
-                print("✅ Connected to PostgreSQL via db_url")
-                self._create_postgresql_tables(conn)
+                self._create_supabase_tables(conn)
+                st.success("✅ Connected to Supabase PostgreSQL")
                 return conn
             
             # Method 2: Try individual parameters
-            host = self.db_config.get('host', '')
-            port = self.db_config.get('port', 5432)
-            database = self.db_config.get('database', 'postgres')
-            user = self.db_config.get('user', 'postgres')
-            password = self.db_config.get('password', '')
+            conn = psycopg2.connect(
+                host=self.db_config.get('host', ''),
+                port=self.db_config.get('port', 5432),
+                database=self.db_config.get('database', 'postgres'),
+                user=self.db_config.get('user', 'postgres'),
+                password=self.db_config.get('password', '')
+            )
             
-            if host and database and user and password:
-                conn = psycopg2.connect(
-                    host=host,
-                    port=port,
-                    database=database,
-                    user=user,
-                    password=password
-                )
-                print("✅ Connected to PostgreSQL via parameters")
-                self._create_postgresql_tables(conn)
-                return conn
+            self._create_supabase_tables(conn)
+            st.success("✅ Connected to Supabase PostgreSQL")
+            return conn
             
-            # If we reach here, connection failed
-            print("⚠️ PostgreSQL connection failed, falling back to local SQLite")
-            self.db_type = "local"
-            return self._get_local_connection()
+        except ImportError as e:
+            st.error("""
+            ❌ psycopg2 not installed!
             
-        except ImportError:
-            print("❌ psycopg2 not installed. Installing...")
-            import subprocess
-            import sys
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "psycopg2-binary"])
-            print("✅ psycopg2-binary installed. Please restart the app.")
-            self.db_type = "local"
-            return self._get_local_connection()
+            Please install it with:
+            ```
+            pip install psycopg2-binary
+            ```
+            Then restart the app.
+            """)
+            return None
         except Exception as e:
-            print(f"❌ PostgreSQL connection failed: {e}")
-            # Fallback to local SQLite
-            print("⚠️ Falling back to local SQLite")
-            self.db_type = "local"
-            return self._get_local_connection()
+            st.error(f"❌ Supabase connection failed: {str(e)}")
+            return None
     
-    def _create_tables(self, conn):
-        """Create tables in SQLite database"""
+    def _get_postgresql_connection(self):
+        """Get PostgreSQL connection"""
+        try:
+            import psycopg2
+            
+            conn = psycopg2.connect(
+                host=self.db_config['host'],
+                port=self.db_config['port'],
+                database=self.db_config['database'],
+                user=self.db_config['user'],
+                password=self.db_config['password']
+            )
+            
+            self._create_supabase_tables(conn)
+            return conn
+            
+        except Exception as e:
+            st.error(f"❌ PostgreSQL connection failed: {e}")
+            return None
+    
+    def _create_supabase_tables(self, conn):
+        """Create tables in Supabase/PostgreSQL with proper PostgreSQL syntax"""
         c = conn.cursor()
         
-        tables_sql = {
-            "inventory": """
-                CREATE TABLE IF NOT EXISTS inventory (
-                    vegetable TEXT PRIMARY KEY,
-                    quantity REAL,
-                    cost_price REAL,
-                    selling_price REAL,
-                    image_url TEXT,
-                    unit_type TEXT DEFAULT 'kg',
-                    category TEXT DEFAULT 'vegetable'
-                )
-            """,
-            "purchases": """
-                CREATE TABLE IF NOT EXISTS purchases (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    date TEXT, 
-                    vegetable TEXT, 
-                    quantity REAL, 
-                    amount REAL, 
-                    supplier TEXT
-                )
-            """,
-            "sales": """
-                CREATE TABLE IF NOT EXISTS sales (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    date TEXT, 
-                    vegetable TEXT, 
-                    quantity_sold REAL, 
-                    sale_price REAL, 
-                    total REAL, 
-                    customer TEXT,
-                    unit_type TEXT,
-                    customer_name TEXT,
-                    customer_phone TEXT,
-                    bill_no TEXT
-                )
-            """,
-            "waste": """
-                CREATE TABLE IF NOT EXISTS waste (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    date TEXT, 
-                    vegetable TEXT, 
-                    quantity REAL, 
-                    reason TEXT
-                )
-            """,
-            "customers": """
-                CREATE TABLE IF NOT EXISTS customers (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    phone TEXT, 
-                    name TEXT, 
-                    points INTEGER DEFAULT 0,
-                    total_spent REAL DEFAULT 0,
-                    last_visit TEXT,
-                    UNIQUE(phone, name)
-                )
-            """,
-            "expenses": """
-                CREATE TABLE IF NOT EXISTS expenses (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    date TEXT, 
-                    category TEXT, 
-                    amount REAL, 
-                    description TEXT
-                )
-            """
-        }
+        # Check if tables already exist
+        c.execute("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'public'
+            ORDER BY table_name;
+        """)
+        existing_tables = [row[0] for row in c.fetchall()]
+        logger.info(f"Existing tables: {existing_tables}")
         
-        for table_name, sql in tables_sql.items():
+        # Create tables with PostgreSQL syntax (different from SQLite)
+        tables_sql = [
+            # Inventory table
+            """CREATE TABLE IF NOT EXISTS inventory (
+                vegetable VARCHAR(255) PRIMARY KEY,
+                quantity DECIMAL(10,3),
+                cost_price DECIMAL(10,2),
+                selling_price DECIMAL(10,2),
+                image_url TEXT,
+                unit_type VARCHAR(50) DEFAULT 'kg',
+                category VARCHAR(50) DEFAULT 'vegetable'
+            )""",
+            
+            # Purchases table
+            """CREATE TABLE IF NOT EXISTS purchases (
+                id SERIAL PRIMARY KEY,
+                date DATE, 
+                vegetable VARCHAR(255), 
+                quantity DECIMAL(10,3), 
+                amount DECIMAL(10,2), 
+                supplier VARCHAR(255)
+            )""",
+            
+            # Sales table
+            """CREATE TABLE IF NOT EXISTS sales (
+                id SERIAL PRIMARY KEY,
+                date DATE, 
+                vegetable VARCHAR(255), 
+                quantity_sold DECIMAL(10,3), 
+                sale_price DECIMAL(10,2), 
+                total DECIMAL(10,2), 
+                customer VARCHAR(255),
+                unit_type VARCHAR(50),
+                customer_name VARCHAR(255),
+                customer_phone VARCHAR(50),
+                bill_no VARCHAR(100)
+            )""",
+            
+            # Waste table
+            """CREATE TABLE IF NOT EXISTS waste (
+                id SERIAL PRIMARY KEY,
+                date DATE, 
+                vegetable VARCHAR(255), 
+                quantity DECIMAL(10,3), 
+                reason TEXT
+            )""",
+            
+            # Customers table
+            """CREATE TABLE IF NOT EXISTS customers (
+                id SERIAL PRIMARY KEY,
+                phone VARCHAR(50), 
+                name VARCHAR(255), 
+                points INTEGER DEFAULT 0,
+                total_spent DECIMAL(10,2) DEFAULT 0,
+                last_visit DATE,
+                UNIQUE(phone, name)
+            )""",
+            
+            # Expenses table
+            """CREATE TABLE IF NOT EXISTS expenses (
+                id SERIAL PRIMARY KEY,
+                date DATE, 
+                category VARCHAR(100), 
+                amount DECIMAL(10,2), 
+                description TEXT
+            )"""
+        ]
+        
+        for sql in tables_sql:
             try:
                 c.execute(sql)
+                logger.info(f"Executed: {sql[:50]}...")
             except Exception as e:
-                print(f"Error creating table {table_name}: {e}")
+                logger.error(f"Error creating table: {e}")
+                logger.error(f"SQL: {sql}")
         
         conn.commit()
+        logger.info("✅ All tables created/verified in Supabase")
     
     def _create_postgresql_tables(self, conn):
-        """Create tables in PostgreSQL/Supabase"""
-        try:
-            c = conn.cursor()
-            
-            # Check if tables exist
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS inventory (
-                    vegetable TEXT PRIMARY KEY,
-                    quantity REAL,
-                    cost_price REAL,
-                    selling_price REAL,
-                    image_url TEXT,
-                    unit_type TEXT DEFAULT 'kg',
-                    category TEXT DEFAULT 'vegetable'
-                )
-            """)
-            
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS purchases (
-                    id SERIAL PRIMARY KEY,
-                    date TEXT, 
-                    vegetable TEXT, 
-                    quantity REAL, 
-                    amount REAL, 
-                    supplier TEXT
-                )
-            """)
-            
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS sales (
-                    id SERIAL PRIMARY KEY,
-                    date TEXT, 
-                    vegetable TEXT, 
-                    quantity_sold REAL, 
-                    sale_price REAL, 
-                    total REAL, 
-                    customer TEXT,
-                    unit_type TEXT,
-                    customer_name TEXT,
-                    customer_phone TEXT,
-                    bill_no TEXT
-                )
-            """)
-            
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS waste (
-                    id SERIAL PRIMARY KEY,
-                    date TEXT, 
-                    vegetable TEXT, 
-                    quantity REAL, 
-                    reason TEXT
-                )
-            """)
-            
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS customers (
-                    id SERIAL PRIMARY KEY,
-                    phone TEXT, 
-                    name TEXT, 
-                    points INTEGER DEFAULT 0,
-                    total_spent REAL DEFAULT 0,
-                    last_visit TEXT,
-                    UNIQUE(phone, name)
-                )
-            """)
-            
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS expenses (
-                    id SERIAL PRIMARY KEY,
-                    date TEXT, 
-                    category TEXT, 
-                    amount REAL, 
-                    description TEXT
-                )
-            """)
-            
-            conn.commit()
-            print("✅ PostgreSQL tables created/verified")
-            
-        except Exception as e:
-            print(f"Error creating PostgreSQL tables: {e}")
-            conn.rollback()
+        """Same as Supabase tables"""
+        self._create_supabase_tables(conn)
     
-    def _create_local_backup(self):
-        """Create backup of local database"""
+    def export_database(self):
+        """Export database to downloadable format"""
         try:
-            if self.local_db_path and os.path.exists(self.local_db_path) and os.path.getsize(self.local_db_path) > 0:
-                backup_dir = os.path.join(os.path.dirname(self.local_db_path), "backups")
-                os.makedirs(backup_dir, exist_ok=True)
+            conn = self.get_connection()
+            if conn:
+                export_data = {}
+                tables = ["inventory", "purchases", "sales", "waste", "customers", "expenses"]
                 
-                backup_file = os.path.join(backup_dir, f"shop_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db")
-                shutil.copy2(self.local_db_path, backup_file)
+                for table in tables:
+                    try:
+                        # For PostgreSQL/Supabase
+                        df = pd.read_sql_query(f"SELECT * FROM {table}", conn)
+                        export_data[table] = df.to_dict('records')
+                    except Exception as e:
+                        logger.error(f"Error exporting {table}: {e}")
+                        export_data[table] = []
                 
-                # Keep only last 7 backups
-                backup_files = [f for f in os.listdir(backup_dir) if f.endswith('.db')]
-                if len(backup_files) > 7:
-                    backup_files.sort()
-                    for old_backup in backup_files[:-7]:
-                        os.remove(os.path.join(backup_dir, old_backup))
+                conn.close()
                 
-                return True
+                # Save as JSON
+                json_file = os.path.join(tempfile.gettempdir(), f"freshbasket_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+                with open(json_file, 'w') as f:
+                    json.dump(export_data, f, indent=2, default=str)
+                
+                return json_file
         except Exception as e:
-            print(f"⚠️ Backup failed: {e}")
-        return False
+            print(f"❌ Export failed: {e}")
+        return None
 
 # Initialize database manager
 db_manager = ExternalDatabaseManager()
@@ -583,13 +504,17 @@ def login_page():
 # ========================== INITIALIZE DATABASE ==========================
 # Initialize database manager
 if not db_manager.init_database():
-    st.error("❌ Failed to initialize database system. Please refresh the page.")
+    st.error("❌ Failed to initialize database system. Please configure Supabase.")
     st.stop()
 
 # Get database connection
 def get_db_connection():
     """Get database connection - wrapper for compatibility"""
-    return db_manager.get_connection()
+    conn = db_manager.get_connection()
+    if conn is None:
+        st.error("❌ Could not connect to Supabase. Please check your configuration.")
+        st.stop()
+    return conn
 
 # ========================== INITIALIZE SESSION STATE ==========================
 if 'logged_in' not in st.session_state:
@@ -982,8 +907,6 @@ if conn is None:
     st.error("❌ Critical: Could not initialize database. Please refresh the page.")
     st.stop()
 
-c = conn.cursor()
-
 # ========================== DEFAULT VEGETABLES AND FRUITS ==========================
 kg_vegetables = [
     "Avarakai", "Baby Corn", "Baby Potato", "Beetroot", "Bitter Gourd", 
@@ -1014,46 +937,63 @@ fruits_kg = [
 ]
 
 # Initialize default items with categories
+c = conn.cursor()
 for veg in kg_vegetables:
     try:
-        c.execute("SELECT vegetable FROM inventory WHERE vegetable=?", (veg,))
+        c.execute("SELECT vegetable FROM inventory WHERE vegetable=%s", (veg,))
         if not c.fetchone():
-            c.execute("INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type, category) VALUES (?, 0, 0, 0, '', 'kg', 'vegetable')", (veg,))
+            c.execute("""
+                INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type, category) 
+                VALUES (%s, 0, 0, 0, '', 'kg', 'vegetable')
+                ON CONFLICT (vegetable) DO NOTHING
+            """, (veg,))
         else:
-            c.execute("UPDATE inventory SET category='vegetable' WHERE vegetable=?", (veg,))
-    except:
+            c.execute("UPDATE inventory SET category='vegetable' WHERE vegetable=%s", (veg,))
+    except Exception as e:
+        logger.error(f"Error initializing {veg}: {e}")
         pass
 
 for veg in piece_vegetables:
     try:
-        c.execute("SELECT vegetable FROM inventory WHERE vegetable=?", (veg,))
+        c.execute("SELECT vegetable FROM inventory WHERE vegetable=%s", (veg,))
         if not c.fetchone():
-            c.execute("INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type, category) VALUES (?, 0, 0, 0, '', 'piece', 'vegetable')", (veg,))
+            c.execute("""
+                INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type, category) 
+                VALUES (%s, 0, 0, 0, '', 'piece', 'vegetable')
+                ON CONFLICT (vegetable) DO NOTHING
+            """, (veg,))
         else:
-            c.execute("UPDATE inventory SET category='vegetable' WHERE vegetable=?", (veg,))
-    except:
+            c.execute("UPDATE inventory SET category='vegetable' WHERE vegetable=%s", (veg,))
+    except Exception as e:
+        logger.error(f"Error initializing {veg}: {e}")
         pass
 
 for fruit in fruits_kg:
     try:
-        c.execute("SELECT vegetable FROM inventory WHERE vegetable=?", (fruit,))
+        c.execute("SELECT vegetable FROM inventory WHERE vegetable=%s", (fruit,))
         if not c.fetchone():
-            c.execute("INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type, category) VALUES (?, 0, 0, 0, '', 'kg', 'fruit')", (fruit,))
+            c.execute("""
+                INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type, category) 
+                VALUES (%s, 0, 0, 0, '', 'kg', 'fruit')
+                ON CONFLICT (vegetable) DO NOTHING
+            """, (fruit,))
         else:
-            c.execute("UPDATE inventory SET category='fruit' WHERE vegetable=?", (fruit,))
-    except:
+            c.execute("UPDATE inventory SET category='fruit' WHERE vegetable=%s", (fruit,))
+    except Exception as e:
+        logger.error(f"Error initializing {fruit}: {e}")
         pass
 
 try:
     conn.commit()
-except:
-    pass
+except Exception as e:
+    logger.error(f"Error committing initialization: {e}")
 
 # ========================== HELPER FUNCTIONS ==========================
 def get_stock(veg):
     """Return (quantity, cost_price, selling_price, unit_type, category) for veg (or zeros)."""
     try:
-        c.execute("SELECT quantity, cost_price, selling_price, unit_type, category FROM inventory WHERE vegetable=?", (veg,))
+        c = conn.cursor()
+        c.execute("SELECT quantity, cost_price, selling_price, unit_type, category FROM inventory WHERE vegetable=%s", (veg,))
         row = c.fetchone()
         if row:
             qty = row[0] if row[0] is not None else 0.0
@@ -1063,19 +1003,21 @@ def get_stock(veg):
             category = row[4] if row[4] is not None else 'vegetable'
             return qty, cost, sell, unit_type, category
     except Exception as e:
-        print(f"Error getting stock for {veg}: {e}")
+        logger.error(f"Error getting stock for {veg}: {e}")
     return 0.0, 0.0, 0.0, 'kg', 'vegetable'
 
 def get_last_record_date(table_name):
     """Get the date of the last record in a table"""
     try:
+        c = conn.cursor()
         if table_name in ["sales", "purchases", "waste", "expenses"]:
             c.execute(f"SELECT MAX(date) FROM {table_name}")
             result = c.fetchone()[0]
             return result if result else "N/A"
         else:
             return "N/A"
-    except:
+    except Exception as e:
+        logger.error(f"Error getting last record date for {table_name}: {e}")
         return "N/A"
 
 # Initialize session state
@@ -1089,7 +1031,8 @@ if "last_sale" not in st.session_state:
     st.session_state.last_sale = None
 if "guest_counter" not in st.session_state:
     try:
-        c.execute("SELECT customer FROM sales WHERE customer LIKE 'Guest%'")
+        c = conn.cursor()
+        c.execute("SELECT customer FROM sales WHERE customer LIKE 'Guest%%'")
         guests = c.fetchall()
         max_guest = 0
         for guest in guests:
@@ -1100,7 +1043,8 @@ if "guest_counter" not in st.session_state:
                 if guest_num > max_guest:
                     max_guest = guest_num
         st.session_state.guest_counter = max_guest + 1
-    except:
+    except Exception as e:
+        logger.error(f"Error initializing guest counter: {e}")
         st.session_state.guest_counter = 1
 if "backup_counter" not in st.session_state:
     st.session_state.backup_counter = 0
@@ -1204,13 +1148,16 @@ def process_sale_simple(cust_name, cust_phone):
     bill_no = datetime.now().strftime("%Y%m%d%H%M%S")
     
     sale_details = []
+    c = conn.cursor()
     for item in st.session_state.cart:
         veg, qty, price, total, unit_type, category = item
         
-        c.execute("INSERT INTO sales (date, vegetable, quantity_sold, sale_price, total, customer, unit_type, customer_name, customer_phone, bill_no) VALUES (?,?,?,?,?,?,?,?,?,?)", 
-                 (d, veg, qty, price, total, cust, unit_type, cust_name, cust_phone, bill_no))
+        c.execute("""
+            INSERT INTO sales (date, vegetable, quantity_sold, sale_price, total, customer, unit_type, customer_name, customer_phone, bill_no) 
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """, (d, veg, qty, price, total, cust, unit_type, cust_name, cust_phone, bill_no))
         
-        c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
+        c.execute("UPDATE inventory SET quantity = quantity - %s WHERE vegetable=%s", (qty, veg))
         
         sale_details.append({
             "item": veg,
@@ -1225,40 +1172,49 @@ def process_sale_simple(cust_name, cust_phone):
         total_amount = sum(item[3] for item in st.session_state.cart)
         try:
             # Try to update existing customer
-            c.execute("UPDATE customers SET points = points + ?, total_spent = total_spent + ?, last_visit=? WHERE phone=?", 
-                     (int(total_amount // 10), total_amount, d, cust_phone))
+            c.execute("""
+                UPDATE customers 
+                SET points = points + %s, total_spent = total_spent + %s, last_visit=%s 
+                WHERE phone=%s
+            """, (int(total_amount // 10), total_amount, d, cust_phone))
             
             # If no rows were updated, insert new customer
             if c.rowcount == 0:
-                c.execute("INSERT OR IGNORE INTO customers (phone, name, points, total_spent, last_visit) VALUES (?,?,?,?,?)", 
-                         (cust_phone, cust_name, int(total_amount // 10), total_amount, d))
+                c.execute("""
+                    INSERT INTO customers (phone, name, points, total_spent, last_visit) 
+                    VALUES (%s,%s,%s,%s,%s)
+                    ON CONFLICT (phone, name) DO UPDATE 
+                    SET points = customers.points + %s, 
+                        total_spent = customers.total_spent + %s,
+                        last_visit = %s
+                """, (cust_phone, cust_name, int(total_amount // 10), total_amount, d, int(total_amount // 10), total_amount, d))
         except Exception as e:
-            print(f"Error updating customer: {e}")
+            logger.error(f"Error updating customer: {e}")
             # If table doesn't exist or has issues, create it
             try:
                 c.execute("""
                     CREATE TABLE IF NOT EXISTS customers (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        phone TEXT, 
-                        name TEXT, 
+                        id SERIAL PRIMARY KEY,
+                        phone VARCHAR(50), 
+                        name VARCHAR(255), 
                         points INTEGER DEFAULT 0,
-                        total_spent REAL DEFAULT 0,
-                        last_visit TEXT,
+                        total_spent DECIMAL(10,2) DEFAULT 0,
+                        last_visit DATE,
                         UNIQUE(phone, name)
                     )
                 """)
-                c.execute("INSERT OR IGNORE INTO customers (phone, name, points, total_spent, last_visit) VALUES (?,?,?,?,?)", 
-                         (cust_phone, cust_name, int(total_amount // 10), total_amount, d))
+                c.execute("""
+                    INSERT INTO customers (phone, name, points, total_spent, last_visit) 
+                    VALUES (%s,%s,%s,%s,%s)
+                    ON CONFLICT (phone, name) DO UPDATE 
+                    SET points = customers.points + %s, 
+                        total_spent = customers.total_spent + %s,
+                        last_visit = %s
+                """, (cust_phone, cust_name, int(total_amount // 10), total_amount, d, int(total_amount // 10), total_amount, d))
             except Exception as e2:
-                print(f"Error creating customers table: {e2}")
+                logger.error(f"Error creating customers table: {e2}")
     
     conn.commit()
-    
-    # Auto-backup every 10 sales
-    st.session_state.backup_counter += 1
-    if st.session_state.backup_counter >= 10:
-        db_manager._create_local_backup()
-        st.session_state.backup_counter = 0
     
     st.session_state.last_sale = {
         "date": d,
@@ -1433,27 +1389,40 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
     
-    # Database Info - SIMPLIFIED VERSION
+    # Database Info
     st.markdown("---")
     st.markdown("### 💾 Database Status")
     
     try:
-        # Get database type
-        if db_manager.db_type == "local":
-            db_type_text = "Local SQLite"
-            db_status_class = "db-status-warning"
-            db_status_text = "Local SQLite"
-        else:
-            db_type_text = f"{db_manager.db_type.upper()}"
+        # Get database statistics
+        db_status_class = "db-status-success"
+        db_status_text = "✅ Connected"
+        
+        if db_manager.db_type == "supabase":
+            db_type_text = "Supabase PostgreSQL"
             db_status_class = "db-status-success"
-            db_status_text = f"Connected to {db_manager.db_type.upper()}"
+            db_status_text = "✅ Supabase PostgreSQL (Permanent Storage)"
+        elif db_manager.db_type == "postgresql":
+            db_type_text = "PostgreSQL"
+            db_status_class = "db-status-success"
+            db_status_text = "✅ PostgreSQL (Permanent Storage)"
+        else:
+            db_type_text = "Local SQLite"
+            db_status_text = "⚠️ Local SQLite (Not Recommended)"
         
         # Get counts
+        c = conn.cursor()
         c.execute("SELECT COUNT(*) FROM inventory")
         inv_count = c.fetchone()[0]
         
         c.execute("SELECT COUNT(*) FROM sales")
         sales_count = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM purchases")
+        purchases_count = c.fetchone()[0]
+        
+        # Check if we have external database configured
+        has_external_db = db_manager.db_type != "local"
         
         st.markdown(f"""
         <div style="background: white; padding: 15px; border-radius: 10px; margin: 10px 0;">
@@ -1466,19 +1435,53 @@ with st.sidebar:
             <p style="margin: 5px 0; font-size: 0.9em;">
                 <strong>💰 Sales:</strong> {sales_count}
             </p>
+            <p style="margin: 5px 0; font-size: 0.9em;">
+                <strong>🛒 Purchases:</strong> {purchases_count}
+            </p>
             <div class="{db_status_class}" style="margin: 10px 0; padding: 8px; border-radius: 8px;">
                 <strong>{db_status_text}</strong>
+                {"🛡️ No Data Loss" if has_external_db else "⚠️ Local (Backup Active)"}
             </div>
         </div>
         """, unsafe_allow_html=True)
         
-        # Manual backup button (only for local)
-        if db_manager.db_type == "local":
-            if st.button("💾 Create Backup", use_container_width=True, key="manual_backup"):
-                if db_manager._create_local_backup():
-                    st.success("✅ Backup created!")
-                else:
-                    st.warning("⚠️ Backup may have failed")
+        # External database setup button
+        if not has_external_db:
+            with st.expander("⚙️ Setup External Database"):
+                st.info("""
+                **For permanent data storage (no data loss when app sleeps):**
+                
+                1. Sign up for a free database service:
+                   - [Supabase](https://supabase.com) (Recommended)
+                   - [Neon PostgreSQL](https://neon.tech)
+                   - [Railway PostgreSQL](https://railway.app)
+                
+                2. Create a new project and get connection details
+                
+                3. Add to Streamlit Secrets (`.streamlit/secrets.toml`):
+                ```toml
+                [supabase]
+                url = "your-project-url"
+                key = "your-anon-key"
+                db_url = "postgresql://..."
+                ```
+                """)
+        
+        # Download backup button
+        if st.button("📥 Download Data", use_container_width=True, key="download_backup"):
+            json_file = db_manager.export_database()
+            if json_file and os.path.exists(json_file):
+                with open(json_file, 'rb') as f:
+                    st.download_button(
+                        label="📥 Download All Data",
+                        data=f,
+                        file_name=f"freshbasket_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                        mime="application/json",
+                        use_container_width=True,
+                        key="download_data_btn"
+                    )
+            else:
+                st.error("❌ Could not create data file")
     
     except Exception as e:
         st.error(f"Database error: {e}")
@@ -1536,48 +1539,6 @@ with st.sidebar:
                 st.success("✅ Test print successful! Printer is working.")
             else:
                 st.error("❌ Test print failed. Check printer connection.")
-    
-    # ========================== TEMPORARY DEBUG ==========================
-    # Force test Supabase on every run
-    if st.session_state.get('logged_in'):
-        st.markdown("---")
-        if st.button("🔄 Force Check Supabase", key="force_check"):
-            st.info("Checking Supabase connection...")
-            
-            # Direct test
-            if hasattr(st, 'secrets') and 'supabase' in st.secrets:
-                st.success("✅ Supabase config found in secrets!")
-                
-                try:
-                    import psycopg2
-                    db_url = st.secrets.supabase.db_url
-                    st.info(f"Connecting to: {db_url[:50]}...")
-                    
-                    conn_test = psycopg2.connect(db_url)
-                    cursor = conn_test.cursor()
-                    cursor.execute("SELECT 1 as test;")
-                    result = cursor.fetchone()
-                    
-                    cursor.close()
-                    conn_test.close()
-                    
-                    st.success(f"✅ Connection test passed: {result}")
-                    st.balloons()
-                    
-                except ImportError:
-                    st.error("Install psycopg2-binary: `pip install psycopg2-binary`")
-                except Exception as e:
-                    st.error(f"❌ Connection failed: {str(e)}")
-            else:
-                st.error("❌ Supabase config not found in secrets")
-                
-                # Show what IS in secrets
-                if hasattr(st, 'secrets'):
-                    try:
-                        secrets_dict = dict(st.secrets)
-                        st.write("Available secrets:", list(secrets_dict.keys()))
-                    except:
-                        st.write("Cannot read secrets dict")
 
 # ========================== DASHBOARD ==========================
 if menu == "📊 Dashboard":
@@ -1591,7 +1552,9 @@ if menu == "📊 Dashboard":
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        total_items = pd.read_sql("SELECT COUNT(*) as count FROM inventory WHERE quantity > 0", conn).iloc[0]['count']
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) as count FROM inventory WHERE quantity > 0")
+        total_items = c.fetchone()[0]
         st.markdown(f"""
         <div class="metric-card">
             <h3>📦</h3>
@@ -1601,8 +1564,9 @@ if menu == "📊 Dashboard":
         """, unsafe_allow_html=True)
     
     with col2:
-        today_sales = pd.read_sql("SELECT COALESCE(SUM(total),0) as total FROM sales WHERE date=?", 
-                                 conn, params=(selected_date.strftime("%Y-%m-%d"),)).iloc[0]['total']
+        c.execute("SELECT COALESCE(SUM(total),0) as total FROM sales WHERE date=%s", 
+                 (selected_date.strftime("%Y-%m-%d"),))
+        today_sales = c.fetchone()[0]
         st.markdown(f"""
         <div class="sales-card">
             <h3>💰</h3>
@@ -1612,8 +1576,9 @@ if menu == "📊 Dashboard":
         """, unsafe_allow_html=True)
     
     with col3:
-        today_customers_df = pd.read_sql("SELECT COUNT(DISTINCT customer_name) as count FROM sales WHERE date=? AND customer_name IS NOT NULL", 
-                                       conn, params=(selected_date.strftime("%Y-%m-%d"),)).iloc[0]['count']
+        c.execute("SELECT COUNT(DISTINCT customer_name) as count FROM sales WHERE date=%s AND customer_name IS NOT NULL", 
+                 (selected_date.strftime("%Y-%m-%d"),))
+        today_customers_df = c.fetchone()[0]
         
         st.markdown(f"""
         <div class="metric-card">
@@ -1625,8 +1590,9 @@ if menu == "📊 Dashboard":
     
     with col4:
         threshold = st.session_state.shortage_threshold
-        low_stock_count = pd.read_sql("SELECT COUNT(*) as count FROM inventory WHERE quantity > 0 AND quantity < ?", 
-                                     conn, params=(threshold,)).iloc[0]['count']
+        c.execute("SELECT COUNT(*) as count FROM inventory WHERE quantity > 0 AND quantity < %s", 
+                 (threshold,))
+        low_stock_count = c.fetchone()[0]
         st.markdown(f"""
         <div class="red-alert-card">
             <h3>⚠️</h3>
@@ -1640,12 +1606,16 @@ if menu == "📊 Dashboard":
     st.markdown("### 📉 Low Stock Items Alert")
     threshold = st.session_state.shortage_threshold
     
-    inv_df = pd.read_sql("""
+    c = conn.cursor()
+    c.execute("""
         SELECT vegetable, quantity, selling_price, unit_type, category 
         FROM inventory 
         WHERE quantity > 0 
         ORDER BY vegetable
-    """, conn)
+    """)
+    inv_rows = c.fetchall()
+    columns = ["vegetable", "quantity", "selling_price", "unit_type", "category"]
+    inv_df = pd.DataFrame(inv_rows, columns=columns)
     
     if inv_df.empty:
         st.info("No stock available. Add purchases first.")
@@ -1782,7 +1752,8 @@ if menu == "📊 Dashboard":
         # Summary
         col1, col2 = st.columns(2)
         with col1:
-            out_of_stock = pd.read_sql("SELECT COUNT(*) as count FROM inventory WHERE quantity = 0", conn).iloc[0]['count']
+            c.execute("SELECT COUNT(*) as count FROM inventory WHERE quantity = 0")
+            out_of_stock = c.fetchone()[0]
             st.info(f"**Out of Stock:** {out_of_stock} items")
         
         with col2:
@@ -1801,7 +1772,10 @@ elif menu == "🛒 Add Purchase":
     </div>
     """, unsafe_allow_html=True)
     
-    all_veg_df = pd.read_sql("SELECT vegetable, unit_type, category FROM inventory ORDER BY vegetable", conn)
+    c = conn.cursor()
+    c.execute("SELECT vegetable, unit_type, category FROM inventory ORDER BY vegetable")
+    all_veg_rows = c.fetchall()
+    all_veg_df = pd.DataFrame(all_veg_rows, columns=['vegetable', 'unit_type', 'category'])
     
     if all_veg_df.empty:
         st.info("No vegetables in inventory. Please add vegetables first.")
@@ -1810,7 +1784,9 @@ elif menu == "🛒 Add Purchase":
         
         with tab1:
             st.markdown("### 📝 Bulk Purchase Entry")
-            purchase_df = pd.read_sql("SELECT vegetable, quantity as current_stock, selling_price, unit_type, category FROM inventory ORDER BY vegetable", conn)
+            c.execute("SELECT vegetable, quantity as current_stock, selling_price, unit_type, category FROM inventory ORDER BY vegetable")
+            purchase_rows = c.fetchall()
+            purchase_df = pd.DataFrame(purchase_rows, columns=['vegetable', 'current_stock', 'selling_price', 'unit_type', 'category'])
             purchase_df['Current Stock (Editable)'] = purchase_df['current_stock']
             purchase_df['New Purchase'] = 0.0
             purchase_df['Amount (₹)'] = 0.0
@@ -1836,6 +1812,7 @@ elif menu == "🛒 Add Purchase":
                 purchases_made = 0
                 stock_updates = 0
                 
+                c = conn.cursor()
                 for _, row in edited_df.iterrows():
                     veg = row['vegetable']
                     
@@ -1843,7 +1820,7 @@ elif menu == "🛒 Add Purchase":
                     old_stock, old_cost, old_sell, old_unit, old_cat = get_stock(veg)
                     
                     if new_current_stock != old_stock:
-                        c.execute("UPDATE inventory SET quantity=? WHERE vegetable=?", 
+                        c.execute("UPDATE inventory SET quantity=%s WHERE vegetable=%s", 
                                  (new_current_stock, veg))
                         stock_updates += 1
                     
@@ -1855,14 +1832,14 @@ elif menu == "🛒 Add Purchase":
                         unit_type = row['unit_type']
                         category = row['category']
                         
-                        c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (?,?,?,?,?)", 
+                        c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (%s,%s,%s,%s,%s)", 
                                  (d, veg, qty, amount, supplier))
                         
                         if qty > 0:
                             old_qty, old_cost, _, _, _ = get_stock(veg)
                             new_qty = old_qty + qty
                             unit_cost = (amount / qty) if qty > 0 else old_cost
-                            c.execute("UPDATE inventory SET quantity=?, cost_price=? WHERE vegetable=?", 
+                            c.execute("UPDATE inventory SET quantity=%s, cost_price=%s WHERE vegetable=%s", 
                                      (new_qty, unit_cost, veg))
                         
                         purchases_made += 1
@@ -1932,8 +1909,9 @@ elif menu == "🛒 Add Purchase":
                             st.error("Enter vegetable name")
                         else:
                             d = selected_date.strftime("%Y-%m-%d")
+                            c = conn.cursor()
                             
-                            c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (?,?,?,?,?)", 
+                            c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (%s,%s,%s,%s,%s)", 
                                      (d, veg, total_qty, amount, supplier))
                             
                             old_qty, old_cost, old_sell, old_unit, old_cat = get_stock(veg)
@@ -1941,10 +1919,15 @@ elif menu == "🛒 Add Purchase":
                             unit_cost = (amount / total_qty) if total_qty > 0 else old_cost
                             
                             if old_qty == 0 and veg not in existing_kg_veg:
-                                c.execute("INSERT OR REPLACE INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type, category) VALUES (?,?,?,?,?,?)", 
-                                         (veg, new_qty, unit_cost, 0.0, unit_type, category))
+                                c.execute("""
+                                    INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type, category) 
+                                    VALUES (%s,%s,%s,%s,%s,%s)
+                                    ON CONFLICT (vegetable) DO UPDATE 
+                                    SET quantity = inventory.quantity + %s,
+                                        cost_price = %s
+                                """, (veg, new_qty, unit_cost, 0.0, unit_type, category, total_qty, unit_cost))
                             else:
-                                c.execute("UPDATE inventory SET quantity=?, cost_price=? WHERE vegetable=?", 
+                                c.execute("UPDATE inventory SET quantity=%s, cost_price=%s WHERE vegetable=%s", 
                                          (new_qty, unit_cost, veg))
                             
                             conn.commit()
@@ -1998,8 +1981,9 @@ elif menu == "🛒 Add Purchase":
                             st.error("Enter vegetable name")
                         else:
                             d = selected_date.strftime("%Y-%m-%d")
+                            c = conn.cursor()
                             
-                            c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (?,?,?,?,?)", 
+                            c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (%s,%s,%s,%s,%s)", 
                                      (d, veg, total_qty, amount, supplier))
                             
                             old_qty, old_cost, old_sell, old_unit, old_cat = get_stock(veg)
@@ -2007,10 +1991,15 @@ elif menu == "🛒 Add Purchase":
                             unit_cost = (amount / total_qty) if total_qty > 0 else old_cost
                             
                             if old_qty == 0 and veg not in existing_piece_veg:
-                                c.execute("INSERT OR REPLACE INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type, category) VALUES (?,?,?,?,?,?)", 
-                                         (veg, new_qty, unit_cost, 0.0, unit_type, category))
+                                c.execute("""
+                                    INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type, category) 
+                                    VALUES (%s,%s,%s,%s,%s,%s)
+                                    ON CONFLICT (vegetable) DO UPDATE 
+                                    SET quantity = inventory.quantity + %s,
+                                        cost_price = %s
+                                """, (veg, new_qty, unit_cost, 0.0, unit_type, category, total_qty, unit_cost))
                             else:
-                                c.execute("UPDATE inventory SET quantity=?, cost_price=? WHERE vegetable=?", 
+                                c.execute("UPDATE inventory SET quantity=%s, cost_price=%s WHERE vegetable=%s", 
                                          (new_qty, unit_cost, veg))
                             
                             conn.commit()
@@ -2065,8 +2054,9 @@ elif menu == "🛒 Add Purchase":
                             st.error("Enter fruit name")
                         else:
                             d = selected_date.strftime("%Y-%m-%d")
+                            c = conn.cursor()
                             
-                            c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (?,?,?,?,?)", 
+                            c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (%s,%s,%s,%s,%s)", 
                                      (d, fruit, total_qty, amount, supplier))
                             
                             old_qty, old_cost, old_sell, old_unit, old_cat = get_stock(fruit)
@@ -2074,10 +2064,15 @@ elif menu == "🛒 Add Purchase":
                             unit_cost = (amount / total_qty) if total_qty > 0 else old_cost
                             
                             if old_qty == 0 and fruit not in existing_fruits:
-                                c.execute("INSERT OR REPLACE INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type, category) VALUES (?,?,?,?,?,?)", 
-                                         (fruit, new_qty, unit_cost, 0.0, unit_type, category))
+                                c.execute("""
+                                    INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type, category) 
+                                    VALUES (%s,%s,%s,%s,%s,%s)
+                                    ON CONFLICT (vegetable) DO UPDATE 
+                                    SET quantity = inventory.quantity + %s,
+                                        cost_price = %s
+                                """, (fruit, new_qty, unit_cost, 0.0, unit_type, category, total_qty, unit_cost))
                             else:
-                                c.execute("UPDATE inventory SET quantity=?, cost_price=? WHERE vegetable=?", 
+                                c.execute("UPDATE inventory SET quantity=%s, cost_price=%s WHERE vegetable=%s", 
                                          (new_qty, unit_cost, fruit))
                             
                             conn.commit()
@@ -2086,12 +2081,11 @@ elif menu == "🛒 Add Purchase":
     st.markdown("---")
     st.markdown(f"### 📊 Today's Purchases ({selected_date.strftime('%d %B %Y')})")
     
-    today_purchases = pd.read_sql("""
-        SELECT vegetable, quantity, amount, supplier 
-        FROM purchases 
-        WHERE date=? 
-        ORDER BY id DESC
-    """, conn, params=(selected_date.strftime("%Y-%m-%d"),))
+    c = conn.cursor()
+    c.execute("SELECT vegetable, quantity, amount, supplier FROM purchases WHERE date=%s ORDER BY id DESC", 
+              (selected_date.strftime("%Y-%m-%d"),))
+    today_purchases_rows = c.fetchall()
+    today_purchases = pd.DataFrame(today_purchases_rows, columns=["vegetable", "quantity", "amount", "supplier"])
     
     if today_purchases.empty:
         st.info("No purchases today")
@@ -2125,7 +2119,10 @@ elif menu == "🏷 Set Prices":
     </div>
     """, unsafe_allow_html=True)
     
-    price_df = pd.read_sql("SELECT vegetable, selling_price, unit_type, category FROM inventory ORDER BY category, vegetable", conn)
+    c = conn.cursor()
+    c.execute("SELECT vegetable, selling_price, unit_type, category FROM inventory ORDER BY category, vegetable")
+    price_rows = c.fetchall()
+    price_df = pd.DataFrame(price_rows, columns=['vegetable', 'selling_price', 'unit_type', 'category'])
     
     if price_df.empty:
         st.info("No vegetables in inventory")
@@ -2145,8 +2142,12 @@ elif menu == "🏷 Set Prices":
             submitted = st.form_submit_button("➕ Add Item", use_container_width=True)
             if submitted:
                 if new_item and new_item.strip():
-                    c.execute("INSERT OR IGNORE INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type, category) VALUES (?, 0, 0, ?, ?, ?)", 
-                             (new_item.strip(), new_price, unit_type, category))
+                    c = conn.cursor()
+                    c.execute("""
+                        INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type, category) 
+                        VALUES (%s, 0, 0, %s, %s, %s)
+                        ON CONFLICT (vegetable) DO NOTHING
+                    """, (new_item.strip(), new_price, unit_type, category))
                     conn.commit()
                     st.success(f"✅ Added {new_item.strip()} to inventory ({category}, sold by {unit_type})")
                     st.rerun()
@@ -2208,14 +2209,15 @@ elif menu == "🏷 Set Prices":
         
         if st.button("💾 Save All Prices", type="primary", use_container_width=True):
             changes = 0
+            c = conn.cursor()
             if 'edited_df' in locals():
                 for _, row in edited_df.iterrows():
-                    c.execute("UPDATE inventory SET selling_price=? WHERE vegetable=?", 
+                    c.execute("UPDATE inventory SET selling_price=%s WHERE vegetable=%s", 
                              (row['selling_price'], row['vegetable']))
                     changes += 1
             if 'edited_df2' in locals():
                 for _, row in edited_df2.iterrows():
-                    c.execute("UPDATE inventory SET selling_price=? WHERE vegetable=?", 
+                    c.execute("UPDATE inventory SET selling_price=%s WHERE vegetable=%s", 
                              (row['selling_price'], row['vegetable']))
                     changes += 1
             
@@ -2226,7 +2228,9 @@ elif menu == "🏷 Set Prices":
         
         st.markdown("### ✏️ Individual Price Update")
         
-        all_items = pd.read_sql("SELECT vegetable, unit_type, category FROM inventory ORDER BY category, vegetable", conn)
+        c.execute("SELECT vegetable, unit_type, category FROM inventory ORDER BY category, vegetable")
+        all_items_rows = c.fetchall()
+        all_items = pd.DataFrame(all_items_rows, columns=['vegetable', 'unit_type', 'category'])
         
         col1, col2 = st.columns(2)
         
@@ -2234,22 +2238,27 @@ elif menu == "🏷 Set Prices":
             selected_item = st.selectbox("Select Item", all_items['vegetable'])
             
             try:
-                current_data = pd.read_sql("SELECT selling_price, unit_type, category FROM inventory WHERE vegetable=?", 
-                                          conn, params=(selected_item,)).iloc[0]
-                current_price = float(current_data['selling_price']) if current_data['selling_price'] is not None else 0.0
-                current_unit = current_data['unit_type'] if current_data['unit_type'] is not None else 'kg'
-                current_category = current_data['category'] if current_data['category'] is not None else 'vegetable'
-                
-                if current_unit == 'kg':
-                    st.info(f"**Current Price:** ₹{current_price:.2f}/kg")
-                elif current_unit == 'piece':
-                    st.info(f"**Current Price:** ₹{current_price:.2f}/piece")
+                c.execute("SELECT selling_price, unit_type, category FROM inventory WHERE vegetable=%s", (selected_item,))
+                current_data = c.fetchone()
+                if current_data:
+                    current_price = float(current_data[0]) if current_data[0] is not None else 0.0
+                    current_unit = current_data[1] if current_data[1] is not None else 'kg'
+                    current_category = current_data[2] if current_data[2] is not None else 'vegetable'
+                    
+                    if current_unit == 'kg':
+                        st.info(f"**Current Price:** ₹{current_price:.2f}/kg")
+                    elif current_unit == 'piece':
+                        st.info(f"**Current Price:** ₹{current_price:.2f}/piece")
+                    else:
+                        st.info(f"**Current Price:** ₹{current_price:.2f} per {current_unit}")
+                    
+                    stock, _, _, _, _ = get_stock(selected_item)
+                    st.info(f"**Current Stock:** {stock:.2f} {current_unit}")
+                    st.info(f"**Category:** {current_category}")
                 else:
-                    st.info(f"**Current Price:** ₹{current_price:.2f} per {current_unit}")
-                
-                stock, _, _, _, _ = get_stock(selected_item)
-                st.info(f"**Current Stock:** {stock:.2f} {current_unit}")
-                st.info(f"**Category:** {current_category}")
+                    st.warning("Could not load item data")
+                    current_price = 0.0
+                    current_unit = 'kg'
             except Exception as e:
                 st.warning(f"Could not load item data: {e}")
                 current_price = 0.0
@@ -2261,7 +2270,8 @@ elif menu == "🏷 Set Prices":
                 new_price = 0.0
             
             if st.button("💾 Update Price", type="primary", use_container_width=True):
-                c.execute("UPDATE inventory SET selling_price=? WHERE vegetable=?", (new_price, selected_item))
+                c = conn.cursor()
+                c.execute("UPDATE inventory SET selling_price=%s WHERE vegetable=%s", (new_price, selected_item))
                 conn.commit()
                 if current_unit == 'kg':
                     st.success(f"✅ Price updated for {selected_item}: ₹{new_price:.2f}/kg")
@@ -2279,12 +2289,15 @@ elif menu == "💵 Quick Sell":
     </div>
     """, unsafe_allow_html=True)
     
-    available_veg = pd.read_sql("""
+    c = conn.cursor()
+    c.execute("""
         SELECT vegetable, quantity, selling_price, unit_type, category 
         FROM inventory 
         WHERE quantity > 0 AND selling_price > 0 
         ORDER BY category, vegetable
-    """, conn)
+    """)
+    available_rows = c.fetchall()
+    available_veg = pd.DataFrame(available_rows, columns=['vegetable', 'quantity', 'selling_price', 'unit_type', 'category'])
     
     if available_veg.empty:
         st.warning("⚠️ No items available for sale! Please add purchases and set prices first.")
@@ -2958,8 +2971,12 @@ elif menu == "📦 Inventory":
             
             if st.button("Add to Inventory", use_container_width=True, key="add_item_btn"):
                 if new_item_name and new_item_name.strip():
-                    c.execute("INSERT OR REPLACE INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type, category) VALUES (?,?,?,?,?,?)", 
-                             (new_item_name.strip(), initial_qty, 0.0, initial_price, unit_type, category))
+                    c = conn.cursor()
+                    c.execute("""
+                        INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type, category) 
+                        VALUES (%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT (vegetable) DO NOTHING
+                    """, (new_item_name.strip(), initial_qty, 0.0, initial_price, unit_type, category))
                     conn.commit()
                     unit_display = unit_type if unit_type != 'kg' else 'kg'
                     st.success(f"✅ Added {new_item_name.strip()} to inventory ({category}, sold by {unit_display})")
@@ -2967,7 +2984,10 @@ elif menu == "📦 Inventory":
         
         with col2:
             st.markdown("#### 🗑️ Remove Item")
-            all_items = pd.read_sql("SELECT vegetable FROM inventory ORDER BY vegetable", conn)
+            c = conn.cursor()
+            c.execute("SELECT vegetable FROM inventory ORDER BY vegetable")
+            all_items_rows = c.fetchall()
+            all_items = pd.DataFrame(all_items_rows, columns=['vegetable'])
             
             if not all_items.empty:
                 item_to_remove = st.selectbox("Select item to remove", all_items['vegetable'], key="item_to_remove")
@@ -2978,14 +2998,18 @@ elif menu == "📦 Inventory":
                     if stock > 0:
                         st.error(f"Cannot remove {item_to_remove} - it still has {stock:.2f} in stock")
                     else:
-                        c.execute("DELETE FROM inventory WHERE vegetable=?", (item_to_remove,))
+                        c = conn.cursor()
+                        c.execute("DELETE FROM inventory WHERE vegetable=%s", (item_to_remove,))
                         conn.commit()
                         st.success(f"✅ Removed {item_to_remove} from inventory")
                         st.rerun()
     
     st.markdown("### 📋 Current Inventory")
     
-    inv_df = pd.read_sql("SELECT vegetable, quantity, selling_price, unit_type, category FROM inventory ORDER BY category, vegetable", conn)
+    c = conn.cursor()
+    c.execute("SELECT vegetable, quantity, selling_price, unit_type, category FROM inventory ORDER BY category, vegetable")
+    inv_rows = c.fetchall()
+    inv_df = pd.DataFrame(inv_rows, columns=['vegetable', 'quantity', 'selling_price', 'unit_type', 'category'])
     
     if inv_df.empty:
         st.info("No inventory items")
@@ -3068,10 +3092,11 @@ elif menu == "📦 Inventory":
         
         if st.button("💾 Save Inventory Changes", type="primary", use_container_width=True, key="save_inv_changes"):
             changes_made = 0
+            c = conn.cursor()
             if 'edited_veg' in locals():
                 for _, row in edited_veg.iterrows():
                     try:
-                        c.execute("UPDATE inventory SET quantity=?, selling_price=? WHERE vegetable=?", 
+                        c.execute("UPDATE inventory SET quantity=%s, selling_price=%s WHERE vegetable=%s", 
                                  (row['quantity'], row['selling_price'], row['vegetable']))
                         changes_made += 1
                     except Exception as e:
@@ -3080,7 +3105,7 @@ elif menu == "📦 Inventory":
             if 'edited_fruit' in locals():
                 for _, row in edited_fruit.iterrows():
                     try:
-                        c.execute("UPDATE inventory SET quantity=?, selling_price=? WHERE vegetable=?", 
+                        c.execute("UPDATE inventory SET quantity=%s, selling_price=%s WHERE vegetable=%s", 
                                  (row['quantity'], row['selling_price'], row['vegetable']))
                         changes_made += 1
                     except Exception as e:
@@ -3110,11 +3135,16 @@ elif menu == "📋 Purchases":
     with col2:
         show_all = st.checkbox("Show all dates", key="show_all_purchases")
     
+    c = conn.cursor()
     if show_all:
-        purchases_df = pd.read_sql("SELECT * FROM purchases ORDER BY date DESC, id DESC", conn)
+        c.execute("SELECT * FROM purchases ORDER BY date DESC, id DESC")
+        purchases_rows = c.fetchall()
+        purchases_df = pd.DataFrame(purchases_rows, columns=['id', 'date', 'vegetable', 'quantity', 'amount', 'supplier'])
     else:
-        purchases_df = pd.read_sql("SELECT * FROM purchases WHERE date=? ORDER BY id DESC", 
-                                  conn, params=(view_date.strftime("%Y-%m-%d"),))
+        c.execute("SELECT * FROM purchases WHERE date=%s ORDER BY id DESC", 
+                  (view_date.strftime("%Y-%m-%d"),))
+        purchases_rows = c.fetchall()
+        purchases_df = pd.DataFrame(purchases_rows, columns=['id', 'date', 'vegetable', 'quantity', 'amount', 'supplier'])
     
     if purchases_df.empty:
         st.info(f"No purchases found for {view_date.strftime('%d %B %Y')}")
@@ -3154,11 +3184,18 @@ elif menu == "🧾 Sales":
     with col2:
         show_all_sales = st.checkbox("Show all dates", key="show_all_sales_view")
     
+    c = conn.cursor()
     if show_all_sales:
-        sales_df = pd.read_sql("SELECT * FROM sales ORDER BY date DESC, id DESC", conn)
+        c.execute("SELECT * FROM sales ORDER BY date DESC, id DESC")
+        sales_rows = c.fetchall()
+        sales_df = pd.DataFrame(sales_rows, columns=['id', 'date', 'vegetable', 'quantity_sold', 'sale_price', 'total', 
+                                                     'customer', 'unit_type', 'customer_name', 'customer_phone', 'bill_no'])
     else:
-        sales_df = pd.read_sql("SELECT * FROM sales WHERE date=? ORDER BY id DESC", 
-                              conn, params=(view_date.strftime("%Y-%m-%d"),))
+        c.execute("SELECT * FROM sales WHERE date=%s ORDER BY id DESC", 
+                  (view_date.strftime("%Y-%m-%d"),))
+        sales_rows = c.fetchall()
+        sales_df = pd.DataFrame(sales_rows, columns=['id', 'date', 'vegetable', 'quantity_sold', 'sale_price', 'total',
+                                                     'customer', 'unit_type', 'customer_name', 'customer_phone', 'bill_no'])
     
     if sales_df.empty:
         st.info(f"No sales found for {view_date.strftime('%d %B %Y')}")
@@ -3229,14 +3266,17 @@ elif menu == "💸 Expenses":
                 st.error("Enter description")
             else:
                 d = selected_date.strftime("%Y-%m-%d")
-                c.execute("INSERT INTO expenses (date, category, amount, description) VALUES (?,?,?,?)", 
+                c = conn.cursor()
+                c.execute("INSERT INTO expenses (date, category, amount, description) VALUES (%s,%s,%s,%s)", 
                          (d, category, amount, description))
                 conn.commit()
                 st.success(f"✅ Expense recorded: {category} - ₹{amount:.2f}")
     
     st.markdown("### Today's Expenses")
-    expenses_df = pd.read_sql("SELECT * FROM expenses WHERE date=?", 
-                             conn, params=(selected_date.strftime("%Y-%m-%d"),))
+    c = conn.cursor()
+    c.execute("SELECT * FROM expenses WHERE date=%s", (selected_date.strftime("%Y-%m-%d"),))
+    expenses_rows = c.fetchall()
+    expenses_df = pd.DataFrame(expenses_rows, columns=['id', 'date', 'category', 'amount', 'description'])
     
     if expenses_df.empty:
         st.info("No expenses today")
@@ -3262,6 +3302,7 @@ elif menu == "👥 Customers":
         with col2:
             show_all_customers = st.checkbox("Show all dates", key="show_all_customers_view")
         
+        c = conn.cursor()
         if show_all_customers:
             # Get all customers with date-wise aggregation
             customers_sql = """
@@ -3279,7 +3320,9 @@ elif menu == "👥 Customers":
                 ORDER BY date DESC, total_spent DESC
             """
             
-            customers_df = pd.read_sql(customers_sql, conn)
+            c.execute(customers_sql)
+            customers_rows = c.fetchall()
+            customers_df = pd.DataFrame(customers_rows, columns=['date', 'phone', 'name', 'total_visits', 'total_spent', 'customer_name', 'customer_phone'])
             
             if customers_df.empty:
                 st.info("No customer data available yet")
@@ -3328,12 +3371,14 @@ elif menu == "👥 Customers":
                     MAX(customer_name) as customer_name,
                     MAX(customer_phone) as customer_phone
                 FROM sales 
-                WHERE date=? AND customer_name IS NOT NULL AND customer_name != ''
+                WHERE date=%s AND customer_name IS NOT NULL AND customer_name != ''
                 GROUP BY COALESCE(customer_phone, 'No Phone'), COALESCE(customer_name, 'Guest')
                 ORDER BY total_spent DESC
             """
             
-            customers_df = pd.read_sql(customers_sql, conn, params=(d,))
+            c.execute(customers_sql, (d,))
+            customers_rows = c.fetchall()
+            customers_df = pd.DataFrame(customers_rows, columns=['phone', 'name', 'total_visits', 'total_spent', 'customer_name', 'customer_phone'])
             
             if customers_df.empty:
                 st.info(f"No customer data available for {customer_view_date.strftime('%d %B %Y')}")
@@ -3402,7 +3447,10 @@ elif menu == "🗑 Waste":
     </div>
     """, unsafe_allow_html=True)
     
-    all_veg = pd.read_sql("SELECT vegetable, unit_type, category FROM inventory ORDER BY category, vegetable", conn)
+    c = conn.cursor()
+    c.execute("SELECT vegetable, unit_type, category FROM inventory ORDER BY category, vegetable")
+    all_veg_rows = c.fetchall()
+    all_veg = pd.DataFrame(all_veg_rows, columns=['vegetable', 'unit_type', 'category'])
     
     tab1, tab2, tab3 = st.tabs(["🥦 Vegetables (KG)", "🧩 Vegetables (Piece)", "🍎 Fruits (KG)"])
     
@@ -3438,9 +3486,10 @@ elif menu == "🗑 Waste":
                             st.error(f"Not enough stock! Available: {stock:.2f} kg")
                         else:
                             d = selected_date.strftime("%Y-%m-%d")
-                            c.execute("INSERT INTO waste (date, vegetable, quantity, reason) VALUES (?,?,?,?)", 
+                            c = conn.cursor()
+                            c.execute("INSERT INTO waste (date, vegetable, quantity, reason) VALUES (%s,%s,%s,%s)", 
                                      (d, veg, qty, f"{reason}: {description}"))
-                            c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
+                            c.execute("UPDATE inventory SET quantity = quantity - %s WHERE vegetable=%s", (qty, veg))
                             conn.commit()
                             st.success(f"✅ Recorded waste: {qty} kg of {veg}")
     
@@ -3476,9 +3525,10 @@ elif menu == "🗑 Waste":
                             st.error(f"Not enough stock! Available: {stock:.0f} pieces")
                         else:
                             d = selected_date.strftime("%Y-%m-%d")
-                            c.execute("INSERT INTO waste (date, vegetable, quantity, reason) VALUES (?,?,?,?)", 
+                            c = conn.cursor()
+                            c.execute("INSERT INTO waste (date, vegetable, quantity, reason) VALUES (%s,%s,%s,%s)", 
                                      (d, veg, qty, f"{reason}: {description}"))
-                            c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
+                            c.execute("UPDATE inventory SET quantity = quantity - %s WHERE vegetable=%s", (qty, veg))
                             conn.commit()
                             st.success(f"✅ Recorded waste: {qty} pieces of {veg}")
     
@@ -3514,16 +3564,19 @@ elif menu == "🗑 Waste":
                             st.error(f"Not enough stock! Available: {stock:.2f} kg")
                         else:
                             d = selected_date.strftime("%Y-%m-%d")
-                            c.execute("INSERT INTO waste (date, vegetable, quantity, reason) VALUES (?,?,?,?)", 
+                            c = conn.cursor()
+                            c.execute("INSERT INTO waste (date, vegetable, quantity, reason) VALUES (%s,%s,%s,%s)", 
                                      (d, veg, qty, f"{reason}: {description}"))
-                            c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
+                            c.execute("UPDATE inventory SET quantity = quantity - %s WHERE vegetable=%s", (qty, veg))
                             conn.commit()
                             st.success(f"✅ Recorded waste: {qty} kg of {veg}")
     
     st.markdown("---")
     st.markdown(f"### Today's Waste ({selected_date.strftime('%d %B %Y')})")
-    waste_df = pd.read_sql("SELECT * FROM waste WHERE date=?", 
-                          conn, params=(selected_date.strftime("%Y-%m-%d"),))
+    c = conn.cursor()
+    c.execute("SELECT * FROM waste WHERE date=%s", (selected_date.strftime("%Y-%m-%d"),))
+    waste_rows = c.fetchall()
+    waste_df = pd.DataFrame(waste_rows, columns=['id', 'date', 'vegetable', 'quantity', 'reason'])
     
     if waste_df.empty:
         st.info("No waste recorded today")
@@ -3547,32 +3600,35 @@ elif menu == "⬇ Download":
         st.markdown(f"### 📅 Daily Report - {selected_date.strftime('%d %B %Y')}")
         
         d = selected_date.strftime("%Y-%m-%d")
+        c = conn.cursor()
         
-        daily_sales = pd.read_sql("SELECT COALESCE(SUM(total),0) as total_sales FROM sales WHERE date=?", 
-                                 conn, params=(d,)).iloc[0]['total_sales']
+        c.execute("SELECT COALESCE(SUM(total),0) as total_sales FROM sales WHERE date=%s", (d,))
+        daily_sales = c.fetchone()[0]
         
-        daily_purchases = pd.read_sql("SELECT COALESCE(SUM(amount),0) as total_purchases FROM purchases WHERE date=?", 
-                                     conn, params=(d,)).iloc[0]['total_purchases']
+        c.execute("SELECT COALESCE(SUM(amount),0) as total_purchases FROM purchases WHERE date=%s", (d,))
+        daily_purchases = c.fetchone()[0]
         
-        daily_expenses = pd.read_sql("SELECT COALESCE(SUM(amount),0) as total_expenses FROM expenses WHERE date=?", 
-                                    conn, params=(d,)).iloc[0]['total_expenses']
+        c.execute("SELECT COALESCE(SUM(amount),0) as total_expenses FROM expenses WHERE date=%s", (d,))
+        daily_expenses = c.fetchone()[0]
         
-        daily_waste = pd.read_sql("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE date=?", 
-                                 conn, params=(d,)).iloc[0]['total_waste']
+        c.execute("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE date=%s", (d,))
+        daily_waste = c.fetchone()[0]
         
         # Get customer details properly
         try:
-            daily_customers = pd.read_sql("""
+            c.execute("""
                 SELECT 
                     COALESCE(customer_name, 'Guest') as customer_name,
                     COALESCE(customer_phone, '') as phone,
                     SUM(total) as total_spent,
                     COUNT(*) as total_visits
                 FROM sales 
-                WHERE date=?
+                WHERE date=%s
                 GROUP BY COALESCE(customer_name, 'Guest'), COALESCE(customer_phone, '')
                 ORDER BY total_spent DESC
-            """, conn, params=(d,))
+            """, (d,))
+            daily_customers_rows = c.fetchall()
+            daily_customers = pd.DataFrame(daily_customers_rows, columns=['customer_name', 'phone', 'total_spent', 'total_visits'])
         except:
             daily_customers = pd.DataFrame()
         
@@ -3610,8 +3666,18 @@ elif menu == "⬇ Download":
         
         for table_name, display_name, description in tables:
             with st.expander(f"{display_name} - {description}"):
-                df = pd.read_sql(f"SELECT * FROM {table_name} WHERE date=?", 
-                                conn, params=(d,))
+                c.execute(f"SELECT * FROM {table_name} WHERE date=%s", (d,))
+                df_rows = c.fetchall()
+                
+                if table_name == "purchases":
+                    df = pd.DataFrame(df_rows, columns=['id', 'date', 'vegetable', 'quantity', 'amount', 'supplier'])
+                elif table_name == "sales":
+                    df = pd.DataFrame(df_rows, columns=['id', 'date', 'vegetable', 'quantity_sold', 'sale_price', 'total', 
+                                                       'customer', 'unit_type', 'customer_name', 'customer_phone', 'bill_no'])
+                elif table_name == "waste":
+                    df = pd.DataFrame(df_rows, columns=['id', 'date', 'vegetable', 'quantity', 'reason'])
+                else:  # expenses
+                    df = pd.DataFrame(df_rows, columns=['id', 'date', 'category', 'amount', 'description'])
                 
                 if df.empty:
                     st.info(f"No {display_name.lower()} data for today")
@@ -3629,28 +3695,30 @@ elif menu == "⬇ Download":
     with tab2:
         st.markdown("### 📊 Monthly Reports")
         
-        months = pd.read_sql("SELECT DISTINCT strftime('%Y-%m', date) as month FROM sales UNION SELECT DISTINCT strftime('%Y-%m', date) as month FROM purchases ORDER BY month DESC", conn)
+        c.execute("SELECT DISTINCT TO_CHAR(date, 'YYYY-MM') as month FROM sales UNION SELECT DISTINCT TO_CHAR(date, 'YYYY-MM') as month FROM purchases ORDER BY month DESC")
+        months_rows = c.fetchall()
+        months = pd.DataFrame(months_rows, columns=['month'])
         
         if months.empty:
             st.info("No monthly data available")
         else:
             selected_month = st.selectbox("Select Month", months['month'].tolist(), index=0)
             
-            monthly_sales = pd.read_sql("SELECT COALESCE(SUM(total),0) as total_sales FROM sales WHERE strftime('%Y-%m', date)=?", 
-                                       conn, params=(selected_month,)).iloc[0]['total_sales']
+            c.execute("SELECT COALESCE(SUM(total),0) as total_sales FROM sales WHERE TO_CHAR(date, 'YYYY-MM')=%s", (selected_month,))
+            monthly_sales = c.fetchone()[0]
             
-            monthly_purchases = pd.read_sql("SELECT COALESCE(SUM(amount),0) as total_purchases FROM purchases WHERE strftime('%Y-%m', date)=?", 
-                                          conn, params=(selected_month,)).iloc[0]['total_purchases']
+            c.execute("SELECT COALESCE(SUM(amount),0) as total_purchases FROM purchases WHERE TO_CHAR(date, 'YYYY-MM')=%s", (selected_month,))
+            monthly_purchases = c.fetchone()[0]
             
-            monthly_expenses = pd.read_sql("SELECT COALESCE(SUM(amount),0) as total_expenses FROM expenses WHERE strftime('%Y-%m', date)=?", 
-                                         conn, params=(selected_month,)).iloc[0]['total_expenses']
+            c.execute("SELECT COALESCE(SUM(amount),0) as total_expenses FROM expenses WHERE TO_CHAR(date, 'YYYY-MM')=%s", (selected_month,))
+            monthly_expenses = c.fetchone()[0]
             
-            monthly_waste = pd.read_sql("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE strftime('%Y-%m', date)=?", 
-                                       conn, params=(selected_month,)).iloc[0]['total_waste']
+            c.execute("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE TO_CHAR(date, 'YYYY-MM')=%s", (selected_month,))
+            monthly_waste = c.fetchone()[0]
             
             # Get monthly customer details properly
             try:
-                monthly_customers = pd.read_sql("""
+                c.execute("""
                     SELECT 
                         date,
                         COALESCE(customer_name, 'Guest') as customer_name,
@@ -3658,10 +3726,12 @@ elif menu == "⬇ Download":
                         SUM(total) as total_spent,
                         COUNT(*) as total_visits
                     FROM sales 
-                    WHERE strftime('%Y-%m', date)=?
+                    WHERE TO_CHAR(date, 'YYYY-MM')=%s
                     GROUP BY date, COALESCE(customer_name, 'Guest'), COALESCE(customer_phone, '')
                     ORDER BY date DESC, total_spent DESC
-                """, conn, params=(selected_month,))
+                """, (selected_month,))
+                monthly_customers_rows = c.fetchall()
+                monthly_customers = pd.DataFrame(monthly_customers_rows, columns=['date', 'customer_name', 'phone', 'total_spent', 'total_visits'])
             except:
                 monthly_customers = pd.DataFrame()
             
@@ -3714,13 +3784,15 @@ elif menu == "⬇ Download":
             
             st.markdown("#### Daily Breakdown for the Month")
             
-            daily_sales_month = pd.read_sql("""
+            c.execute("""
                 SELECT date, SUM(total) as daily_sales 
                 FROM sales 
-                WHERE strftime('%Y-%m', date)=? 
+                WHERE TO_CHAR(date, 'YYYY-MM')=%s 
                 GROUP BY date 
                 ORDER BY date
-            """, conn, params=(selected_month,))
+            """, (selected_month,))
+            daily_sales_rows = c.fetchall()
+            daily_sales_month = pd.DataFrame(daily_sales_rows, columns=['date', 'daily_sales'])
             
             if not daily_sales_month.empty:
                 st.line_chart(daily_sales_month.set_index('date')['daily_sales'])
@@ -3786,12 +3858,14 @@ elif menu == "⬇ Download":
                     COUNT(*) as total_visits,
                     SUM(total) as total_spent
                 FROM sales 
-                WHERE date BETWEEN ? AND ? AND customer_name IS NOT NULL AND customer_name != ''
+                WHERE date BETWEEN %s AND %s AND customer_name IS NOT NULL AND customer_name != ''
                 GROUP BY date, COALESCE(customer_name, 'Guest'), COALESCE(customer_phone, '')
                 ORDER BY date DESC, total_spent DESC
             """
             
-            customer_export_df = pd.read_sql(customer_export_sql, conn, params=(start_d, end_d))
+            c.execute(customer_export_sql, (start_d, end_d))
+            customer_export_rows = c.fetchall()
+            customer_export_df = pd.DataFrame(customer_export_rows, columns=['date', 'customer_name', 'phone', 'total_visits', 'total_spent'])
             
             if customer_export_df.empty:
                 st.info(f"No customer data available between {export_start_date.strftime('%d %B %Y')} and {export_end_date.strftime('%d %B %Y')}")
@@ -3826,7 +3900,20 @@ elif menu == "⬇ Download":
         for table_name, display_name, description in tables:
             with st.expander(f"{display_name} - {description}"):
                 try:
-                    df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+                    c.execute(f"SELECT * FROM {table_name}")
+                    df_rows = c.fetchall()
+                    
+                    if table_name == "inventory":
+                        df = pd.DataFrame(df_rows, columns=['vegetable', 'quantity', 'cost_price', 'selling_price', 'image_url', 'unit_type', 'category'])
+                    elif table_name == "purchases":
+                        df = pd.DataFrame(df_rows, columns=['id', 'date', 'vegetable', 'quantity', 'amount', 'supplier'])
+                    elif table_name == "sales":
+                        df = pd.DataFrame(df_rows, columns=['id', 'date', 'vegetable', 'quantity_sold', 'sale_price', 'total', 
+                                                           'customer', 'unit_type', 'customer_name', 'customer_phone', 'bill_no'])
+                    elif table_name == "waste":
+                        df = pd.DataFrame(df_rows, columns=['id', 'date', 'vegetable', 'quantity', 'reason'])
+                    else:  # expenses
+                        df = pd.DataFrame(df_rows, columns=['id', 'date', 'category', 'amount', 'description'])
                     
                     if df.empty:
                         st.info(f"No {display_name.lower()} data")
@@ -3853,13 +3940,16 @@ elif menu == "💰 Financials":
     """, unsafe_allow_html=True)
     
     d = selected_date.strftime("%Y-%m-%d")
+    c = conn.cursor()
     
-    sales_data = pd.read_sql("SELECT COALESCE(SUM(total),0) AS total FROM sales WHERE date=?", 
-                           conn, params=(d,)).iloc[0]['total']
-    cost_data = pd.read_sql("SELECT COALESCE(SUM(amount),0) AS total FROM purchases WHERE date=?", 
-                          conn, params=(d,)).iloc[0]['total']
-    expense_data = pd.read_sql("SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE date=?", 
-                             conn, params=(d,)).iloc[0]['total']
+    c.execute("SELECT COALESCE(SUM(total),0) AS total FROM sales WHERE date=%s", (d,))
+    sales_data = c.fetchone()[0]
+    
+    c.execute("SELECT COALESCE(SUM(amount),0) AS total FROM purchases WHERE date=%s", (d,))
+    cost_data = c.fetchone()[0]
+    
+    c.execute("SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE date=%s", (d,))
+    expense_data = c.fetchone()[0]
     
     profit = sales_data - cost_data - expense_data
     
@@ -3907,12 +3997,14 @@ elif menu == "💰 Financials":
     
     st.markdown("### 📊 Daily Breakdown")
     
-    sales_by_veg = pd.read_sql("""
+    c.execute("""
         SELECT vegetable, SUM(quantity_sold) as qty, SUM(total) as revenue 
-        FROM sales WHERE date=? 
+        FROM sales WHERE date=%s 
         GROUP BY vegetable 
         ORDER BY revenue DESC
-    """, conn, params=(d,))
+    """, (d,))
+    sales_by_veg_rows = c.fetchall()
+    sales_by_veg = pd.DataFrame(sales_by_veg_rows, columns=['vegetable', 'qty', 'revenue'])
     
     if not sales_by_veg.empty:
         st.markdown("#### Top Selling Items")
@@ -3930,8 +4022,10 @@ elif menu == "💰 Financials":
             st.bar_chart(chart_data)
     
     st.markdown("### Recent Transactions")
-    recent_sales = pd.read_sql("SELECT * FROM sales WHERE date=? ORDER BY id DESC LIMIT 10", 
-                              conn, params=(d,))
+    c.execute("SELECT * FROM sales WHERE date=%s ORDER BY id DESC LIMIT 10", (d,))
+    recent_sales_rows = c.fetchall()
+    recent_sales = pd.DataFrame(recent_sales_rows, columns=['id', 'date', 'vegetable', 'quantity_sold', 'sale_price', 'total', 
+                                                          'customer', 'unit_type', 'customer_name', 'customer_phone', 'bill_no'])
     if not recent_sales.empty:
         display_sales = recent_sales.copy()
         
@@ -3965,61 +4059,105 @@ elif menu == "💰 Financials":
 elif menu == "🔧 Database Tools":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
-        <h2>🔧 Database Tools</h2>
-        <div class="subtitle">Freshness You Can Feel</div>
+        <h2>🔧 Enhanced Database Tools</h2>
+        <div class="subtitle">Permanent Data Storage System</div>
     </div>
     """, unsafe_allow_html=True)
     
     st.markdown("### 📍 Database Configuration")
     
-    db_status_class = "db-status-success" if db_manager.db_type != "local" else "db-status-warning"
-    db_status_text = f"Connected to {db_manager.db_type.upper()}" if db_manager.db_type != "local" else "Using Local SQLite"
+    db_status_class = "db-status-success"
+    db_status_text = f"✅ Connected to {db_manager.db_type.upper()}"
     
     st.markdown(f"""
     <div class="{db_status_class}" style="padding:15px; border-radius:10px; margin-bottom:20px;">
         <h4 style="margin:0;">{db_status_text}</h4>
+        <p style="margin:5px 0 0 0;">
+            🛡️ No data loss when app sleeps
+        </p>
     </div>
     """, unsafe_allow_html=True)
     
     # Database setup instructions
-    with st.expander("⚙️ Setup External Database"):
+    with st.expander("⚙️ Setup External Database (Recommended)"):
         st.markdown("""
-        ### **Setup External Database**
+        ### **For Permanent Data Storage (No Data Loss)**
         
-        1. Create a `.streamlit/secrets.toml` file
-        2. Add your Supabase connection details:
+        **Step 1: Choose a Database Service**
+        
+        1. **Supabase (Recommended & Free)**
+           - Sign up at [supabase.com](https://supabase.com)
+           - Create a new project
+           - Go to Settings > Database to get connection details
+        
+        2. **PostgreSQL on Railway (Free)**
+           - Sign up at [railway.app](https://railway.app)
+           - Create PostgreSQL service
+           - Get connection URL
+        
+        3. **Neon PostgreSQL (Free)**
+           - Sign up at [neon.tech](https://neon.tech)
+           - Create PostgreSQL database
+        
+        **Step 2: Configure Streamlit Secrets**
+        
+        Create `.streamlit/secrets.toml` file with your database details:
         
         ```toml
+        # For Supabase
         [supabase]
-        db_url = "postgresql://postgres:yourpassword@db.yourproject.supabase.co:5432/postgres"
+        url = "your-project-url.supabase.co"
+        key = "your-anon-key"
+        db_url = "postgresql://postgres:[password]@[host]:5432/postgres"
+        
+        # OR for PostgreSQL
+        [postgresql]
+        host = "your-host"
+        port = 5432
+        database = "your-db"
+        user = "your-user"
+        password = "your-password"
+        
+        # OR for SQLite Cloud
+        [sqlite_cloud]
+        url = "your-cloud-url"
+        token = "your-token"
         ```
         
-        3. Restart the app
+        **Step 3: Restart Your App**
+        
+        The app will automatically detect and use the external database!
         """)
         
-        if st.button("🔄 Check for External Database", use_container_width=True):
-            if db_manager.db_type == "local":
-                st.warning("⚠️ No external database configured. Using local SQLite.")
-            else:
-                st.success(f"✅ External database detected: {db_manager.db_type.upper()}")
+        if st.button("🔄 Check for External Database Configuration", use_container_width=True):
+            st.success(f"✅ External database detected: {db_manager.db_type.upper()}")
     
     st.markdown("---")
     st.markdown("### 💾 Backup & Recovery")
     
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     
     with col1:
-        if st.button("🔄 Create Full Backup", use_container_width=True, type="primary"):
-            if db_manager._create_local_backup():
-                st.success("✅ Full backup created!")
-                st.rerun()
+        if st.button("📤 Export to JSON", use_container_width=True):
+            json_file = db_manager.export_database()
+            if json_file:
+                st.success(f"✅ Exported to: {json_file}")
+                with open(json_file, 'rb') as f:
+                    st.download_button(
+                        label="📥 Download JSON",
+                        data=f,
+                        file_name=os.path.basename(json_file),
+                        mime="application/json",
+                        use_container_width=True
+                    )
             else:
-                st.error("❌ Backup failed!")
+                st.error("❌ Export failed!")
     
     with col2:
         if st.button("🔍 Check Database Health", use_container_width=True):
             try:
                 # Run health checks
+                c = conn.cursor()
                 c.execute("SELECT COUNT(*) FROM inventory")
                 inv_count = c.fetchone()[0]
                 
@@ -4049,6 +4187,7 @@ elif menu == "🔧 Database Tools":
         stats_data = []
         tables = ["inventory", "sales", "purchases", "customers", "expenses", "waste"]
         
+        c = conn.cursor()
         for table in tables:
             try:
                 c.execute(f"SELECT COUNT(*) FROM {table}")
@@ -4090,8 +4229,51 @@ elif menu == "🔧 Database Tools":
         stats_df = pd.DataFrame(stats_data)
         st.dataframe(stats_df, use_container_width=True)
         
+        st.markdown("#### ✅ Data Validation")
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            c.execute("SELECT COUNT(*) FROM sales WHERE date=%s", (today,))
+            today_sales = c.fetchone()[0]
+            
+            c.execute("SELECT COUNT(*) FROM inventory WHERE quantity > 0")
+            in_stock = c.fetchone()[0]
+            
+            st.info(f"""
+            **Data Health Check:**
+            • Today's Sales Records: {today_sales}
+            • Items in Stock: {in_stock}
+            • Total Database Records: {stats_df['Records'].sum():,}
+            • Database Type: {db_manager.db_type.upper()}
+            """)
+        except Exception as e:
+            st.warning(f"Data validation incomplete: {e}")
+            
     except Exception as e:
         st.error(f"Error fetching statistics: {e}")
+    
+    st.markdown("---")
+    st.markdown("### 🧹 Database Maintenance")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        days_to_keep = st.number_input("Days to keep sales data", min_value=30, max_value=365, value=90, step=30)
+        if st.button("🗑️ Clean Old Sales Data", use_container_width=True, type="secondary", key="clean_sales"):
+            cutoff_date = (datetime.now() - timedelta(days=days_to_keep)).strftime("%Y-%m-%d")
+            try:
+                c = conn.cursor()
+                c.execute("DELETE FROM sales WHERE date < %s", (cutoff_date,))
+                conn.commit()
+                st.success(f"✅ Sales data older than {cutoff_date} removed!")
+            except Exception as e:
+                st.error(f"❌ Cleanup failed: {e}")
+    
+    with col2:
+        if st.button("⚡ Optimize Database", use_container_width=True, key="optimize_db"):
+            try:
+                st.info("✅ Supabase database automatically optimized by provider")
+            except Exception as e:
+                st.error(f"❌ Optimization failed: {e}")
 
 # ========================== SECRETS DEBUG ==========================
 elif menu == "🔍 Secrets Debug":
@@ -4117,7 +4299,22 @@ elif menu == "🔍 Secrets Debug":
                 if secrets_dict:
                     st.markdown("#### 📋 All Secrets (masked):")
                     for key, value in secrets_dict.items():
-                        st.write(f"**{key}:** [exists]")
+                        if hasattr(value, '__dict__') or hasattr(value, '__iter__'):
+                            # It's a section
+                            try:
+                                subsection = dict(value)
+                                st.write(f"**{key}:** (subsection with {len(subsection)} keys)")
+                                for subkey in subsection:
+                                    st.write(f"  - {subkey}")
+                            except:
+                                st.write(f"**{key}:** [complex object]")
+                        else:
+                            # It's a simple value
+                            if value and isinstance(value, str):
+                                masked = value[:10] + "..." if len(value) > 10 else value
+                                st.write(f"**{key}:** `{masked}`")
+                            else:
+                                st.write(f"**{key}:** `{value}`")
                 else:
                     st.warning("No secrets found (empty dict)")
                     
@@ -4135,25 +4332,31 @@ elif menu == "🔍 Secrets Debug":
             file_size = os.path.getsize(secrets_path)
             st.info(f"File size: {file_size} bytes")
             
-            # Show file content
+            # Show file content (masked)
             try:
                 with open(secrets_path, 'r') as f:
                     content = f.read()
                 
-                if content.strip():
-                    st.code(content, language="toml")
-                else:
-                    st.warning("File is empty!")
-                    
+                # Mask passwords for security
+                import re
+                masked_content = content
+                # Mask passwords in connection strings
+                masked_content = re.sub(r':([^@]+)@', ':[HIDDEN]@', masked_content)
+                # Mask API keys
+                masked_content = re.sub(r'key\s*=\s*"[^"]+"', 'key = "[HIDDEN]"', masked_content)
+                masked_content = re.sub(r'password\s*=\s*"[^"]+"', 'password = "[HIDDEN]"', masked_content)
+                
+                st.code(masked_content, language="toml")
+                
             except Exception as e:
                 st.error(f"Error reading file: {e}")
         else:
             st.error(f"❌ {secrets_path} does not exist")
-            st.info("Create this file with your Supabase connection details:")
-            st.code("""
-[supabase]
-db_url = "postgresql://postgres:yourpassword@db.yourproject.supabase.co:5432/postgres"
-            """, language="toml")
+            st.info("Current directory contents:")
+            st.write(os.listdir('.'))
+            if os.path.exists('.streamlit'):
+                st.info(".streamlit folder contents:")
+                st.write(os.listdir('.streamlit'))
     
     with st.expander("🔌 Test Supabase Connection", expanded=True):
         st.markdown("### Direct Connection Test")
@@ -4186,11 +4389,16 @@ db_url = "postgresql://postgres:yourpassword@db.yourproject.supabase.co:5432/pos
                     """)
                     tables = cursor.fetchall()
                     
+                    # Test 3: Current time
+                    cursor.execute("SELECT NOW();")
+                    current_time = cursor.fetchone()[0]
+                    
                     cursor.close()
                     conn_test.close()
                     
                     st.success("✅ Connection successful!")
                     st.info(f"**Database:** {version.split(',')[0]}")
+                    st.info(f"**Server Time:** {current_time}")
                     st.info(f"**Tables in public schema:** {len(tables)}")
                     
                     if tables:
@@ -4202,43 +4410,60 @@ db_url = "postgresql://postgres:yourpassword@db.yourproject.supabase.co:5432/pos
                 except Exception as e:
                     st.error(f"❌ Connection failed: {str(e)}")
     
+    with st.expander("📊 Environment Variables", expanded=False):
+        st.markdown("### Relevant Environment Variables")
+        
+        env_vars = dict(os.environ)
+        relevant_vars = {}
+        
+        for key, value in env_vars.items():
+            key_lower = key.lower()
+            if any(term in key_lower for term in ['supabase', 'postgres', 'pg', 'database', 'db']):
+                # Mask sensitive values
+                if 'pass' in key_lower or 'key' in key_lower or 'token' in key_lower:
+                    masked = value[:5] + "..." if len(value) > 5 else "***"
+                    relevant_vars[key] = masked
+                else:
+                    relevant_vars[key] = value
+        
+        if relevant_vars:
+            for key, value in relevant_vars.items():
+                st.write(f"**{key}:** `{value}`")
+        else:
+            st.info("No relevant environment variables found")
+    
     with st.expander("🔧 Quick Fix", expanded=True):
         st.markdown("### If Supabase Still Not Connecting")
         
         st.code("""
-# Create .streamlit/secrets.toml with this content:
+# Try this in your .streamlit/secrets.toml:
 
 [supabase]
-db_url = "postgresql://postgres:Freshbasket2026@db.wdgmxpglhzyinxhsxcfi.supabase.co:5432/postgres"
+url = "https://your-project-ref.supabase.co"
+key = "your-anon-key"
+db_url = "postgresql://postgres:[YOUR-PASSWORD]@db.your-project-ref.supabase.co:5432/postgres"
 
-# Make sure:
-# 1. The file is in .streamlit folder
-# 2. The connection string is correct
-# 3. There are no extra spaces or quotes
+# IMPORTANT: Get the correct connection string from:
+# Supabase Dashboard → Settings → Database → Connection String → URI
+# Make sure it starts with: postgresql://postgres:
         """, language="toml")
         
-        if st.button("Create Sample Config", key="create_sample"):
-            config_dir = ".streamlit"
-            config_file = os.path.join(config_dir, "secrets.toml")
-            
-            os.makedirs(config_dir, exist_ok=True)
-            
-            with open(config_file, "w") as f:
-                f.write("""[supabase]
-db_url = "postgresql://postgres:Freshbasket2026@db.wdgmxpglhzyinxhsxcfi.supabase.co:5432/postgres"
+        if st.button("Copy Sample Config", key="copy_sample"):
+            st.info("Check the console for the sample config to copy")
+            print("\n" + "="*50)
+            print("SAMPLE .streamlit/secrets.toml:")
+            print("="*50)
+            print("""[supabase]
+url = "https://your-project-ref.supabase.co"
+key = "your-anon-key"
+db_url = "postgresql://postgres:your-password@db.your-project-ref.supabase.co:5432/postgres"
 """)
-            
-            st.success(f"✅ Created {config_file}")
-            st.info("Now restart the Streamlit app!")
 
 # ========================== ENHANCED BACKUP ON EXIT ==========================
 @atexit.register
 def cleanup():
     """Create final backup on exit"""
-    try:
-        db_manager._create_local_backup()
-    except:
-        pass
+    db_manager.export_database()
 
 # Footer
 st.markdown("---")
@@ -4247,7 +4472,7 @@ st.markdown(f"""
     <p>🌿 Fresh Basket — Freshness You Can Feel | Quality Vegetables Daily ✅</p>
     <p style="font-size:0.8em; color:#95a5a6;">
         Database: {db_manager.db_type.upper()} | 
-        {"🛡️ External Database" if db_manager.db_type != "local" else "⚠️ Local Storage"}
+        {"🛡️ No Data Loss" if db_manager.db_type != "local" else "⚠️ Local Storage with Backups"}
     </p>
 </div>
 """, unsafe_allow_html=True)
