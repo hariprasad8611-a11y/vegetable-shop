@@ -71,6 +71,34 @@ create_streamlit_config()
 # Try to get database configuration from Streamlit Secrets (for production)
 # If not available, use local SQLite as fallback
 
+# === SUPABASE CONNECTION FUNCTIONS ===
+def get_supabase_connection():
+    try:
+        # Use the connection string from secrets
+        db_url = st.secrets["supabase"]["db_url"]
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        return conn
+    except Exception as e:
+        st.error(f"Database connection error: {e}")
+        return None
+
+def get_connection_direct():
+    try:
+        conn = psycopg2.connect(
+            host="aws-1-ap-south-1.pooler.supabase.com",
+            port=5432,
+            database="postgres",
+            user="postgres.wdgmxpglhzyinxhsxcfi",  # Special username format
+            password="Freshbasket2026",
+            sslmode="require",
+            connect_timeout=10
+        )
+        return conn
+    except Exception as e:
+        st.error(f"Connection error: {e}")
+        return None
+# === END SUPABASE CONNECTION FUNCTIONS ===
+
 class ExternalDatabaseManager:
     """Manage connections to external database services"""
     
@@ -510,10 +538,14 @@ if not db_manager.init_database():
 # Get database connection
 def get_db_connection():
     """Get database connection - wrapper for compatibility"""
-    conn = db_manager.get_connection()
+    # Try the direct connection first (Session Pooler)
+    conn = get_connection_direct()
     if conn is None:
-        st.error("❌ Could not connect to Supabase. Please check your configuration.")
-        st.stop()
+        # Fall back to ExternalDatabaseManager
+        conn = db_manager.get_connection()
+        if conn is None:
+            st.error("❌ Could not connect to Supabase. Please check your configuration.")
+            st.stop()
     return conn
 
 # ========================== INITIALIZE SESSION STATE ==========================
