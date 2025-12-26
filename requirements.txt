@@ -1,2 +1,5 @@
 streamlit
 pandas
+pillow
+pyzbar
+psycopg2-binary
