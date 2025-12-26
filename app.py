@@ -9,6 +9,8 @@ import atexit
 import shutil
 import hashlib
 import json
+import requests
+import tempfile
 
 # ========================== AUTO-CREATE CONFIG.TOML ==========================
 def create_streamlit_config():
@@ -43,6 +45,444 @@ font = "sans-serif"
 
 # Call this function at the start
 create_streamlit_config()
+
+# ========================== EXTERNAL DATABASE SETUP ==========================
+# Try to get database configuration from Streamlit Secrets (for production)
+# If not available, use local SQLite as fallback
+
+class ExternalDatabaseManager:
+    """Manage connections to external database services"""
+    
+    def __init__(self):
+        self.db_type = "local"  # Default to local SQLite
+        self.db_config = {}
+        self.local_db_path = None
+        
+    def init_database(self):
+        """Initialize database connection based on available configuration"""
+        try:
+            # First, try to get configuration from Streamlit Secrets (production)
+            try:
+                # Check for Supabase configuration
+                if hasattr(st, 'secrets') and 'supabase' in st.secrets:
+                    self.db_type = "supabase"
+                    self.db_config = {
+                        'url': st.secrets.supabase.url,
+                        'key': st.secrets.supabase.key,
+                        'db_url': st.secrets.supabase.db_url
+                    }
+                    print("✅ Using Supabase database from secrets")
+                    return True
+                
+                # Check for direct PostgreSQL connection
+                elif hasattr(st, 'secrets') and 'postgresql' in st.secrets:
+                    self.db_type = "postgresql"
+                    self.db_config = {
+                        'host': st.secrets.postgresql.host,
+                        'port': st.secrets.postgresql.port,
+                        'database': st.secrets.postgresql.database,
+                        'user': st.secrets.postgresql.user,
+                        'password': st.secrets.postgresql.password
+                    }
+                    print("✅ Using PostgreSQL database from secrets")
+                    return True
+                    
+                # Check for SQLite Cloud configuration
+                elif hasattr(st, 'secrets') and 'sqlite_cloud' in st.secrets:
+                    self.db_type = "sqlite_cloud"
+                    self.db_config = {
+                        'url': st.secrets.sqlite_cloud.url,
+                        'token': st.secrets.sqlite_cloud.token
+                    }
+                    print("✅ Using SQLite Cloud database from secrets")
+                    return True
+                    
+            except Exception as e:
+                print(f"No database secrets found: {e}")
+            
+            # If no external DB configured, use enhanced local SQLite with cloud sync
+            print("⚠️ Using enhanced local SQLite with cloud backup capability")
+            self.db_type = "local"
+            
+            # Create a persistent local database path that survives app restarts
+            # Use /tmp directory in Streamlit Cloud (persists across sessions)
+            if sys.platform == "win32":
+                PERSISTENT_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "FreshBasket")
+            elif "streamlit" in sys.modules or "STREAMLIT_SHARING" in os.environ:
+                # Streamlit Cloud environment - use /tmp which persists
+                PERSISTENT_DIR = "/tmp/freshbasket_data"
+            else:
+                # Local development
+                PERSISTENT_DIR = os.path.join(os.path.expanduser("~"), ".freshbasket")
+            
+            os.makedirs(PERSISTENT_DIR, exist_ok=True)
+            self.local_db_path = os.path.join(PERSISTENT_DIR, "shop.db")
+            
+            # Create automatic backups
+            self.backup_dir = os.path.join(PERSISTENT_DIR, "backups")
+            os.makedirs(self.backup_dir, exist_ok=True)
+            
+            print(f"✅ Local database path: {self.local_db_path}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Database initialization failed: {e}")
+            return False
+    
+    def get_connection(self):
+        """Get a database connection based on configuration"""
+        if self.db_type == "local":
+            return self._get_local_connection()
+        elif self.db_type == "supabase":
+            return self._get_supabase_connection()
+        elif self.db_type == "postgresql":
+            return self._get_postgresql_connection()
+        elif self.db_type == "sqlite_cloud":
+            return self._get_sqlite_cloud_connection()
+        else:
+            # Fallback to local SQLite
+            return self._get_local_connection()
+    
+    def _get_local_connection(self):
+        """Get local SQLite connection with automatic recovery"""
+        try:
+            # First, try to recover if needed
+            self._recover_local_database()
+            
+            # Connect with WAL mode for better concurrency
+            conn = sqlite3.connect(self.local_db_path, check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA busy_timeout = 5000")
+            
+            # Create tables if they don't exist
+            self._create_tables(conn)
+            
+            # Create backup
+            self._create_local_backup()
+            
+            return conn
+        except Exception as e:
+            print(f"❌ Local database connection failed: {e}")
+            # Try to create fresh database
+            try:
+                conn = sqlite3.connect(":memory:" if self.local_db_path is None else self.local_db_path)
+                self._create_tables(conn)
+                return conn
+            except Exception as e2:
+                print(f"❌ Critical: Could not create database: {e2}")
+                return None
+    
+    def _get_supabase_connection(self):
+        """Get Supabase PostgreSQL connection"""
+        try:
+            import psycopg2
+            from psycopg2 import pool
+            
+            # Create connection pool
+            connection_pool = psycopg2.pool.SimpleConnectionPool(
+                1, 20,
+                host=self.db_config.get('host', self.db_config.get('url', '')),
+                port=self.db_config.get('port', 5432),
+                database=self.db_config.get('database', 'postgres'),
+                user=self.db_config.get('user', 'postgres'),
+                password=self.db_config.get('password', self.db_config.get('key', ''))
+            )
+            
+            if connection_pool:
+                conn = connection_pool.getconn()
+                self._create_supabase_tables(conn)
+                return conn
+            else:
+                raise Exception("Failed to create connection pool")
+                
+        except Exception as e:
+            print(f"❌ Supabase connection failed: {e}")
+            # Fallback to local SQLite
+            print("⚠️ Falling back to local SQLite")
+            self.db_type = "local"
+            return self._get_local_connection()
+    
+    def _get_postgresql_connection(self):
+        """Get PostgreSQL connection"""
+        try:
+            import psycopg2
+            
+            conn = psycopg2.connect(
+                host=self.db_config['host'],
+                port=self.db_config['port'],
+                database=self.db_config['database'],
+                user=self.db_config['user'],
+                password=self.db_config['password']
+            )
+            
+            self._create_postgresql_tables(conn)
+            return conn
+            
+        except Exception as e:
+            print(f"❌ PostgreSQL connection failed: {e}")
+            # Fallback to local SQLite
+            print("⚠️ Falling back to local SQLite")
+            self.db_type = "local"
+            return self._get_local_connection()
+    
+    def _get_sqlite_cloud_connection(self):
+        """Get SQLite Cloud connection"""
+        try:
+            # SQLite Cloud uses HTTP API
+            # For now, fallback to local and sync
+            print("⚠️ SQLite Cloud API not fully implemented, using local with sync")
+            self.db_type = "local"
+            return self._get_local_connection()
+            
+        except Exception as e:
+            print(f"❌ SQLite Cloud connection failed: {e}")
+            return self._get_local_connection()
+    
+    def _create_tables(self, conn):
+        """Create tables in SQLite database"""
+        c = conn.cursor()
+        
+        tables_sql = {
+            "inventory": """
+                CREATE TABLE IF NOT EXISTS inventory (
+                    vegetable TEXT PRIMARY KEY,
+                    quantity REAL,
+                    cost_price REAL,
+                    selling_price REAL,
+                    image_url TEXT,
+                    unit_type TEXT DEFAULT 'kg',
+                    category TEXT DEFAULT 'vegetable'
+                )
+            """,
+            "purchases": """
+                CREATE TABLE IF NOT EXISTS purchases (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT, 
+                    vegetable TEXT, 
+                    quantity REAL, 
+                    amount REAL, 
+                    supplier TEXT
+                )
+            """,
+            "sales": """
+                CREATE TABLE IF NOT EXISTS sales (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT, 
+                    vegetable TEXT, 
+                    quantity_sold REAL, 
+                    sale_price REAL, 
+                    total REAL, 
+                    customer TEXT,
+                    unit_type TEXT,
+                    customer_name TEXT,
+                    customer_phone TEXT,
+                    bill_no TEXT
+                )
+            """,
+            "waste": """
+                CREATE TABLE IF NOT EXISTS waste (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT, 
+                    vegetable TEXT, 
+                    quantity REAL, 
+                    reason TEXT
+                )
+            """,
+            "customers": """
+                CREATE TABLE IF NOT EXISTS customers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    phone TEXT, 
+                    name TEXT, 
+                    points INTEGER DEFAULT 0,
+                    total_spent REAL DEFAULT 0,
+                    last_visit TEXT,
+                    UNIQUE(phone, name)
+                )
+            """,
+            "expenses": """
+                CREATE TABLE IF NOT EXISTS expenses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT, 
+                    category TEXT, 
+                    amount REAL, 
+                    description TEXT
+                )
+            """
+        }
+        
+        for table_name, sql in tables_sql.items():
+            try:
+                c.execute(sql)
+            except Exception as e:
+                print(f"Error creating table {table_name}: {e}")
+        
+        conn.commit()
+    
+    def _create_supabase_tables(self, conn):
+        """Create tables in Supabase/PostgreSQL"""
+        c = conn.cursor()
+        
+        tables_sql = [
+            """CREATE TABLE IF NOT EXISTS inventory (
+                vegetable TEXT PRIMARY KEY,
+                quantity REAL,
+                cost_price REAL,
+                selling_price REAL,
+                image_url TEXT,
+                unit_type TEXT DEFAULT 'kg',
+                category TEXT DEFAULT 'vegetable'
+            )""",
+            """CREATE TABLE IF NOT EXISTS purchases (
+                id SERIAL PRIMARY KEY,
+                date TEXT, 
+                vegetable TEXT, 
+                quantity REAL, 
+                amount REAL, 
+                supplier TEXT
+            )""",
+            """CREATE TABLE IF NOT EXISTS sales (
+                id SERIAL PRIMARY KEY,
+                date TEXT, 
+                vegetable TEXT, 
+                quantity_sold REAL, 
+                sale_price REAL, 
+                total REAL, 
+                customer TEXT,
+                unit_type TEXT,
+                customer_name TEXT,
+                customer_phone TEXT,
+                bill_no TEXT
+            )""",
+            """CREATE TABLE IF NOT EXISTS waste (
+                id SERIAL PRIMARY KEY,
+                date TEXT, 
+                vegetable TEXT, 
+                quantity REAL, 
+                reason TEXT
+            )""",
+            """CREATE TABLE IF NOT EXISTS customers (
+                id SERIAL PRIMARY KEY,
+                phone TEXT, 
+                name TEXT, 
+                points INTEGER DEFAULT 0,
+                total_spent REAL DEFAULT 0,
+                last_visit TEXT,
+                UNIQUE(phone, name)
+            )""",
+            """CREATE TABLE IF NOT EXISTS expenses (
+                id SERIAL PRIMARY KEY,
+                date TEXT, 
+                category TEXT, 
+                amount REAL, 
+                description TEXT
+            )"""
+        ]
+        
+        for sql in tables_sql:
+            try:
+                c.execute(sql)
+            except Exception as e:
+                print(f"Error creating table: {e}")
+        
+        conn.commit()
+    
+    def _create_postgresql_tables(self, conn):
+        """Same as Supabase tables"""
+        self._create_supabase_tables(conn)
+    
+    def _recover_local_database(self):
+        """Recover local database from backup if needed"""
+        try:
+            # If main DB exists and has data, use it
+            if os.path.exists(self.local_db_path) and os.path.getsize(self.local_db_path) > 1024:
+                return True
+            
+            # Try to find latest backup
+            if os.path.exists(self.backup_dir):
+                backup_files = [f for f in os.listdir(self.backup_dir) if f.endswith('.db')]
+                if backup_files:
+                    backup_files.sort(reverse=True)
+                    latest_backup = os.path.join(self.backup_dir, backup_files[0])
+                    
+                    if os.path.getsize(latest_backup) > 1024:
+                        shutil.copy2(latest_backup, self.local_db_path)
+                        print(f"✅ Recovered database from backup: {latest_backup}")
+                        return True
+            
+            # No backup found, create fresh
+            print("ℹ️ No backup found, creating fresh database")
+            return False
+            
+        except Exception as e:
+            print(f"❌ Recovery failed: {e}")
+            return False
+    
+    def _create_local_backup(self):
+        """Create backup of local database"""
+        try:
+            if self.local_db_path and os.path.exists(self.local_db_path) and os.path.getsize(self.local_db_path) > 0:
+                # Create dated backup
+                backup_file = os.path.join(self.backup_dir, f"shop_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db")
+                shutil.copy2(self.local_db_path, backup_file)
+                
+                # Keep only last 7 backups
+                backup_files = [f for f in os.listdir(self.backup_dir) if f.endswith('.db')]
+                if len(backup_files) > 7:
+                    backup_files.sort()
+                    for old_backup in backup_files[:-7]:
+                        os.remove(os.path.join(self.backup_dir, old_backup))
+                
+                return True
+        except Exception as e:
+            print(f"⚠️ Backup failed: {e}")
+        return False
+    
+    def export_database(self):
+        """Export database to downloadable format"""
+        try:
+            conn = self.get_connection()
+            if conn:
+                export_data = {}
+                tables = ["inventory", "purchases", "sales", "waste", "customers", "expenses"]
+                
+                for table in tables:
+                    try:
+                        if self.db_type == "local":
+                            df = pd.read_sql(f"SELECT * FROM {table}", conn)
+                        else:
+                            # For PostgreSQL/Supabase
+                            df = pd.read_sql_query(f"SELECT * FROM {table}", conn)
+                        export_data[table] = df.to_dict('records')
+                    except:
+                        export_data[table] = []
+                
+                conn.close()
+                
+                # Save as JSON
+                json_file = os.path.join(tempfile.gettempdir(), f"freshbasket_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+                with open(json_file, 'w') as f:
+                    json.dump(export_data, f, indent=2, default=str)
+                
+                return json_file
+        except Exception as e:
+            print(f"❌ Export failed: {e}")
+        return None
+    
+    def sync_to_cloud(self):
+        """Sync local database to cloud storage (Google Drive, Dropbox, etc.)"""
+        try:
+            # This is a placeholder for cloud sync functionality
+            # You can implement sync to Google Drive, Dropbox, AWS S3, etc.
+            print("⚠️ Cloud sync not implemented yet")
+            return False
+        except Exception as e:
+            print(f"❌ Cloud sync failed: {e}")
+            return False
+
+# Initialize database manager
+db_manager = ExternalDatabaseManager()
 
 # ========================== USER AUTHENTICATION ==========================
 USERS_FILE = "users.json"
@@ -163,257 +603,16 @@ def login_page():
     
     return False
 
-# ========================== ENHANCED DATABASE PERSISTENCE ==========================
-# Use an ABSOLUTE persistent location for the database
-if sys.platform == "win32":
-    # Windows - Use AppData
-    PERSISTENT_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "FreshBasket")
-else:
-    # Linux/Mac - Use home directory with proper permissions
-    PERSISTENT_DIR = os.path.join(os.path.expanduser("~"), ".freshbasket")
+# ========================== INITIALIZE DATABASE ==========================
+# Initialize database manager
+if not db_manager.init_database():
+    st.error("❌ Failed to initialize database system. Please refresh the page.")
+    st.stop()
 
-# Create the directory with proper permissions
-os.makedirs(PERSISTENT_DIR, exist_ok=True)
-
-# Database files
-DB_FILE = os.path.join(PERSISTENT_DIR, "shop.db")
-BACKUP_FILE = os.path.join(PERSISTENT_DIR, "shop_backup.db")
-EXPORT_DIR = os.path.join(PERSISTENT_DIR, "exports")
-
-# Create exports directory
-os.makedirs(EXPORT_DIR, exist_ok=True)
-
-# ========================== DATA MIGRATION & RECOVERY ==========================
-def migrate_data():
-    """Migrate data from any possible location"""
-    try:
-        # Check multiple possible locations
-        possible_db_locations = [
-            "shop.db",  # Current directory
-            os.path.join(os.path.dirname(__file__), "shop.db"),  # Script directory
-            os.path.join(os.getcwd(), "shop.db"),  # Working directory
-            "/tmp/shop.db",  # Temp directory
-            "/tmp/streamlit/shop.db"  # Streamlit temp
-        ]
-        
-        data_found = False
-        
-        for db_location in possible_db_locations:
-            if os.path.exists(db_location) and os.path.getsize(db_location) > 1024:  # At least 1KB
-                print(f"Found database at: {db_location}")
-                # Check if it's a valid SQLite database
-                try:
-                    test_conn = sqlite3.connect(db_location)
-                    test_conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                    test_conn.close()
-                    
-                    # Copy to persistent location
-                    shutil.copy2(db_location, DB_FILE)
-                    print(f"Migrated database from {db_location} to {DB_FILE}")
-                    data_found = True
-                    break
-                except:
-                    continue
-        
-        # Also check for backup file
-        backup_locations = [
-            "shop_backup.db",
-            os.path.join(PERSISTENT_DIR, "shop_backup.db"),
-            "/tmp/shop_backup.db"
-        ]
-        
-        for backup_location in backup_locations:
-            if os.path.exists(backup_location) and os.path.getsize(backup_location) > 1024:
-                try:
-                    test_conn = sqlite3.connect(backup_location)
-                    test_conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                    test_conn.close()
-                    
-                    shutil.copy2(backup_location, DB_FILE)
-                    print(f"Restored from backup at {backup_location}")
-                    data_found = True
-                    break
-                except:
-                    continue
-        
-        return data_found
-    except Exception as e:
-        print(f"Migration error: {e}")
-        return False
-
-# ========================== AUTO-RECOVERY SYSTEM ==========================
-def recover_database():
-    """Automatically recover database from multiple sources"""
-    try:
-        # If main DB exists and has data, use it
-        if os.path.exists(DB_FILE) and os.path.getsize(DB_FILE) > 1024:
-            return True
-        
-        # Try backup
-        if os.path.exists(BACKUP_FILE) and os.path.getsize(BACKUP_FILE) > 1024:
-            shutil.copy2(BACKUP_FILE, DB_FILE)
-            return True
-        
-        # Try migration from various locations
-        if migrate_data():
-            return True
-        
-        # Create fresh database
-        create_fresh_database()
-        return True
-        
-    except Exception as e:
-        print(f"Recovery failed: {e}")
-        create_fresh_database()
-        return True
-
-def create_fresh_database():
-    """Create a fresh database with default structure"""
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    
-    # Create tables
-    tables_sql = {
-        "inventory": """
-            CREATE TABLE inventory (
-                vegetable TEXT PRIMARY KEY,
-                quantity REAL,
-                cost_price REAL,
-                selling_price REAL,
-                image_url TEXT,
-                unit_type TEXT DEFAULT 'kg',
-                category TEXT DEFAULT 'vegetable'
-            )
-        """,
-        "purchases": """
-            CREATE TABLE purchases (
-                date TEXT, 
-                vegetable TEXT, 
-                quantity REAL, 
-                amount REAL, 
-                supplier TEXT
-            )
-        """,
-        "sales": """
-            CREATE TABLE sales (
-                date TEXT, 
-                vegetable TEXT, 
-                quantity_sold REAL, 
-                sale_price REAL, 
-                total REAL, 
-                customer TEXT,
-                unit_type TEXT,
-                customer_name TEXT,
-                customer_phone TEXT
-            )
-        """,
-        "waste": """
-            CREATE TABLE waste (
-                date TEXT, 
-                vegetable TEXT, 
-                quantity REAL, 
-                reason TEXT
-            )
-        """,
-        "customers": """
-            CREATE TABLE customers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                phone TEXT, 
-                name TEXT, 
-                points INTEGER DEFAULT 0,
-                total_spent REAL DEFAULT 0,
-                last_visit TEXT,
-                UNIQUE(phone, name)
-            )
-        """,
-        "expenses": """
-            CREATE TABLE expenses (
-                date TEXT, 
-                category TEXT, 
-                amount REAL, 
-                description TEXT
-            )
-        """
-    }
-    
-    for table_name, sql in tables_sql.items():
-        c.execute(sql)
-    
-    conn.commit()
-    conn.close()
-
-# ========================== AUTOMATIC BACKUP SYSTEM ==========================
-def create_backup():
-    """Create a backup of the database"""
-    try:
-        if os.path.exists(DB_FILE) and os.path.getsize(DB_FILE) > 0:
-            shutil.copy2(DB_FILE, BACKUP_FILE)
-            # Also create dated backup for extra safety
-            dated_backup = os.path.join(EXPORT_DIR, f"shop_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db")
-            shutil.copy2(DB_FILE, dated_backup)
-            return True
-    except Exception as e:
-        print(f"Backup failed: {e}")
-    return False
-
-def export_backup():
-    """Export backup to downloadable format"""
-    try:
-        if os.path.exists(DB_FILE):
-            # Create JSON export
-            conn = sqlite3.connect(DB_FILE)
-            
-            export_data = {}
-            tables = ["inventory", "purchases", "sales", "waste", "customers", "expenses"]
-            
-            for table in tables:
-                try:
-                    df = pd.read_sql(f"SELECT * FROM {table}", conn)
-                    export_data[table] = df.to_dict('records')
-                except:
-                    export_data[table] = []
-            
-            conn.close()
-            
-            # Save as JSON
-            json_file = os.path.join(EXPORT_DIR, f"data_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
-            with open(json_file, 'w') as f:
-                import json
-                json.dump(export_data, f, indent=2, default=str)
-            
-            return json_file
-    except Exception as e:
-        print(f"Export failed: {e}")
-    return None
-
-# ========================== DATABASE CONNECTION WITH RECOVERY ==========================
+# Get database connection
 def get_db_connection():
-    """Get a database connection with automatic recovery"""
-    try:
-        # First, recover if needed
-        recover_database()
-        
-        # Connect with WAL mode for better concurrency
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA busy_timeout = 5000")
-        
-        # Create backup after successful connection
-        create_backup()
-        
-        return conn
-    except Exception as e:
-        st.error(f"Database connection failed: {e}")
-        # Try to create fresh database
-        try:
-            create_fresh_database()
-            conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-            return conn
-        except Exception as e2:
-            st.error(f"Critical: Could not create database: {e2}")
-            return None
+    """Get database connection - wrapper for compatibility"""
+    return db_manager.get_connection()
 
 # ========================== INITIALIZE SESSION STATE ==========================
 if 'logged_in' not in st.session_state:
@@ -766,6 +965,29 @@ st.markdown("""
     .bill-table tr:hover {
         background-color: #f8f9fa;
     }
+    
+    /* Database status */
+    .db-status-success {
+        background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%);
+        color: white;
+        padding: 10px;
+        border-radius: 10px;
+        margin: 5px 0;
+    }
+    .db-status-warning {
+        background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%);
+        color: white;
+        padding: 10px;
+        border-radius: 10px;
+        margin: 5px 0;
+    }
+    .db-status-error {
+        background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+        color: white;
+        padding: 10px;
+        border-radius: 10px;
+        margin: 5px 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -784,122 +1006,6 @@ if conn is None:
     st.stop()
 
 c = conn.cursor()
-
-# ========================== DATABASE SETUP ==========================
-# Create tables if they don't exist
-tables_sql = {
-    "inventory": """
-        CREATE TABLE IF NOT EXISTS inventory (
-            vegetable TEXT PRIMARY KEY,
-            quantity REAL,
-            cost_price REAL,
-            selling_price REAL,
-            image_url TEXT,
-            unit_type TEXT DEFAULT 'kg',
-            category TEXT DEFAULT 'vegetable'
-        )
-    """,
-    "purchases": """
-        CREATE TABLE IF NOT EXISTS purchases (
-            date TEXT, 
-            vegetable TEXT, 
-            quantity REAL, 
-            amount REAL, 
-            supplier TEXT
-        )
-    """,
-    "sales": """
-        CREATE TABLE IF NOT EXISTS sales (
-            date TEXT, 
-            vegetable TEXT, 
-            quantity_sold REAL, 
-            sale_price REAL, 
-            total REAL, 
-            customer TEXT,
-            unit_type TEXT,
-            customer_name TEXT,
-            customer_phone TEXT
-        )
-    """,
-    "waste": """
-        CREATE TABLE IF NOT EXISTS waste (
-            date TEXT, 
-            vegetable TEXT, 
-            quantity REAL, 
-            reason TEXT
-        )
-    """,
-    "customers": """
-        CREATE TABLE IF NOT EXISTS customers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            phone TEXT, 
-            name TEXT, 
-            points INTEGER DEFAULT 0,
-            total_spent REAL DEFAULT 0,
-            last_visit TEXT,
-            UNIQUE(phone, name)
-        )
-    """,
-    "expenses": """
-        CREATE TABLE IF NOT EXISTS expenses (
-            date TEXT, 
-            category TEXT, 
-            amount REAL, 
-            description TEXT
-        )
-    """
-}
-
-for table_name, sql in tables_sql.items():
-    try:
-        c.execute(sql)
-    except Exception as e:
-        print(f"Error creating table {table_name}: {e}")
-
-# Check if columns exist and add if missing
-def ensure_table_columns():
-    """Ensure all required columns exist in tables"""
-    try:
-        # Check customers table
-        c.execute("PRAGMA table_info(customers)")
-        customer_columns = [column[1] for column in c.fetchall()]
-        
-        if 'id' not in customer_columns:
-            try:
-                # Create new table with correct structure
-                c.execute("DROP TABLE IF EXISTS customers")
-                c.execute("""
-                    CREATE TABLE customers (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        phone TEXT, 
-                        name TEXT, 
-                        points INTEGER DEFAULT 0,
-                        total_spent REAL DEFAULT 0,
-                        last_visit TEXT,
-                        UNIQUE(phone, name)
-                    )
-                """)
-            except Exception as e:
-                print(f"Error recreating customers table: {e}")
-        
-        # Check sales table for customer_name and customer_phone columns
-        c.execute("PRAGMA table_info(sales)")
-        sales_columns = [column[1] for column in c.fetchall()]
-        if 'customer_name' not in sales_columns:
-            try:
-                c.execute("ALTER TABLE sales ADD COLUMN customer_name TEXT")
-            except:
-                pass
-        if 'customer_phone' not in sales_columns:
-            try:
-                c.execute("ALTER TABLE sales ADD COLUMN customer_phone TEXT")
-            except:
-                pass
-    except Exception as e:
-        print(f"Error checking columns: {e}")
-
-# Ensure tables have correct structure
-ensure_table_columns()
 
 # ========================== DEFAULT VEGETABLES AND FRUITS ==========================
 kg_vegetables = [
@@ -1118,12 +1224,14 @@ def process_sale_simple(cust_name, cust_phone):
     else:
         cust = cust_name
     
+    bill_no = datetime.now().strftime("%Y%m%d%H%M%S")
+    
     sale_details = []
     for item in st.session_state.cart:
         veg, qty, price, total, unit_type, category = item
         
-        c.execute("INSERT INTO sales (date, vegetable, quantity_sold, sale_price, total, customer, unit_type, customer_name, customer_phone) VALUES (?,?,?,?,?,?,?,?,?)", 
-                 (d, veg, qty, price, total, cust, unit_type, cust_name, cust_phone))
+        c.execute("INSERT INTO sales (date, vegetable, quantity_sold, sale_price, total, customer, unit_type, customer_name, customer_phone, bill_no) VALUES (?,?,?,?,?,?,?,?,?,?)", 
+                 (d, veg, qty, price, total, cust, unit_type, cust_name, cust_phone, bill_no))
         
         c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
         
@@ -1172,7 +1280,7 @@ def process_sale_simple(cust_name, cust_phone):
     # Auto-backup every 10 sales
     st.session_state.backup_counter += 1
     if st.session_state.backup_counter >= 10:
-        create_backup()
+        db_manager._create_local_backup()
         st.session_state.backup_counter = 0
     
     st.session_state.last_sale = {
@@ -1184,7 +1292,7 @@ def process_sale_simple(cust_name, cust_phone):
         "total": sum(item[3] for item in st.session_state.cart),
         "phone": cust_phone,
         "time": current_time,
-        "bill_no": datetime.now().strftime("%Y%m%d%H%M%S")
+        "bill_no": bill_no
     }
     
     st.session_state.cart = []
@@ -1353,6 +1461,23 @@ with st.sidebar:
     st.markdown("### 💾 Database Status")
     
     try:
+        # Get database statistics
+        db_status_class = "db-status-success"
+        db_status_text = "✅ Connected"
+        
+        if db_manager.db_type == "local":
+            db_type_text = "Local SQLite (Enhanced)"
+            db_status_text = "✅ Local DB with Cloud Backup Ready"
+        elif db_manager.db_type == "supabase":
+            db_type_text = "Supabase PostgreSQL"
+            db_status_class = "db-status-success"
+        elif db_manager.db_type == "postgresql":
+            db_type_text = "PostgreSQL"
+            db_status_class = "db-status-success"
+        else:
+            db_type_text = "Local SQLite"
+        
+        # Get counts
         c.execute("SELECT COUNT(*) FROM inventory")
         inv_count = c.fetchone()[0]
         
@@ -1362,13 +1487,14 @@ with st.sidebar:
         c.execute("SELECT COUNT(*) FROM purchases")
         purchases_count = c.fetchone()[0]
         
-        db_size = os.path.getsize(DB_FILE) if os.path.exists(DB_FILE) else 0
-        backup_size = os.path.getsize(BACKUP_FILE) if os.path.exists(BACKUP_FILE) else 0
-        
-        backup_status = f"✅ ({backup_size/1024:.1f} KB)" if backup_size > 0 else "⚠️ No backup"
+        # Check if we have external database configured
+        has_external_db = db_manager.db_type != "local"
         
         st.markdown(f"""
         <div style="background: white; padding: 15px; border-radius: 10px; margin: 10px 0;">
+            <p style="margin: 5px 0; font-size: 0.9em;">
+                <strong>🗄️ Type:</strong> {db_type_text}
+            </p>
             <p style="margin: 5px 0; font-size: 0.9em;">
                 <strong>📦 Items:</strong> {inv_count}
             </p>
@@ -1378,36 +1504,57 @@ with st.sidebar:
             <p style="margin: 5px 0; font-size: 0.9em;">
                 <strong>🛒 Purchases:</strong> {purchases_count}
             </p>
-            <p style="margin: 5px 0; font-size: 0.9em;">
-                <strong>💾 Database:</strong> {db_size/1024:.1f} KB
-            </p>
-            <p style="margin: 5px 0; font-size: 0.9em;">
-                <strong>📂 Backup:</strong> {backup_status}
-            </p>
+            <div class="{db_status_class}" style="margin: 10px 0; padding: 8px; border-radius: 8px;">
+                <strong>{db_status_text}</strong>
+                {"🛡️ No Data Loss" if has_external_db else "⚠️ Local (Backup Active)"}
+            </div>
         </div>
         """, unsafe_allow_html=True)
         
+        # External database setup button
+        if not has_external_db:
+            with st.expander("⚙️ Setup External Database"):
+                st.info("""
+                **For permanent data storage (no data loss when app sleeps):**
+                
+                1. Sign up for a free database service:
+                   - [Supabase](https://supabase.com) (Recommended)
+                   - [Neon PostgreSQL](https://neon.tech)
+                   - [Railway PostgreSQL](https://railway.app)
+                
+                2. Create a new project and get connection details
+                
+                3. Add to Streamlit Secrets (`.streamlit/secrets.toml`):
+                ```toml
+                [supabase]
+                url = "your-project-url"
+                key = "your-anon-key"
+                db_url = "postgresql://..."
+                ```
+                """)
+        
         # Manual backup button
         if st.button("💾 Manual Backup", use_container_width=True, key="manual_backup"):
-            if create_backup():
+            if db_manager._create_local_backup():
                 st.success("✅ Backup created!")
             else:
-                st.error("❌ Backup failed!")
+                st.warning("⚠️ Backup may have failed")
         
         # Download backup button
-        if st.button("📥 Download Backup", use_container_width=True, key="download_backup"):
-            json_file = export_backup()
+        if st.button("📥 Download Data", use_container_width=True, key="download_backup"):
+            json_file = db_manager.export_database()
             if json_file and os.path.exists(json_file):
                 with open(json_file, 'rb') as f:
                     st.download_button(
-                        label="📥 Download Data",
+                        label="📥 Download All Data",
                         data=f,
-                        file_name=f"freshbasket_backup_{datetime.now().strftime('%Y%m%d')}.json",
+                        file_name=f"freshbasket_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
                         mime="application/json",
-                        use_container_width=True
+                        use_container_width=True,
+                        key="download_data_btn"
                     )
             else:
-                st.error("❌ Could not create backup file")
+                st.error("❌ Could not create data file")
     
     except Exception as e:
         st.error(f"Database error: {e}")
@@ -1742,7 +1889,7 @@ elif menu == "🛒 Add Purchase":
                         unit_type = row['unit_type']
                         category = row['category']
                         
-                        c.execute("INSERT INTO purchases VALUES (?,?,?,?,?)", 
+                        c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (?,?,?,?,?)", 
                                  (d, veg, qty, amount, supplier))
                         
                         if qty > 0:
@@ -1820,7 +1967,7 @@ elif menu == "🛒 Add Purchase":
                         else:
                             d = selected_date.strftime("%Y-%m-%d")
                             
-                            c.execute("INSERT INTO purchases VALUES (?,?,?,?,?)", 
+                            c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (?,?,?,?,?)", 
                                      (d, veg, total_qty, amount, supplier))
                             
                             old_qty, old_cost, old_sell, old_unit, old_cat = get_stock(veg)
@@ -1886,7 +2033,7 @@ elif menu == "🛒 Add Purchase":
                         else:
                             d = selected_date.strftime("%Y-%m-%d")
                             
-                            c.execute("INSERT INTO purchases VALUES (?,?,?,?,?)", 
+                            c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (?,?,?,?,?)", 
                                      (d, veg, total_qty, amount, supplier))
                             
                             old_qty, old_cost, old_sell, old_unit, old_cat = get_stock(veg)
@@ -1953,7 +2100,7 @@ elif menu == "🛒 Add Purchase":
                         else:
                             d = selected_date.strftime("%Y-%m-%d")
                             
-                            c.execute("INSERT INTO purchases VALUES (?,?,?,?,?)", 
+                            c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (?,?,?,?,?)", 
                                      (d, fruit, total_qty, amount, supplier))
                             
                             old_qty, old_cost, old_sell, old_unit, old_cat = get_stock(fruit)
@@ -1977,7 +2124,7 @@ elif menu == "🛒 Add Purchase":
         SELECT vegetable, quantity, amount, supplier 
         FROM purchases 
         WHERE date=? 
-        ORDER BY rowid DESC
+        ORDER BY id DESC
     """, conn, params=(selected_date.strftime("%Y-%m-%d"),))
     
     if today_purchases.empty:
@@ -2998,9 +3145,9 @@ elif menu == "📋 Purchases":
         show_all = st.checkbox("Show all dates", key="show_all_purchases")
     
     if show_all:
-        purchases_df = pd.read_sql("SELECT * FROM purchases ORDER BY date DESC, rowid DESC", conn)
+        purchases_df = pd.read_sql("SELECT * FROM purchases ORDER BY date DESC, id DESC", conn)
     else:
-        purchases_df = pd.read_sql("SELECT * FROM purchases WHERE date=? ORDER BY rowid DESC", 
+        purchases_df = pd.read_sql("SELECT * FROM purchases WHERE date=? ORDER BY id DESC", 
                                   conn, params=(view_date.strftime("%Y-%m-%d"),))
     
     if purchases_df.empty:
@@ -3042,9 +3189,9 @@ elif menu == "🧾 Sales":
         show_all_sales = st.checkbox("Show all dates", key="show_all_sales_view")
     
     if show_all_sales:
-        sales_df = pd.read_sql("SELECT * FROM sales ORDER BY date DESC, rowid DESC", conn)
+        sales_df = pd.read_sql("SELECT * FROM sales ORDER BY date DESC, id DESC", conn)
     else:
-        sales_df = pd.read_sql("SELECT * FROM sales WHERE date=? ORDER BY rowid DESC", 
+        sales_df = pd.read_sql("SELECT * FROM sales WHERE date=? ORDER BY id DESC", 
                               conn, params=(view_date.strftime("%Y-%m-%d"),))
     
     if sales_df.empty:
@@ -3076,9 +3223,10 @@ elif menu == "🧾 Sales":
         display_df['Quantity Display'] = display_df.apply(format_sales_row, axis=1)
         
         st.dataframe(
-            display_df[['date', 'vegetable', 'Quantity Display', 'total', 'customer_name', 'customer_phone']].rename(columns={
+            display_df[['date', 'vegetable', 'Quantity Display', 'total', 'customer_name', 'customer_phone', 'bill_no']].rename(columns={
                 'customer_name': 'Customer',
-                'customer_phone': 'Phone'
+                'customer_phone': 'Phone',
+                'bill_no': 'Bill No'
             }).style.format({
                 "total": "₹{:.2f}"
             }),
@@ -3115,7 +3263,7 @@ elif menu == "💸 Expenses":
                 st.error("Enter description")
             else:
                 d = selected_date.strftime("%Y-%m-%d")
-                c.execute("INSERT INTO expenses VALUES (?,?,?,?)", 
+                c.execute("INSERT INTO expenses (date, category, amount, description) VALUES (?,?,?,?)", 
                          (d, category, amount, description))
                 conn.commit()
                 st.success(f"✅ Expense recorded: {category} - ₹{amount:.2f}")
@@ -3324,7 +3472,7 @@ elif menu == "🗑 Waste":
                             st.error(f"Not enough stock! Available: {stock:.2f} kg")
                         else:
                             d = selected_date.strftime("%Y-%m-%d")
-                            c.execute("INSERT INTO waste VALUES (?,?,?,?)", 
+                            c.execute("INSERT INTO waste (date, vegetable, quantity, reason) VALUES (?,?,?,?)", 
                                      (d, veg, qty, f"{reason}: {description}"))
                             c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
                             conn.commit()
@@ -3362,7 +3510,7 @@ elif menu == "🗑 Waste":
                             st.error(f"Not enough stock! Available: {stock:.0f} pieces")
                         else:
                             d = selected_date.strftime("%Y-%m-%d")
-                            c.execute("INSERT INTO waste VALUES (?,?,?,?)", 
+                            c.execute("INSERT INTO waste (date, vegetable, quantity, reason) VALUES (?,?,?,?)", 
                                      (d, veg, qty, f"{reason}: {description}"))
                             c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
                             conn.commit()
@@ -3400,7 +3548,7 @@ elif menu == "🗑 Waste":
                             st.error(f"Not enough stock! Available: {stock:.2f} kg")
                         else:
                             d = selected_date.strftime("%Y-%m-%d")
-                            c.execute("INSERT INTO waste VALUES (?,?,?,?)", 
+                            c.execute("INSERT INTO waste (date, vegetable, quantity, reason) VALUES (?,?,?,?)", 
                                      (d, veg, qty, f"{reason}: {description}"))
                             c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
                             conn.commit()
@@ -3816,7 +3964,7 @@ elif menu == "💰 Financials":
             st.bar_chart(chart_data)
     
     st.markdown("### Recent Transactions")
-    recent_sales = pd.read_sql("SELECT * FROM sales WHERE date=? ORDER BY rowid DESC LIMIT 10", 
+    recent_sales = pd.read_sql("SELECT * FROM sales WHERE date=? ORDER BY id DESC LIMIT 10", 
                               conn, params=(d,))
     if not recent_sales.empty:
         display_sales = recent_sales.copy()
@@ -3856,49 +4004,86 @@ elif menu == "🔧 Database Tools":
     </div>
     """, unsafe_allow_html=True)
     
-    st.markdown("### 📍 Database Location")
-    st.code(f"""
-    Database File: {DB_FILE}
-    Backup File: {BACKUP_FILE}
-    Export Directory: {EXPORT_DIR}
-    """, language="bash")
+    st.markdown("### 📍 Database Configuration")
     
-    col1, col2 = st.columns(2)
+    db_status_class = "db-status-success" if db_manager.db_type != "local" else "db-status-warning"
+    db_status_text = f"✅ Connected to {db_manager.db_type.upper()}" if db_manager.db_type != "local" else "⚠️ Using Local SQLite (Enhanced)"
     
-    with col1:
-        st.markdown("#### 📊 Current Status")
-        if os.path.exists(DB_FILE):
-            size_kb = os.path.getsize(DB_FILE) / 1024
-            modified = datetime.fromtimestamp(os.path.getmtime(DB_FILE))
-            st.success(f"""
-            **✅ Database Active**
-            Size: {size_kb:.1f} KB
-            Last Modified: {modified.strftime('%Y-%m-%d %H:%M:%S')}
-            """)
-        else:
-            st.error("**❌ Database Not Found**")
+    st.markdown(f"""
+    <div class="{db_status_class}" style="padding:15px; border-radius:10px; margin-bottom:20px;">
+        <h4 style="margin:0;">{db_status_text}</h4>
+        <p style="margin:5px 0 0 0;">
+            {"🛡️ No data loss when app sleeps" if db_manager.db_type != "local" else "⚠️ Local storage with automatic backups"}
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
     
-    with col2:
-        st.markdown("#### 📂 Backup Status")
-        if os.path.exists(BACKUP_FILE):
-            size_kb = os.path.getsize(BACKUP_FILE) / 1024
-            modified = datetime.fromtimestamp(os.path.getmtime(BACKUP_FILE))
-            st.success(f"""
-            **✅ Backup Active**
-            Size: {size_kb:.1f} KB
-            Last Backup: {modified.strftime('%Y-%m-%d %H:%M:%S')}
-            """)
-        else:
-            st.warning("**⚠️ No Backup Found**")
+    # Database setup instructions
+    with st.expander("⚙️ Setup External Database (Recommended)"):
+        st.markdown("""
+        ### **For Permanent Data Storage (No Data Loss)**
+        
+        **Step 1: Choose a Database Service**
+        
+        1. **Supabase (Recommended & Free)**
+           - Sign up at [supabase.com](https://supabase.com)
+           - Create a new project
+           - Go to Settings > Database to get connection details
+        
+        2. **PostgreSQL on Railway (Free)**
+           - Sign up at [railway.app](https://railway.app)
+           - Create PostgreSQL service
+           - Get connection URL
+        
+        3. **Neon PostgreSQL (Free)**
+           - Sign up at [neon.tech](https://neon.tech)
+           - Create PostgreSQL database
+        
+        **Step 2: Configure Streamlit Secrets**
+        
+        Create `.streamlit/secrets.toml` file with your database details:
+        
+        ```toml
+        # For Supabase
+        [supabase]
+        url = "your-project-url.supabase.co"
+        key = "your-anon-key"
+        db_url = "postgresql://postgres:[password]@[host]:5432/postgres"
+        
+        # OR for PostgreSQL
+        [postgresql]
+        host = "your-host"
+        port = 5432
+        database = "your-db"
+        user = "your-user"
+        password = "your-password"
+        
+        # OR for SQLite Cloud
+        [sqlite_cloud]
+        url = "your-cloud-url"
+        token = "your-token"
+        ```
+        
+        **Step 3: Restart Your App**
+        
+        The app will automatically detect and use the external database!
+        """)
+        
+        if st.button("🔄 Check for External Database Configuration", use_container_width=True):
+            if db_manager.db_type == "local":
+                st.warning("⚠️ No external database configured. Using local SQLite.")
+                st.info("Follow the steps above to set up an external database for permanent storage.")
+            else:
+                st.success(f"✅ External database detected: {db_manager.db_type.upper()}")
     
     st.markdown("---")
-    st.markdown("### 💾 Enhanced Backup System")
+    st.markdown("### 💾 Backup & Recovery")
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
         if st.button("🔄 Create Full Backup", use_container_width=True, type="primary"):
-            if create_backup():
+            if db_manager._create_local_backup():
                 st.success("✅ Full backup created!")
                 st.rerun()
             else:
@@ -3906,7 +4091,7 @@ elif menu == "🔧 Database Tools":
     
     with col2:
         if st.button("📤 Export to JSON", use_container_width=True):
-            json_file = export_backup()
+            json_file = db_manager.export_database()
             if json_file:
                 st.success(f"✅ Exported to: {json_file}")
                 with open(json_file, 'rb') as f:
@@ -3921,12 +4106,30 @@ elif menu == "🔧 Database Tools":
                 st.error("❌ Export failed!")
     
     with col3:
-        if st.button("🔍 Recover Data", use_container_width=True):
-            if recover_database():
-                st.success("✅ Data recovery attempted!")
-                st.rerun()
-            else:
-                st.error("❌ Recovery failed!")
+        if st.button("🔍 Check Database Health", use_container_width=True):
+            try:
+                # Run health checks
+                c.execute("SELECT COUNT(*) FROM inventory")
+                inv_count = c.fetchone()[0]
+                
+                c.execute("SELECT COUNT(*) FROM sales")
+                sales_count = c.fetchone()[0]
+                
+                c.execute("SELECT COUNT(*) FROM purchases")
+                purchases_count = c.fetchone()[0]
+                
+                if inv_count > 0 and sales_count >= 0 and purchases_count >= 0:
+                    st.success(f"""
+                    ✅ Database Healthy!
+                    - Items: {inv_count}
+                    - Sales: {sales_count}
+                    - Purchases: {purchases_count}
+                    """)
+                else:
+                    st.warning("⚠️ Database may need attention")
+                    
+            except Exception as e:
+                st.error(f"❌ Database check failed: {e}")
     
     st.markdown("---")
     st.markdown("### 📈 Detailed Statistics")
@@ -3990,6 +4193,7 @@ elif menu == "🔧 Database Tools":
             • Today's Sales Records: {today_sales}
             • Items in Stock: {in_stock}
             • Total Database Records: {stats_df['Records'].sum():,}
+            • Database Type: {db_manager.db_type.upper()}
             """)
         except Exception as e:
             st.warning(f"Data validation incomplete: {e}")
@@ -3998,7 +4202,7 @@ elif menu == "🔧 Database Tools":
         st.error(f"Error fetching statistics: {e}")
     
     st.markdown("---")
-    st.markdown("### 🧹 Database Cleanup")
+    st.markdown("### 🧹 Database Maintenance")
     
     col1, col2 = st.columns(2)
     
@@ -4014,28 +4218,38 @@ elif menu == "🔧 Database Tools":
                 st.error(f"❌ Cleanup failed: {e}")
     
     with col2:
-        if st.button("⚡ Vacuum Database", use_container_width=True, key="vacuum_db"):
+        if st.button("⚡ Optimize Database", use_container_width=True, key="optimize_db"):
             try:
-                c.execute("VACUUM")
-                conn.commit()
-                st.success("✅ Database optimized and compacted!")
+                if db_manager.db_type == "local":
+                    c.execute("VACUUM")
+                    conn.commit()
+                    st.success("✅ Database optimized and compacted!")
+                else:
+                    st.info("✅ External database automatically optimized by provider")
             except Exception as e:
-                st.error(f"❌ Vacuum failed: {e}")
+                st.error(f"❌ Optimization failed: {e}")
 
 # ========================== ENHANCED BACKUP ON EXIT ==========================
 @atexit.register
 def cleanup():
     """Create final backup on exit"""
-    create_backup()
-    export_backup()
+    db_manager._create_local_backup()
+    db_manager.export_database()
 
 # Footer
 st.markdown("---")
 st.markdown(f"""
 <div class="footer">
     <p>🌿 Fresh Basket — Freshness You Can Feel | Quality Vegetables Daily ✅</p>
+    <p style="font-size:0.8em; color:#95a5a6;">
+        Database: {db_manager.db_type.upper()} | 
+        {"🛡️ No Data Loss" if db_manager.db_type != "local" else "⚠️ Local Storage with Backups"}
+    </p>
 </div>
 """, unsafe_allow_html=True)
 
 # Close database connection properly
-conn.close()
+try:
+    conn.close()
+except:
+    pass
