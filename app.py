@@ -13,8 +13,8 @@ import requests
 import tempfile
 import logging
 import psycopg2
-from psycopg2.extras import RealDictCursor
 from functools import lru_cache
+from psycopg2.extras import RealDictCursor
 
 # ========================== DEBUG LOGGING ==========================
 # Reduce logging level for production
@@ -54,15 +54,13 @@ font = "sans-serif"
 create_streamlit_config()
 
 # ========================== EXTERNAL DATABASE SETUP ==========================
-# Cache database connections and queries
 class DatabaseCache:
     """Cache frequently used database data"""
     def __init__(self):
         self.inventory_cache = None
         self.last_refresh = None
         self.cache_duration = 30  # seconds
-        self.sales_cache = {}
-        self.purchases_cache = {}
+        self.inventory_df = None
     
     def should_refresh(self):
         if self.last_refresh is None:
@@ -77,6 +75,10 @@ class DatabaseCache:
             c.execute("SELECT vegetable, quantity, cost_price, selling_price, unit_type, category FROM inventory ORDER BY vegetable")
             rows = c.fetchall()
             self.inventory_cache = {row[0]: row[1:] for row in rows}
+            
+            # Also store as DataFrame for faster operations
+            self.inventory_df = pd.DataFrame(rows, columns=['vegetable', 'quantity', 'cost_price', 'selling_price', 'unit_type', 'category'])
+            
             self.last_refresh = datetime.now()
         except Exception as e:
             logger.error(f"Error refreshing inventory cache: {e}")
@@ -87,12 +89,11 @@ class DatabaseCache:
             self.refresh_inventory(conn)
         return self.inventory_cache
     
-    def clear_cache(self):
-        """Clear all cache"""
-        self.inventory_cache = None
-        self.sales_cache = {}
-        self.purchases_cache = {}
-        self.last_refresh = None
+    def get_inventory_df(self, conn):
+        """Get inventory as DataFrame with caching"""
+        if self.inventory_df is None or self.should_refresh():
+            self.refresh_inventory(conn)
+        return self.inventory_df
 
 # Global cache instance
 db_cache = DatabaseCache()
@@ -104,7 +105,6 @@ class ExternalDatabaseManager:
         self.db_type = "supabase"
         self.db_config = {}
         self._conn = None  # Cached connection
-        self._connection_pool = []  # Simple connection pool
         
     def get_connection(self, force_new=False):
         """Get cached database connection"""
@@ -115,14 +115,46 @@ class ExternalDatabaseManager:
                 return self._conn
             except:
                 self._conn = None
+                logger.info("Connection test failed, creating new connection")
         
         # Create new connection
-        if self.db_type == "supabase":
-            self._conn = self._get_supabase_connection()
-        elif self.db_type == "postgresql":
-            self._conn = self._get_postgresql_connection()
+        try:
+            if self.db_type == "supabase":
+                self._conn = self._get_supabase_connection()
+            elif self.db_type == "postgresql":
+                self._conn = self._get_postgresql_connection()
+            
+            if self._conn:
+                # Create indexes for performance
+                self._create_indexes(self._conn)
+                
+        except Exception as e:
+            logger.error(f"Failed to create connection: {e}")
+            self._conn = None
         
         return self._conn
+    
+    def _create_indexes(self, conn):
+        """Create indexes for faster queries"""
+        c = conn.cursor()
+        indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_sales_date ON sales(date)",
+            "CREATE INDEX IF NOT EXISTS idx_sales_vegetable ON sales(vegetable)",
+            "CREATE INDEX IF NOT EXISTS idx_purchases_date ON purchases(date)",
+            "CREATE INDEX IF NOT EXISTS idx_inventory_vegetable ON inventory(vegetable)",
+            "CREATE INDEX IF NOT EXISTS idx_inventory_category ON inventory(category)",
+            "CREATE INDEX IF NOT EXISTS idx_inventory_unit_type ON inventory(unit_type)",
+            "CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date)",
+            "CREATE INDEX IF NOT EXISTS idx_waste_date ON waste(date)"
+        ]
+        
+        for idx_sql in indexes:
+            try:
+                c.execute(idx_sql)
+            except Exception as e:
+                logger.warning(f"Could not create index: {e}")
+        
+        conn.commit()
     
     def init_database(self):
         """Initialize database connection"""
@@ -139,7 +171,19 @@ class ExternalDatabaseManager:
                     logger.info("✅ Using Supabase database from secrets")
                     return True
             
-            st.error("❌ SUPABASE CONFIGURATION REQUIRED!")
+            # Check for direct PostgreSQL configuration
+            elif hasattr(st, 'secrets') and 'postgresql' in st.secrets:
+                postgres_config = dict(st.secrets.postgresql)
+                self.db_type = "postgresql"
+                self.db_config = postgres_config
+                
+                # Test connection
+                conn = self.get_connection()
+                if conn:
+                    logger.info("✅ Using PostgreSQL database from secrets")
+                    return True
+            
+            st.error("❌ SUPABASE/POSTGRESQL CONFIGURATION REQUIRED!")
             return False
             
         except Exception as e:
@@ -151,34 +195,49 @@ class ExternalDatabaseManager:
         try:
             db_url = self.db_config.get('db_url')
             if db_url:
-                conn = psycopg2.connect(
-                    db_url, 
-                    connect_timeout=5,
-                    cursor_factory=RealDictCursor
-                )
+                # Parse connection string for better connection management
+                conn_params = self._parse_connection_url(db_url)
+                conn = psycopg2.connect(**conn_params, connect_timeout=5)
+                conn.autocommit = False
                 self._create_supabase_tables(conn)
                 return conn
         except Exception as e:
             logger.error(f"Supabase connection failed: {e}")
+            st.error(f"Supabase connection error: {str(e)}")
         return None
     
     def _get_postgresql_connection(self):
         """Get PostgreSQL connection"""
         try:
-            conn = psycopg2.connect(
-                host=self.db_config['host'],
-                port=self.db_config['port'],
-                database=self.db_config['database'],
-                user=self.db_config['user'],
-                password=self.db_config['password'],
-                connect_timeout=5,
-                cursor_factory=RealDictCursor
-            )
+            conn_params = {
+                'host': self.db_config.get('host'),
+                'port': self.db_config.get('port', 5432),
+                'database': self.db_config.get('database'),
+                'user': self.db_config.get('user'),
+                'password': self.db_config.get('password')
+            }
+            conn = psycopg2.connect(**conn_params, connect_timeout=5)
+            conn.autocommit = False
             self._create_supabase_tables(conn)
             return conn
         except Exception as e:
             logger.error(f"PostgreSQL connection failed: {e}")
             return None
+    
+    def _parse_connection_url(self, url):
+        """Parse PostgreSQL connection URL"""
+        # Simple URL parsing
+        import urllib.parse
+        result = urllib.parse.urlparse(url)
+        
+        return {
+            'host': result.hostname,
+            'port': result.port or 5432,
+            'database': result.path[1:],  # Remove leading slash
+            'user': result.username,
+            'password': result.password,
+            'sslmode': 'require' if 'supabase' in url else 'prefer'
+        }
     
     def _create_supabase_tables(self, conn):
         """Create tables in Supabase/PostgreSQL"""
@@ -188,9 +247,9 @@ class ExternalDatabaseManager:
         tables_sql = [
             """CREATE TABLE IF NOT EXISTS inventory (
                 vegetable VARCHAR(255) PRIMARY KEY,
-                quantity DECIMAL(10,3),
-                cost_price DECIMAL(10,2),
-                selling_price DECIMAL(10,2),
+                quantity DECIMAL(10,3) DEFAULT 0,
+                cost_price DECIMAL(10,2) DEFAULT 0,
+                selling_price DECIMAL(10,2) DEFAULT 0,
                 image_url TEXT,
                 unit_type VARCHAR(50) DEFAULT 'kg',
                 category VARCHAR(50) DEFAULT 'vegetable'
@@ -198,32 +257,33 @@ class ExternalDatabaseManager:
             
             """CREATE TABLE IF NOT EXISTS purchases (
                 id SERIAL PRIMARY KEY,
-                date DATE, 
-                vegetable VARCHAR(255), 
-                quantity DECIMAL(10,3), 
-                amount DECIMAL(10,2), 
+                date DATE NOT NULL, 
+                vegetable VARCHAR(255) NOT NULL, 
+                quantity DECIMAL(10,3) DEFAULT 0, 
+                amount DECIMAL(10,2) DEFAULT 0, 
                 supplier VARCHAR(255)
             )""",
             
             """CREATE TABLE IF NOT EXISTS sales (
                 id SERIAL PRIMARY KEY,
-                date DATE, 
-                vegetable VARCHAR(255), 
-                quantity_sold DECIMAL(10,3), 
-                sale_price DECIMAL(10,2), 
-                total DECIMAL(10,2), 
+                date DATE NOT NULL, 
+                vegetable VARCHAR(255) NOT NULL, 
+                quantity_sold DECIMAL(10,3) DEFAULT 0, 
+                sale_price DECIMAL(10,2) DEFAULT 0, 
+                total DECIMAL(10,2) DEFAULT 0, 
                 customer VARCHAR(255),
                 unit_type VARCHAR(50),
                 customer_name VARCHAR(255),
                 customer_phone VARCHAR(50),
-                bill_no VARCHAR(100)
+                bill_no VARCHAR(100),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""",
             
             """CREATE TABLE IF NOT EXISTS waste (
                 id SERIAL PRIMARY KEY,
-                date DATE, 
-                vegetable VARCHAR(255), 
-                quantity DECIMAL(10,3), 
+                date DATE NOT NULL, 
+                vegetable VARCHAR(255) NOT NULL, 
+                quantity DECIMAL(10,3) DEFAULT 0, 
                 reason TEXT
             )""",
             
@@ -239,9 +299,9 @@ class ExternalDatabaseManager:
             
             """CREATE TABLE IF NOT EXISTS expenses (
                 id SERIAL PRIMARY KEY,
-                date DATE, 
+                date DATE NOT NULL, 
                 category VARCHAR(100), 
-                amount DECIMAL(10,2), 
+                amount DECIMAL(10,2) DEFAULT 0, 
                 description TEXT
             )"""
         ]
@@ -253,7 +313,7 @@ class ExternalDatabaseManager:
                 logger.error(f"Error creating table: {e}")
         
         conn.commit()
-        logger.info("✅ All tables created/verified in Supabase")
+        logger.info("✅ All tables created/verified")
         
         # Initialize default items efficiently
         self._initialize_default_items(conn)
@@ -490,6 +550,8 @@ if 'inventory_data' not in st.session_state:
     st.session_state.inventory_data = None
 if 'inventory_refresh_time' not in st.session_state:
     st.session_state.inventory_refresh_time = None
+if 'initialized' not in st.session_state:
+    st.session_state.initialized = False
 
 # ========================== MAIN APP ==========================
 if not st.session_state.logged_in:
@@ -499,10 +561,9 @@ if not st.session_state.logged_in:
 # ========================== PAGE SETUP ==========================
 st.set_page_config(page_title="Fresh Basket", page_icon="🌿", layout="wide")
 
-# Custom CSS (same as before but optimized)
+# Custom CSS
 st.markdown("""
 <style>
-    /* Your existing CSS here - shortened for brevity */
     .main {background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);}
     
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=Montserrat:wght@400;500;600;700&display=swap');
@@ -560,17 +621,23 @@ if conn is None:
     st.stop()
 
 # ========================== OPTIMIZED HELPER FUNCTIONS ==========================
-@st.cache_data(ttl=30)  # Cache for 30 seconds
+@st.cache_data(ttl=10)  # Reduced from 30 to 10 seconds for faster updates
 def get_inventory_data():
     """Get all inventory data with caching"""
     try:
-        c = conn.cursor()
-        c.execute("SELECT vegetable, quantity, cost_price, selling_price, unit_type, category FROM inventory ORDER BY vegetable")
-        rows = c.fetchall()
-        return {row[0]: row[1:] for row in rows}
+        return db_cache.get_inventory(conn)
     except Exception as e:
         logger.error(f"Error getting inventory data: {e}")
         return {}
+
+@st.cache_data(ttl=10)
+def get_inventory_df():
+    """Get inventory as DataFrame with caching"""
+    try:
+        return db_cache.get_inventory_df(conn)
+    except Exception as e:
+        logger.error(f"Error getting inventory DataFrame: {e}")
+        return pd.DataFrame()
 
 def get_stock(veg):
     """Return stock information for a vegetable"""
@@ -580,43 +647,46 @@ def get_stock(veg):
         return qty or 0.0, cost or 0.0, sell or 0.0, unit_type or 'kg', category or 'vegetable'
     return 0.0, 0.0, 0.0, 'kg', 'vegetable'
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=15)  # Reduced from 60 to 15 seconds
 def get_available_items():
     """Get items available for sale with caching"""
-    inventory_data = get_inventory_data()
+    inventory_df = get_inventory_df()
+    
+    if inventory_df.empty:
+        return [], [], []
+    
+    # Filter for available items
+    available_df = inventory_df[(inventory_df['quantity'] > 0) & (inventory_df['selling_price'] > 0)]
+    
     kg_vegetables = []
     piece_vegetables = []
     kg_fruits = []
     
-    for veg, data in inventory_data.items():
-        qty, _, price, unit_type, category = data
-        if qty > 0 and price > 0:
-            if category == 'fruit' and unit_type == 'kg':
-                kg_fruits.append({
-                    'name': veg,
-                    'price': price,
-                    'stock': qty,
-                    'display': f"{veg} (Stock: {qty:.2f} kg, Price: ₹{price:.2f}/kg)"
-                })
-            elif category == 'vegetable':
-                if unit_type == 'kg':
-                    kg_vegetables.append({
-                        'name': veg,
-                        'price': price,
-                        'stock': qty,
-                        'display': f"{veg} (Stock: {qty:.2f} kg, Price: ₹{price:.2f}/kg)"
-                    })
-                elif unit_type == 'piece':
-                    piece_vegetables.append({
-                        'name': veg,
-                        'price': price,
-                        'stock': qty,
-                        'display': f"{veg} (Stock: {qty:.0f} pieces, Price: ₹{price:.2f}/piece)"
-                    })
+    for _, row in available_df.iterrows():
+        veg = row['vegetable']
+        qty = row['quantity']
+        price = row['selling_price']
+        unit_type = row['unit_type']
+        category = row['category']
+        
+        item_data = {
+            'name': veg,
+            'price': price,
+            'stock': qty,
+            'display': f"{veg} (Stock: {qty:.2f} {unit_type}, Price: ₹{price:.2f}/{unit_type})"
+        }
+        
+        if category == 'fruit' and unit_type == 'kg':
+            kg_fruits.append(item_data)
+        elif category == 'vegetable':
+            if unit_type == 'kg':
+                kg_vegetables.append(item_data)
+            elif unit_type == 'piece':
+                piece_vegetables.append(item_data)
     
     return kg_vegetables, piece_vegetables, kg_fruits
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=30)
 def get_last_record_date(table_name):
     """Get the date of the last record in a table"""
     try:
@@ -628,34 +698,6 @@ def get_last_record_date(table_name):
     except Exception as e:
         logger.error(f"Error getting last record date: {e}")
     return "N/A"
-
-@st.cache_data(ttl=60)
-def get_monthly_data():
-    """Get monthly data for reports"""
-    try:
-        c = conn.cursor()
-        # Use DATE_FORMAT or EXTRACT for cross-database compatibility
-        c.execute("""
-            SELECT DISTINCT DATE_FORMAT(date, '%Y-%m') as month 
-            FROM sales 
-            UNION 
-            SELECT DISTINCT DATE_FORMAT(date, '%Y-%m') as month 
-            FROM purchases 
-            ORDER BY month DESC
-        """)
-        months_rows = c.fetchall()
-        months = [row[0] for row in months_rows] if months_rows else []
-        return months
-    except:
-        # Fallback using Python
-        try:
-            c.execute("SELECT DISTINCT date FROM sales UNION SELECT DISTINCT date FROM purchases")
-            dates = c.fetchall()
-            months = sorted(set([row[0].strftime('%Y-%m') for row in dates if row[0]]), reverse=True)
-            return months
-        except Exception as e:
-            logger.error(f"Error getting monthly data: {e}")
-            return []
 
 # ========================== SELL PAGE FUNCTIONS ==========================
 def add_to_cart_simple(veg, qty):
@@ -2787,31 +2829,39 @@ elif menu == "⬇ Download":
     with tab2:
         st.markdown("### 📊 Monthly Reports")
         
-        months = get_monthly_data()
+        # FIXED: Use TO_CHAR with date::timestamp for Supabase compatibility
+        c.execute("""
+            SELECT DISTINCT TO_CHAR(date::timestamp, 'YYYY-MM') as month 
+            FROM sales 
+            UNION 
+            SELECT DISTINCT TO_CHAR(date::timestamp, 'YYYY-MM') as month 
+            FROM purchases 
+            ORDER BY month DESC
+        """)
+        months_rows = c.fetchall()
+        months = pd.DataFrame(months_rows, columns=['month'])
         
-        if not months:
+        if months.empty:
             st.info("No monthly data available")
         else:
-            selected_month = st.selectbox("Select Month", months, index=0)
+            selected_month = st.selectbox("Select Month", months['month'].tolist(), index=0)
             
-            # Parse year and month
-            year, month = selected_month.split('-')
-            
-            c = conn.cursor()
-            c.execute("SELECT COALESCE(SUM(total),0) as total_sales FROM sales WHERE EXTRACT(YEAR FROM date)=%s AND EXTRACT(MONTH FROM date)=%s", (year, month))
+            # FIXED: Use TO_CHAR with date::timestamp
+            c.execute("SELECT COALESCE(SUM(total),0) as total_sales FROM sales WHERE TO_CHAR(date::timestamp, 'YYYY-MM')=%s", (selected_month,))
             monthly_sales = c.fetchone()[0]
             
-            c.execute("SELECT COALESCE(SUM(amount),0) as total_purchases FROM purchases WHERE EXTRACT(YEAR FROM date)=%s AND EXTRACT(MONTH FROM date)=%s", (year, month))
+            c.execute("SELECT COALESCE(SUM(amount),0) as total_purchases FROM purchases WHERE TO_CHAR(date::timestamp, 'YYYY-MM')=%s", (selected_month,))
             monthly_purchases = c.fetchone()[0]
             
-            c.execute("SELECT COALESCE(SUM(amount),0) as total_expenses FROM expenses WHERE EXTRACT(YEAR FROM date)=%s AND EXTRACT(MONTH FROM date)=%s", (year, month))
+            c.execute("SELECT COALESCE(SUM(amount),0) as total_expenses FROM expenses WHERE TO_CHAR(date::timestamp, 'YYYY-MM')=%s", (selected_month,))
             monthly_expenses = c.fetchone()[0]
             
-            c.execute("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE EXTRACT(YEAR FROM date)=%s AND EXTRACT(MONTH FROM date)=%s", (year, month))
+            c.execute("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE TO_CHAR(date::timestamp, 'YYYY-MM')=%s", (selected_month,))
             monthly_waste = c.fetchone()[0]
             
             # Get monthly customer details
             try:
+                # FIXED: Use TO_CHAR with date::timestamp
                 c.execute("""
                     SELECT 
                         date,
@@ -2820,13 +2870,14 @@ elif menu == "⬇ Download":
                         SUM(total) as total_spent,
                         COUNT(*) as total_visits
                     FROM sales 
-                    WHERE EXTRACT(YEAR FROM date)=%s AND EXTRACT(MONTH FROM date)=%s
+                    WHERE TO_CHAR(date::timestamp, 'YYYY-MM')=%s
                     GROUP BY date, COALESCE(customer_name, 'Guest'), COALESCE(customer_phone, '')
                     ORDER BY date DESC, total_spent DESC
-                """, (year, month))
+                """, (selected_month,))
                 monthly_customers_rows = c.fetchall()
                 monthly_customers = pd.DataFrame(monthly_customers_rows, columns=['date', 'customer_name', 'phone', 'total_spent', 'total_visits'])
-            except:
+            except Exception as e:
+                st.error(f"Error loading monthly customers: {e}")
                 monthly_customers = pd.DataFrame()
             
             monthly_profit = monthly_sales - monthly_purchases - monthly_expenses
@@ -2909,7 +2960,6 @@ elif menu == "⬇ Download":
         for table_name, display_name, description in tables:
             with st.expander(f"{display_name} - {description}"):
                 try:
-                    c = conn.cursor()
                     c.execute(f"SELECT * FROM {table_name}")
                     df_rows = c.fetchall()
                     
