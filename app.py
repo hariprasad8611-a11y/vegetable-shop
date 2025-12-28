@@ -13,6 +13,7 @@ import requests
 import tempfile
 import logging
 import psycopg2
+from psycopg2.extras import RealDictCursor
 from functools import lru_cache
 
 # ========================== DEBUG LOGGING ==========================
@@ -60,6 +61,8 @@ class DatabaseCache:
         self.inventory_cache = None
         self.last_refresh = None
         self.cache_duration = 30  # seconds
+        self.sales_cache = {}
+        self.purchases_cache = {}
     
     def should_refresh(self):
         if self.last_refresh is None:
@@ -83,6 +86,13 @@ class DatabaseCache:
         if self.inventory_cache is None or self.should_refresh():
             self.refresh_inventory(conn)
         return self.inventory_cache
+    
+    def clear_cache(self):
+        """Clear all cache"""
+        self.inventory_cache = None
+        self.sales_cache = {}
+        self.purchases_cache = {}
+        self.last_refresh = None
 
 # Global cache instance
 db_cache = DatabaseCache()
@@ -94,6 +104,7 @@ class ExternalDatabaseManager:
         self.db_type = "supabase"
         self.db_config = {}
         self._conn = None  # Cached connection
+        self._connection_pool = []  # Simple connection pool
         
     def get_connection(self, force_new=False):
         """Get cached database connection"""
@@ -140,7 +151,11 @@ class ExternalDatabaseManager:
         try:
             db_url = self.db_config.get('db_url')
             if db_url:
-                conn = psycopg2.connect(db_url, connect_timeout=5)
+                conn = psycopg2.connect(
+                    db_url, 
+                    connect_timeout=5,
+                    cursor_factory=RealDictCursor
+                )
                 self._create_supabase_tables(conn)
                 return conn
         except Exception as e:
@@ -156,7 +171,8 @@ class ExternalDatabaseManager:
                 database=self.db_config['database'],
                 user=self.db_config['user'],
                 password=self.db_config['password'],
-                connect_timeout=5
+                connect_timeout=5,
+                cursor_factory=RealDictCursor
             )
             self._create_supabase_tables(conn)
             return conn
@@ -167,14 +183,6 @@ class ExternalDatabaseManager:
     def _create_supabase_tables(self, conn):
         """Create tables in Supabase/PostgreSQL"""
         c = conn.cursor()
-        
-        # Check existing tables
-        c.execute("""
-            SELECT table_name 
-            FROM information_schema.tables 
-            WHERE table_schema = 'public'
-            ORDER BY table_name;
-        """)
         
         # Create tables with minimal existence checks
         tables_sql = [
@@ -608,6 +616,7 @@ def get_available_items():
     
     return kg_vegetables, piece_vegetables, kg_fruits
 
+@st.cache_data(ttl=60)
 def get_last_record_date(table_name):
     """Get the date of the last record in a table"""
     try:
@@ -619,6 +628,34 @@ def get_last_record_date(table_name):
     except Exception as e:
         logger.error(f"Error getting last record date: {e}")
     return "N/A"
+
+@st.cache_data(ttl=60)
+def get_monthly_data():
+    """Get monthly data for reports"""
+    try:
+        c = conn.cursor()
+        # Use DATE_FORMAT or EXTRACT for cross-database compatibility
+        c.execute("""
+            SELECT DISTINCT DATE_FORMAT(date, '%Y-%m') as month 
+            FROM sales 
+            UNION 
+            SELECT DISTINCT DATE_FORMAT(date, '%Y-%m') as month 
+            FROM purchases 
+            ORDER BY month DESC
+        """)
+        months_rows = c.fetchall()
+        months = [row[0] for row in months_rows] if months_rows else []
+        return months
+    except:
+        # Fallback using Python
+        try:
+            c.execute("SELECT DISTINCT date FROM sales UNION SELECT DISTINCT date FROM purchases")
+            dates = c.fetchall()
+            months = sorted(set([row[0].strftime('%Y-%m') for row in dates if row[0]]), reverse=True)
+            return months
+        except Exception as e:
+            logger.error(f"Error getting monthly data: {e}")
+            return []
 
 # ========================== SELL PAGE FUNCTIONS ==========================
 def add_to_cart_simple(veg, qty):
@@ -2750,25 +2787,27 @@ elif menu == "⬇ Download":
     with tab2:
         st.markdown("### 📊 Monthly Reports")
         
-        c.execute("SELECT DISTINCT TO_CHAR(date, 'YYYY-MM') as month FROM sales UNION SELECT DISTINCT TO_CHAR(date, 'YYYY-MM') as month FROM purchases ORDER BY month DESC")
-        months_rows = c.fetchall()
-        months = pd.DataFrame(months_rows, columns=['month'])
+        months = get_monthly_data()
         
-        if months.empty:
+        if not months:
             st.info("No monthly data available")
         else:
-            selected_month = st.selectbox("Select Month", months['month'].tolist(), index=0)
+            selected_month = st.selectbox("Select Month", months, index=0)
             
-            c.execute("SELECT COALESCE(SUM(total),0) as total_sales FROM sales WHERE TO_CHAR(date, 'YYYY-MM')=%s", (selected_month,))
+            # Parse year and month
+            year, month = selected_month.split('-')
+            
+            c = conn.cursor()
+            c.execute("SELECT COALESCE(SUM(total),0) as total_sales FROM sales WHERE EXTRACT(YEAR FROM date)=%s AND EXTRACT(MONTH FROM date)=%s", (year, month))
             monthly_sales = c.fetchone()[0]
             
-            c.execute("SELECT COALESCE(SUM(amount),0) as total_purchases FROM purchases WHERE TO_CHAR(date, 'YYYY-MM')=%s", (selected_month,))
+            c.execute("SELECT COALESCE(SUM(amount),0) as total_purchases FROM purchases WHERE EXTRACT(YEAR FROM date)=%s AND EXTRACT(MONTH FROM date)=%s", (year, month))
             monthly_purchases = c.fetchone()[0]
             
-            c.execute("SELECT COALESCE(SUM(amount),0) as total_expenses FROM expenses WHERE TO_CHAR(date, 'YYYY-MM')=%s", (selected_month,))
+            c.execute("SELECT COALESCE(SUM(amount),0) as total_expenses FROM expenses WHERE EXTRACT(YEAR FROM date)=%s AND EXTRACT(MONTH FROM date)=%s", (year, month))
             monthly_expenses = c.fetchone()[0]
             
-            c.execute("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE TO_CHAR(date, 'YYYY-MM')=%s", (selected_month,))
+            c.execute("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE EXTRACT(YEAR FROM date)=%s AND EXTRACT(MONTH FROM date)=%s", (year, month))
             monthly_waste = c.fetchone()[0]
             
             # Get monthly customer details
@@ -2781,10 +2820,10 @@ elif menu == "⬇ Download":
                         SUM(total) as total_spent,
                         COUNT(*) as total_visits
                     FROM sales 
-                    WHERE TO_CHAR(date, 'YYYY-MM')=%s
+                    WHERE EXTRACT(YEAR FROM date)=%s AND EXTRACT(MONTH FROM date)=%s
                     GROUP BY date, COALESCE(customer_name, 'Guest'), COALESCE(customer_phone, '')
                     ORDER BY date DESC, total_spent DESC
-                """, (selected_month,))
+                """, (year, month))
                 monthly_customers_rows = c.fetchall()
                 monthly_customers = pd.DataFrame(monthly_customers_rows, columns=['date', 'customer_name', 'phone', 'total_spent', 'total_visits'])
             except:
@@ -2870,6 +2909,7 @@ elif menu == "⬇ Download":
         for table_name, display_name, description in tables:
             with st.expander(f"{display_name} - {description}"):
                 try:
+                    c = conn.cursor()
                     c.execute(f"SELECT * FROM {table_name}")
                     df_rows = c.fetchall()
                     
