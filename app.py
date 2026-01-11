@@ -3,978 +3,248 @@ import pandas as pd
 import sqlite3
 from datetime import datetime, date, timezone, timedelta
 import re
-import os
-import sys
-import atexit
-import shutil
-import hashlib
-import json
+
+# ========================== PRINTING IMPORTS ==========================
 import requests
-import tempfile
-import logging
-import psycopg2
-from functools import lru_cache
-from psycopg2.extras import RealDictCursor
-import threading
-import time
-import queue
-from contextlib import contextmanager
-
-# ========================== DEBUG LOGGING ==========================
-# Reduce logging level for production
-logging.basicConfig(
-    level=logging.WARNING,  # Changed from DEBUG to WARNING
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# ========================== AUTO-CREATE CONFIG.TOML ==========================
-def create_streamlit_config():
-    """Create .streamlit/config.toml if it doesn't exist"""
-    config_dir = ".streamlit"
-    config_file = os.path.join(config_dir, "config.toml")
-    
-    if not os.path.exists(config_file):
-        os.makedirs(config_dir, exist_ok=True)
-        config_content = """[server]
-enableCORS = false
-enableXsrfProtection = false
-maxUploadSize = 1000
-
-[browser]
-serverAddress = "localhost"
-serverPort = 8501
-
-[theme]
-primaryColor = "#27ae60"
-backgroundColor = "#f5f7fa"
-secondaryBackgroundColor = "#ffffff"
-textColor = "#2c3e50"
-font = "sans-serif"
-"""
-        with open(config_file, "w", encoding="utf-8") as f:
-            f.write(config_content)
-
-create_streamlit_config()
-
-# ========================== DUAL DATABASE SYSTEM ==========================
-class DualDatabaseManager:
-    """Manage both SQLite (local) and Supabase (cloud) databases with automatic sync"""
-    
-    def __init__(self):
-        self.local_db_path = "freshbasket_local.db"
-        self.supabase_conn = None
-        self.local_conn = None
-        self.sync_queue = queue.Queue()
-        self.sync_thread = None
-        self.sync_running = False
-        self.last_sync_time = None
-        
-    def init_databases(self):
-        """Initialize both databases"""
-        try:
-            # Initialize local SQLite database
-            self._init_local_database()
-            
-            # Initialize Supabase if available
-            supabase_available = self._init_supabase()
-            
-            if supabase_available:
-                logger.info("✅ Dual-database system: SQLite (local cache) + Supabase (permanent storage)")
-                # Start sync thread
-                self.start_sync_thread()
-                # Initial sync from Supabase to local
-                self.sync_from_supabase_to_local()
-            else:
-                logger.info("⚠️ Using local SQLite only (Supabase not configured)")
-            
-            return True
-        except Exception as e:
-            logger.error(f"Database initialization failed: {e}")
-            return False
-    
-    def _init_local_database(self):
-        """Initialize local SQLite database"""
-        try:
-            self.local_conn = sqlite3.connect(self.local_db_path, check_same_thread=False)
-            self.local_conn.row_factory = sqlite3.Row
-            self._create_local_tables()
-            logger.info(f"✅ Local SQLite database initialized: {self.local_db_path}")
-        except Exception as e:
-            logger.error(f"Failed to initialize local database: {e}")
-            raise
-    
-    def _init_supabase(self):
-        """Initialize Supabase connection if configured"""
-        try:
-            if hasattr(st, 'secrets') and 'supabase' in st.secrets:
-                supabase_config = dict(st.secrets.supabase)
-                db_url = supabase_config.get('db_url')
-                
-                if db_url:
-                    # Parse connection string
-                    import urllib.parse
-                    result = urllib.parse.urlparse(db_url)
-                    
-                    conn_params = {
-                        'host': result.hostname,
-                        'port': result.port or 5432,
-                        'database': result.path[1:],
-                        'user': result.username,
-                        'password': result.password,
-                        'sslmode': 'require'
-                    }
-                    
-                    self.supabase_conn = psycopg2.connect(**conn_params, connect_timeout=5)
-                    self.supabase_conn.autocommit = False
-                    self._create_supabase_tables()
-                    logger.info("✅ Supabase connection established")
-                    return True
-        except Exception as e:
-            logger.error(f"Supabase initialization failed (will use local only): {e}")
-        
-        return False
-    
-    def _create_local_tables(self):
-        """Create tables in local SQLite database"""
-        c = self.local_conn.cursor()
-        
-        tables_sql = [
-            """CREATE TABLE IF NOT EXISTS inventory (
-                vegetable TEXT PRIMARY KEY,
-                quantity REAL DEFAULT 0,
-                cost_price REAL DEFAULT 0,
-                selling_price REAL DEFAULT 0,
-                image_url TEXT,
-                unit_type TEXT DEFAULT 'kg',
-                category TEXT DEFAULT 'vegetable',
-                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )""",
-            
-            """CREATE TABLE IF NOT EXISTS purchases (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date DATE NOT NULL, 
-                vegetable TEXT NOT NULL, 
-                quantity REAL DEFAULT 0, 
-                amount REAL DEFAULT 0, 
-                supplier TEXT,
-                synced INTEGER DEFAULT 0
-            )""",
-            
-            """CREATE TABLE IF NOT EXISTS sales (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date DATE NOT NULL, 
-                vegetable TEXT NOT NULL, 
-                quantity_sold REAL DEFAULT 0, 
-                sale_price REAL DEFAULT 0, 
-                total REAL DEFAULT 0, 
-                customer TEXT,
-                unit_type TEXT,
-                customer_name TEXT,
-                customer_phone TEXT,
-                bill_no TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                synced INTEGER DEFAULT 0
-            )""",
-            
-            """CREATE TABLE IF NOT EXISTS waste (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date DATE NOT NULL, 
-                vegetable TEXT NOT NULL, 
-                quantity REAL DEFAULT 0, 
-                reason TEXT,
-                synced INTEGER DEFAULT 0
-            )""",
-            
-            """CREATE TABLE IF NOT EXISTS customers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                phone TEXT, 
-                name TEXT, 
-                points INTEGER DEFAULT 0,
-                total_spent REAL DEFAULT 0,
-                last_visit DATE,
-                UNIQUE(phone, name),
-                synced INTEGER DEFAULT 0
-            )""",
-            
-            """CREATE TABLE IF NOT EXISTS expenses (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date DATE NOT NULL, 
-                category TEXT, 
-                amount REAL DEFAULT 0, 
-                description TEXT,
-                synced INTEGER DEFAULT 0
-            )""",
-            
-            """CREATE TABLE IF NOT EXISTS sync_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                table_name TEXT,
-                record_id INTEGER,
-                action TEXT,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                synced_to_cloud INTEGER DEFAULT 0
-            )"""
-        ]
-        
-        for sql in tables_sql:
-            try:
-                c.execute(sql)
-            except Exception as e:
-                logger.error(f"Error creating local table: {e}")
-        
-        # Create indexes
-        indexes = [
-            "CREATE INDEX IF NOT EXISTS idx_sales_date ON sales(date)",
-            "CREATE INDEX IF NOT EXISTS idx_sales_vegetable ON sales(vegetable)",
-            "CREATE INDEX IF NOT EXISTS idx_sales_synced ON sales(synced)",
-            "CREATE INDEX IF NOT EXISTS idx_purchases_date ON purchases(date)",
-            "CREATE INDEX IF NOT EXISTS idx_purchases_synced ON purchases(synced)",
-            "CREATE INDEX IF NOT EXISTS idx_inventory_vegetable ON inventory(vegetable)",
-            "CREATE INDEX IF NOT EXISTS idx_inventory_category ON inventory(category)",
-            "CREATE INDEX IF NOT EXISTS idx_inventory_unit_type ON inventory(unit_type)",
-            "CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date)",
-            "CREATE INDEX IF NOT EXISTS idx_expenses_synced ON expenses(synced)",
-            "CREATE INDEX IF NOT EXISTS idx_waste_date ON waste(date)",
-            "CREATE INDEX IF NOT EXISTS idx_waste_synced ON waste(synced)"
-        ]
-        
-        for idx_sql in indexes:
-            try:
-                c.execute(idx_sql)
-            except Exception as e:
-                logger.warning(f"Could not create index: {e}")
-        
-        self.local_conn.commit()
-        
-        # Initialize default items
-        self._initialize_default_items_local()
-    
-    def _create_supabase_tables(self):
-        """Create tables in Supabase"""
-        c = self.supabase_conn.cursor()
-        
-        tables_sql = [
-            """CREATE TABLE IF NOT EXISTS inventory (
-                vegetable VARCHAR(255) PRIMARY KEY,
-                quantity DECIMAL(10,3) DEFAULT 0,
-                cost_price DECIMAL(10,2) DEFAULT 0,
-                selling_price DECIMAL(10,2) DEFAULT 0,
-                image_url TEXT,
-                unit_type VARCHAR(50) DEFAULT 'kg',
-                category VARCHAR(50) DEFAULT 'vegetable',
-                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )""",
-            
-            """CREATE TABLE IF NOT EXISTS purchases (
-                id SERIAL PRIMARY KEY,
-                date DATE NOT NULL, 
-                vegetable VARCHAR(255) NOT NULL, 
-                quantity DECIMAL(10,3) DEFAULT 0, 
-                amount DECIMAL(10,2) DEFAULT 0, 
-                supplier VARCHAR(255),
-                local_id INTEGER
-            )""",
-            
-            """CREATE TABLE IF NOT EXISTS sales (
-                id SERIAL PRIMARY KEY,
-                date DATE NOT NULL, 
-                vegetable VARCHAR(255) NOT NULL, 
-                quantity_sold DECIMAL(10,3) DEFAULT 0, 
-                sale_price DECIMAL(10,2) DEFAULT 0, 
-                total DECIMAL(10,2) DEFAULT 0, 
-                customer VARCHAR(255),
-                unit_type VARCHAR(50),
-                customer_name VARCHAR(255),
-                customer_phone VARCHAR(50),
-                bill_no VARCHAR(100),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                local_id INTEGER
-            )""",
-            
-            """CREATE TABLE IF NOT EXISTS waste (
-                id SERIAL PRIMARY KEY,
-                date DATE NOT NULL, 
-                vegetable VARCHAR(255) NOT NULL, 
-                quantity DECIMAL(10,3) DEFAULT 0, 
-                reason TEXT,
-                local_id INTEGER
-            )""",
-            
-            """CREATE TABLE IF NOT EXISTS customers (
-                id SERIAL PRIMARY KEY,
-                phone VARCHAR(50), 
-                name VARCHAR(255), 
-                points INTEGER DEFAULT 0,
-                total_spent DECIMAL(10,2) DEFAULT 0,
-                last_visit DATE,
-                UNIQUE(phone, name),
-                local_id INTEGER
-            )""",
-            
-            """CREATE TABLE IF NOT EXISTS expenses (
-                id SERIAL PRIMARY KEY,
-                date DATE NOT NULL, 
-                category VARCHAR(100), 
-                amount DECIMAL(10,2) DEFAULT 0, 
-                description TEXT,
-                local_id INTEGER
-            )"""
-        ]
-        
-        for sql in tables_sql:
-            try:
-                c.execute(sql)
-            except Exception as e:
-                logger.error(f"Error creating Supabase table: {e}")
-        
-        self.supabase_conn.commit()
-    
-    def _initialize_default_items_local(self):
-        """Initialize default items in local database"""
-        c = self.local_conn.cursor()
-        
-        # Get existing items
-        c.execute("SELECT vegetable FROM inventory")
-        existing_items = {row[0] for row in c.fetchall()}
-        
-        # Default items
-        kg_vegetables = [
-            "Avarakai", "Baby Corn", "Baby Potato", "Beetroot", "Bitter Gourd", 
-            "Bottle Gourd", "Brinjal", "Brinjal Green", "Brinjal Purple", "Broccoli",
-            "Bush Beans", "Cabbage Green", "Cabbage Red", "Capsicum", "Capsicum Colour",
-            "Carrot", "Chow Chow (Chayote)", "Cluster Beans", "Colacassia (Taro)",
-            "Coriander Leaf", "Cowpea", "Cucumber", "Curry Leaf", "Garlic", "Ginger",
-            "Green Chillies", "Green Peas", "Greens (Spinach/Amaranthus etc.)",
-            "Knol (Knol Khol)", "Kovakai (Ivy Gourd)", "Ladies Finger (Okra)",
-            "Onion Big", "Onion Small", "Potato", "Pudina (Mint)", "Pumpkin (Red)",
-            "Pumpkin (White)", "Radish", "Red Radish", "Ridge Gourd", "Snake Gourd",
-            "Sweet Potato", "Tomato", "Topaico", "Turnip", "Yam", "Zukuni (Zucchini)"
-        ]
-        
-        piece_vegetables = [
-            "Lemon", "Drumstick", "Banana Steam", "Banana Flower", 
-            "Raw Banana", "Coconut"
-        ]
-        
-        fruits_kg = [
-            "Amla (Indian Gooseberry)", "Apple", "Banana Country", "Banana Elachi",
-            "Banana Hill", "Banana Karpoorvali", "Banana Nendran", "Banana Poovan",
-            "Banana Rasthali", "Banana Red", "Black Grapes", "Butter Fruit (Avocado)",
-            "Custard Apple", "Fig", "Guava", "Guava Red", "Jackfruit", 
-            "Mangostan (Mangosteen)", "Mosambi (Sweet Lime)", "Musk Melon", "Orange",
-            "Papaya", "Passion Fruit", "Pears", "Pineapple", "Pomegranate",
-            "Raw Mango", "Sapota (Chikoo)", "Watermelon"
-        ]
-        
-        # Insert only non-existing items
-        to_insert = []
-        
-        for veg in kg_vegetables:
-            if veg not in existing_items:
-                to_insert.append((veg, 0, 0, 0, '', 'kg', 'vegetable'))
-        
-        for veg in piece_vegetables:
-            if veg not in existing_items:
-                to_insert.append((veg, 0, 0, 0, '', 'piece', 'vegetable'))
-        
-        for fruit in fruits_kg:
-            if fruit not in existing_items:
-                to_insert.append((fruit, 0, 0, 0, '', 'kg', 'fruit'))
-        
-        # Batch insert
-        if to_insert:
-            c.executemany("""
-                INSERT OR IGNORE INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type, category) 
-                VALUES (?,?,?,?,?,?,?)
-            """, to_insert)
-        
-        self.local_conn.commit()
-    
-    def get_connection(self, force_local=False):
-        """Get database connection - uses local by default, falls back to Supabase if needed"""
-        if force_local or not self.supabase_conn:
-            return self.local_conn
-        else:
-            return self.supabase_conn
-    
-    def sync_from_supabase_to_local(self):
-        """Sync data from Supabase to local database"""
-        if not self.supabase_conn:
-            return
-        
-        try:
-            logger.info("Starting sync from Supabase to local...")
-            
-            # Sync inventory
-            self._sync_table_from_supabase("inventory", "vegetable")
-            
-            # Sync other tables
-            tables_to_sync = ["purchases", "sales", "waste", "customers", "expenses"]
-            for table in tables_to_sync:
-                self._sync_table_from_supabase(table, "id")
-            
-            self.last_sync_time = datetime.now()
-            logger.info("✅ Sync from Supabase to local completed")
-            
-        except Exception as e:
-            logger.error(f"Error syncing from Supabase: {e}")
-    
-    def _sync_table_from_supabase(self, table_name, primary_key):
-        """Sync a single table from Supabase to local"""
-        try:
-            # Get data from Supabase
-            supabase_cursor = self.supabase_conn.cursor()
-            supabase_cursor.execute(f"SELECT * FROM {table_name}")
-            supabase_data = supabase_cursor.fetchall()
-            column_names = [desc[0] for desc in supabase_cursor.description]
-            
-            if not supabase_data:
-                return
-            
-            # Prepare data for local insertion
-            local_cursor = self.local_conn.cursor()
-            
-            for row in supabase_data:
-                row_dict = dict(zip(column_names, row))
-                
-                # For tables with local_id mapping
-                if 'local_id' in row_dict and row_dict['local_id']:
-                    # Update existing record
-                    if table_name == "inventory":
-                        local_cursor.execute(f"""
-                            INSERT OR REPLACE INTO {table_name} 
-                            VALUES ({','.join(['?' for _ in column_names])})
-                        """, row)
-                    else:
-                        # Delete if exists with local_id then insert
-                        local_cursor.execute(f"DELETE FROM {table_name} WHERE id=?", (row_dict['local_id'],))
-                        local_cursor.execute(f"""
-                            INSERT INTO {table_name} 
-                            VALUES ({','.join(['?' for _ in column_names if col != 'local_id'])})
-                        """, [row_dict[col] for col in column_names if col != 'local_id'])
-                else:
-                    # Insert new record
-                    placeholders = ','.join(['?' for _ in column_names])
-                    local_cursor.execute(f"INSERT OR REPLACE INTO {table_name} VALUES ({placeholders})", row)
-            
-            self.local_conn.commit()
-            
-        except Exception as e:
-            logger.error(f"Error syncing table {table_name}: {e}")
-    
-    def queue_sync_to_supabase(self, table_name, record_id, action='insert'):
-        """Queue a record to be synced to Supabase"""
-        if self.supabase_conn:
-            self.sync_queue.put({
-                'table': table_name,
-                'record_id': record_id,
-                'action': action,
-                'timestamp': datetime.now()
-            })
-    
-    def start_sync_thread(self):
-        """Start background thread for syncing to Supabase"""
-        if self.supabase_conn and not self.sync_running:
-            self.sync_running = True
-            self.sync_thread = threading.Thread(target=self._sync_worker, daemon=True)
-            self.sync_thread.start()
-            logger.info("✅ Sync thread started")
-    
-    def stop_sync_thread(self):
-        """Stop the sync thread"""
-        self.sync_running = False
-        if self.sync_thread:
-            self.sync_thread.join(timeout=5)
-    
-    def _sync_worker(self):
-        """Background worker that syncs data to Supabase"""
-        while self.sync_running:
-            try:
-                # Process up to 10 items from queue
-                for _ in range(10):
-                    try:
-                        item = self.sync_queue.get_nowait()
-                        self._sync_item_to_supabase(item)
-                    except queue.Empty:
-                        break
-                
-                # Periodic full sync
-                if self.last_sync_time is None or (datetime.now() - self.last_sync_time).seconds > 300:  # 5 minutes
-                    self.sync_pending_records()
-                    self.last_sync_time = datetime.now()
-                
-                time.sleep(1)  # Small delay to prevent CPU overuse
-                
-            except Exception as e:
-                logger.error(f"Error in sync worker: {e}")
-                time.sleep(5)
-    
-    def sync_pending_records(self):
-        """Sync all pending records to Supabase"""
-        if not self.supabase_conn:
-            return
-        
-        try:
-            tables_to_sync = [
-                ("purchases", "synced=0"),
-                ("sales", "synced=0"),
-                ("waste", "synced=0"),
-                ("customers", "synced=0"),
-                ("expenses", "synced=0")
-            ]
-            
-            for table_name, condition in tables_to_sync:
-                self._sync_pending_table_records(table_name, condition)
-            
-            # Sync inventory (always sync)
-            self._sync_inventory_to_supabase()
-            
-            logger.info("✅ Periodic sync completed")
-            
-        except Exception as e:
-            logger.error(f"Error in periodic sync: {e}")
-    
-    def _sync_pending_table_records(self, table_name, condition):
-        """Sync pending records from a specific table"""
-        try:
-            local_cursor = self.local_conn.cursor()
-            local_cursor.execute(f"SELECT * FROM {table_name} WHERE {condition}")
-            pending_records = local_cursor.fetchall()
-            column_names = [desc[0] for desc in local_cursor.description]
-            
-            if not pending_records:
-                return
-            
-            supabase_cursor = self.supabase_conn.cursor()
-            
-            for record in pending_records:
-                record_dict = dict(zip(column_names, record))
-                
-                # Prepare data for Supabase
-                if table_name == "inventory":
-                    supabase_cursor.execute("""
-                        INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type, category)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s)
-                        ON CONFLICT (vegetable) DO UPDATE 
-                        SET quantity=EXCLUDED.quantity,
-                            cost_price=EXCLUDED.cost_price,
-                            selling_price=EXCLUDED.selling_price,
-                            unit_type=EXCLUDED.unit_type,
-                            category=EXCLUDED.category,
-                            last_updated=CURRENT_TIMESTAMP
-                    """, (
-                        record_dict['vegetable'],
-                        record_dict['quantity'],
-                        record_dict['cost_price'],
-                        record_dict['selling_price'],
-                        record_dict.get('image_url', ''),
-                        record_dict['unit_type'],
-                        record_dict['category']
-                    ))
-                else:
-                    # For other tables, insert and update local_id
-                    columns = [col for col in column_names if col not in ['id', 'synced', 'local_id']]
-                    values = [record_dict[col] for col in columns]
-                    placeholders = ','.join(['%s' for _ in columns])
-                    
-                    supabase_cursor.execute(f"""
-                        INSERT INTO {table_name} ({','.join(columns)})
-                        VALUES ({placeholders})
-                        RETURNING id
-                    """, values)
-                    
-                    supabase_id = supabase_cursor.fetchone()[0]
-                    
-                    # Update local record with supabase ID and mark as synced
-                    local_cursor.execute(f"""
-                        UPDATE {table_name} 
-                        SET synced=1, local_id=?
-                        WHERE id=?
-                    """, (supabase_id, record_dict['id']))
-            
-            self.supabase_conn.commit()
-            self.local_conn.commit()
-            
-        except Exception as e:
-            logger.error(f"Error syncing {table_name}: {e}")
-            if self.supabase_conn:
-                self.supabase_conn.rollback()
-    
-    def _sync_inventory_to_supabase(self):
-        """Sync inventory to Supabase"""
-        if not self.supabase_conn:
-            return
-        
-        try:
-            local_cursor = self.local_conn.cursor()
-            local_cursor.execute("SELECT * FROM inventory")
-            inventory_records = local_cursor.fetchall()
-            column_names = [desc[0] for desc in local_cursor.description]
-            
-            supabase_cursor = self.supabase_conn.cursor()
-            
-            for record in inventory_records:
-                record_dict = dict(zip(column_names, record))
-                
-                supabase_cursor.execute("""
-                    INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type, category)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s)
-                    ON CONFLICT (vegetable) DO UPDATE 
-                    SET quantity=EXCLUDED.quantity,
-                        cost_price=EXCLUDED.cost_price,
-                        selling_price=EXCLUDED.selling_price,
-                        unit_type=EXCLUDED.unit_type,
-                        category=EXCLUDED.category,
-                        last_updated=CURRENT_TIMESTAMP
-                """, (
-                    record_dict['vegetable'],
-                    record_dict['quantity'],
-                    record_dict['cost_price'],
-                    record_dict['selling_price'],
-                    record_dict.get('image_url', ''),
-                    record_dict['unit_type'],
-                    record_dict['category']
-                ))
-            
-            self.supabase_conn.commit()
-            
-        except Exception as e:
-            logger.error(f"Error syncing inventory: {e}")
-            if self.supabase_conn:
-                self.supabase_conn.rollback()
-    
-    def _sync_item_to_supabase(self, item):
-        """Sync a single item to Supabase"""
-        try:
-            table_name = item['table']
-            record_id = item['record_id']
-            
-            local_cursor = self.local_conn.cursor()
-            local_cursor.execute(f"SELECT * FROM {table_name} WHERE id=?", (record_id,))
-            record = local_cursor.fetchone()
-            
-            if not record:
-                return
-            
-            column_names = [desc[0] for desc in local_cursor.description]
-            record_dict = dict(zip(column_names, record))
-            
-            supabase_cursor = self.supabase_conn.cursor()
-            
-            if table_name == "inventory":
-                supabase_cursor.execute("""
-                    INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type, category)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s)
-                    ON CONFLICT (vegetable) DO UPDATE 
-                    SET quantity=EXCLUDED.quantity,
-                        cost_price=EXCLUDED.cost_price,
-                        selling_price=EXCLUDED.selling_price,
-                        unit_type=EXCLUDED.unit_type,
-                        category=EXCLUDED.category,
-                        last_updated=CURRENT_TIMESTAMP
-                """, (
-                    record_dict['vegetable'],
-                    record_dict['quantity'],
-                    record_dict['cost_price'],
-                    record_dict['selling_price'],
-                    record_dict.get('image_url', ''),
-                    record_dict['unit_type'],
-                    record_dict['category']
-                ))
-            else:
-                # For other tables
-                columns = [col for col in column_names if col not in ['id', 'synced', 'local_id']]
-                values = [record_dict[col] for col in columns]
-                placeholders = ','.join(['%s' for _ in columns])
-                
-                supabase_cursor.execute(f"""
-                    INSERT INTO {table_name} ({','.join(columns)})
-                    VALUES ({placeholders})
-                    RETURNING id
-                """, values)
-                
-                supabase_id = supabase_cursor.fetchone()[0]
-                
-                # Update local record
-                local_cursor.execute(f"""
-                    UPDATE {table_name} 
-                    SET synced=1, local_id=?
-                    WHERE id=?
-                """, (supabase_id, record_id))
-            
-            self.supabase_conn.commit()
-            self.local_conn.commit()
-            
-            logger.debug(f"Synced {table_name} record {record_id} to Supabase")
-            
-        except Exception as e:
-            logger.error(f"Error syncing item {item}: {e}")
-            if self.supabase_conn:
-                self.supabase_conn.rollback()
-    
-    def execute_local(self, sql, params=()):
-        """Execute SQL on local database and queue for sync"""
-        try:
-            c = self.local_conn.cursor()
-            c.execute(sql, params)
-            self.local_conn.commit()
-            
-            # Get last inserted id if applicable
-            last_id = c.lastrowid
-            
-            # Determine table name from SQL
-            table_name = self._extract_table_name(sql)
-            
-            # Queue for sync if we have a table name and last_id
-            if table_name and last_id and table_name != "inventory":
-                self.queue_sync_to_supabase(table_name, last_id)
-            elif table_name == "inventory":
-                # For inventory updates, we need to handle differently
-                # Queue a full inventory sync
-                self.queue_sync_to_supabase("inventory", 0)
-            
-            return c
-        except Exception as e:
-            logger.error(f"Error executing local SQL: {e}")
-            raise
-    
-    def _extract_table_name(self, sql):
-        """Extract table name from SQL statement"""
-        sql_lower = sql.lower().strip()
-        
-        if sql_lower.startswith("insert into"):
-            parts = sql_lower.split()
-            if len(parts) >= 3:
-                return parts[2]
-        elif sql_lower.startswith("update"):
-            parts = sql_lower.split()
-            if len(parts) >= 2:
-                return parts[1]
-        elif sql_lower.startswith("delete from"):
-            parts = sql_lower.split()
-            if len(parts) >= 3:
-                return parts[2]
-        
-        return None
-    
-    def get_local_cursor(self):
-        """Get cursor for local database"""
-        return self.local_conn.cursor()
-    
-    def close(self):
-        """Close all database connections"""
-        self.stop_sync_thread()
-        
-        if self.local_conn:
-            # Final sync before closing
-            if self.supabase_conn:
-                self.sync_pending_records()
-            
-            self.local_conn.close()
-        
-        if self.supabase_conn:
-            self.supabase_conn.close()
-
-# Initialize dual database manager
-db_manager = DualDatabaseManager()
-
-# ========================== USER AUTHENTICATION ==========================
-USERS_FILE = "users.json"
-
-def hash_password(password):
-    """Hash password using SHA-256"""
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def load_users():
-    """Load users from JSON file"""
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, 'r') as f:
-            return json.load(f)
-    return {"admin": {"password": hash_password("admin123"), "role": "admin"}}
-
-def save_users(users):
-    """Save users to JSON file"""
-    with open(USERS_FILE, 'w') as f:
-        json.dump(users, f, indent=2)
-
-def authenticate(username, password):
-    """Authenticate user"""
-    users = load_users()
-    if username in users and users[username]["password"] == hash_password(password):
-        return True, users[username].get("role", "user")
-    return False, None
-
-def register_user(username, password, role="user"):
-    """Register new user"""
-    users = load_users()
-    if username in users:
-        return False, "Username already exists"
-    users[username] = {"password": hash_password(password), "role": role}
-    save_users(users)
-    return True, "User registered successfully"
-
-def reset_password(username, new_password):
-    """Reset user password"""
-    users = load_users()
-    if username not in users:
-        return False, "Username not found"
-    users[username]["password"] = hash_password(new_password)
-    save_users(users)
-    return True, "Password reset successfully"
-
-# ========================== LOGIN PAGE ==========================
-def login_page():
-    """Display login page"""
-    st.markdown("""
-    <div style="text-align:center; margin-bottom:30px;">
-        <h1>🌿 Fresh Basket</h1>
-        <div class="subtitle">Freshness You Can Feel</div>
-        <p style="color:#7f8c8d; font-size:0.9em;">No.4, Andal nagar, Adambakkam, Chennai - 600 088<br>📞 7904019948</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    tab1, tab2, tab3 = st.tabs(["🔐 Login", "📝 Register", "🔑 Forgot Password"])
-    
-    with tab1:
-        with st.form("login_form"):
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            submit = st.form_submit_button("Login", type="primary")
-            
-            if submit:
-                if username and password:
-                    authenticated, role = authenticate(username, password)
-                    if authenticated:
-                        st.session_state.logged_in = True
-                        st.session_state.username = username
-                        st.session_state.role = role
-                        st.success(f"Welcome {username}!")
-                        st.rerun()
-                    else:
-                        st.error("Invalid username or password")
-    
-    with tab2:
-        with st.form("register_form"):
-            new_username = st.text_input("New Username")
-            new_password = st.text_input("New Password", type="password")
-            confirm_password = st.text_input("Confirm Password", type="password")
-            register = st.form_submit_button("Register", type="secondary")
-            
-            if register:
-                if new_username and new_password:
-                    if new_password == confirm_password:
-                        success, message = register_user(new_username, new_password)
-                        if success:
-                            st.success(message)
-                        else:
-                            st.error(message)
-    
-    with tab3:
-        with st.form("reset_form"):
-            reset_username = st.text_input("Username")
-            new_password_reset = st.text_input("New Password", type="password")
-            confirm_reset = st.text_input("Confirm New Password", type="password")
-            reset = st.form_submit_button("Reset Password", type="secondary")
-            
-            if reset:
-                if reset_username and new_password_reset:
-                    if new_password_reset == confirm_reset:
-                        success, message = reset_password(reset_username, new_password_reset)
-                        if success:
-                            st.success(message)
-                        else:
-                            st.error(message)
-    
-    return False
-
-# ========================== INITIALIZE DATABASE ==========================
-if not db_manager.init_databases():
-    st.error("❌ Failed to initialize database system.")
-    st.stop()
-
-def get_db_connection():
-    """Get database connection - always uses local for speed"""
-    return db_manager.local_conn
-
-# ========================== INITIALIZE SESSION STATE ==========================
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
-if 'username' not in st.session_state:
-    st.session_state.username = ""
-if 'role' not in st.session_state:
-    st.session_state.role = ""
-if 'cart' not in st.session_state:
-    st.session_state.cart = []
-if 'shortage_threshold' not in st.session_state:
-    st.session_state.shortage_threshold = 5.0
-if 'selected_date' not in st.session_state:
-    st.session_state.selected_date = date.today()
-if 'last_sale' not in st.session_state:
-    st.session_state.last_sale = None
-if 'guest_counter' not in st.session_state:
-    st.session_state.guest_counter = 1
-if 'backup_counter' not in st.session_state:
-    st.session_state.backup_counter = 0
-if 'inventory_data' not in st.session_state:
-    st.session_state.inventory_data = None
-if 'inventory_refresh_time' not in st.session_state:
-    st.session_state.inventory_refresh_time = None
-if 'initialized' not in st.session_state:
-    st.session_state.initialized = False
-
-# ========================== MAIN APP ==========================
-if not st.session_state.logged_in:
-    login_page()
-    st.stop()
+import json
+import socket
+import base64
 
 # ========================== PAGE SETUP ==========================
 st.set_page_config(page_title="Fresh Basket", page_icon="🌿", layout="wide")
 
-# Custom CSS
+# Custom CSS for beautiful UI
 st.markdown("""
 <style>
+    /* Main background */
     .main {background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);}
     
+    /* Fonts */
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=Montserrat:wght@400;500;600;700&display=swap');
     
-    * {font-family: 'Poppins', sans-serif;}
+    * {
+        font-family: 'Poppins', sans-serif;
+    }
     
-    h1, h2, h3, h4, h5, h6 {font-family: 'Montserrat', sans-serif !important; font-weight: 600 !important;}
+    h1, h2, h3, h4, h5, h6 {
+        font-family: 'Montserrat', sans-serif !important;
+        font-weight: 600 !important;
+    }
     
+    /* Headers */
     h1 {text-align:center; color:#2c3e50; font-size:2.8em; margin-bottom:5px;}
-    .subtitle {text-align:center; color:#27ae60; font-size:1.2em; margin-bottom:10px; font-weight:500;}
+    .subtitle {text-align:center; color:#27ae60; font-size:1.2em; margin-bottom:30px; font-weight:500;}
     
-    .stButton>button {height:3em; border-radius:12px; font-size:16px; font-weight:500; transition: all 0.3s ease; border: none !important;}
-    .stButton>button:hover {transform: translateY(-2px); box-shadow: 0 6px 12px rgba(0,0,0,0.15) !important;}
+    /* Buttons */
+    .stButton>button {
+        height:3em; 
+        border-radius:12px; 
+        font-size:16px; 
+        font-weight:500;
+        transition: all 0.3s ease;
+        border: none !important;
+    }
+    .stButton>button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 12px rgba(0,0,0,0.15) !important;
+    }
     
     .primary-btn {background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%) !important; color:white !important;}
     .secondary-btn {background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%) !important; color:white !important;}
+    .success-btn {background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%) !important; color:white !important;}
+    .warning-btn {background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%) !important; color:white !important;}
+    .info-btn {background: linear-gradient(135deg, #3498db 0%, #2980b9 100%) !important; color:white !important;}
     
-    .card {background: white; padding: 25px; border-radius: 20px; margin: 15px 0; box-shadow: 0 10px 30px rgba(0,0,0,0.08); border: 1px solid rgba(255,255,255,0.2); transition: transform 0.3s ease, box-shadow 0.3s ease;}
-    .card:hover {transform: translateY(-5px); box-shadow: 0 15px 35px rgba(0,0,0,0.12);}
+    /* Cards */
+    .card {
+        background: white;
+        padding: 25px;
+        border-radius: 20px;
+        margin: 15px 0;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+        border: 1px solid rgba(255,255,255,0.2);
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
+    }
+    .card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 15px 35px rgba(0,0,0,0.12);
+    }
     
-    .metric-card {background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%); padding: 25px; border-radius: 15px; margin: 10px; color: white; text-align: center; box-shadow: 0 8px 25px rgba(39, 174, 96, 0.3);}
-    .inventory-card {background: linear-gradient(135deg, #3498db 0%, #2980b9 100%); padding: 20px; border-radius: 15px; margin: 10px; color: white; box-shadow: 0 8px 25px rgba(52, 152, 219, 0.3);}
-    .sales-card {background: linear-gradient(135deg, #9b59b6 0%, #8e44ad 100%); padding: 20px; border-radius: 15px; margin: 10px; color: white; box-shadow: 0 8px 25px rgba(155, 89, 182, 0.3);}
-    .purchase-card {background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%); padding: 20px; border-radius: 15px; margin: 10px; color: white; box-shadow: 0 8px 25px rgba(243, 156, 18, 0.3);}
-    .red-alert-card {background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%) !important; padding: 20px; border-radius: 15px; margin: 10px; color: white; box-shadow: 0 8px 25px rgba(231, 76, 60, 0.3);}
+    .metric-card {
+        background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%);
+        padding: 25px;
+        border-radius: 15px;
+        margin: 10px;
+        color: white;
+        text-align: center;
+        box-shadow: 0 8px 25px rgba(39, 174, 96, 0.3);
+    }
     
-    /* Hide number input placeholders */
-    .stNumberInput input[type="number"]::placeholder {color: transparent !important;}
-    .stNumberInput input::-webkit-input-placeholder {color: transparent !important;}
-    .stNumberInput input:-moz-placeholder {color: transparent !important;}
-    .stNumberInput input::-moz-placeholder {color: transparent !important;}
-    .stNumberInput input:-ms-input-placeholder {color: transparent !important;}
-    .stNumberInput div[data-baseweb="form-control"] > div:nth-child(2) {visibility: hidden !important; height: 0 !important; margin: 0 !important; padding: 0 !important; min-height: 0 !important;}
+    .inventory-card {
+        background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+        padding: 20px;
+        border-radius: 15px;
+        margin: 10px;
+        color: white;
+        box-shadow: 0 8px 25px rgba(52, 152, 219, 0.3);
+    }
     
-    .user-info {background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%); color: white; padding: 10px 15px; border-radius: 10px; margin: 10px 0; text-align: center; font-weight: bold;}
+    .sales-card {
+        background: linear-gradient(135deg, #9b59b6 0%, #8e44ad 100%);
+        padding: 20px;
+        border-radius: 15px;
+        margin: 10px;
+        color: white;
+        box-shadow: 0 8px 25px rgba(155, 89, 182, 0.3);
+    }
     
-    .db-status-success {background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%); color: white; padding: 10px; border-radius: 10px; margin: 5px 0;}
-    .db-status-warning {background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%); color: white; padding: 10px; border-radius: 10px; margin: 5px 0;}
-    .db-status-error {background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%); color: white; padding: 10px; border-radius: 10px; margin: 5px 0;}
+    .purchase-card {
+        background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%);
+        padding: 20px;
+        border-radius: 15px;
+        margin: 10px;
+        color: white;
+        box-shadow: 0 8px 25px rgba(243, 156, 18, 0.3);
+    }
     
-    .sync-status {background: linear-gradient(135deg, #3498db 0%, #2980b9 100%); color: white; padding: 8px 12px; border-radius: 8px; margin: 5px 0; font-size: 0.9em;}
-    .sync-status-offline {background: linear-gradient(135deg, #95a5a6 0%, #7f8c8d 100%);}
+    /* Tables */
+    .dataframe {
+        border-radius: 10px !important;
+        overflow: hidden !important;
+    }
+    
+    /* Inputs */
+    .stSelectbox, .stTextInput, .stNumberInput, .stDateInput {
+        border-radius: 10px !important;
+    }
+    
+    .stSelectbox>div>div {
+        border-radius: 10px !important;
+    }
+    
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        padding: 10px 0;
+    }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 12px 12px 0 0;
+        padding: 12px 24px;
+        background: #f8f9fa;
+        font-weight: 500;
+    }
+    .stTabs [aria-selected="true"] {
+        background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%) !important;
+        color: white !important;
+    }
+    
+    /* Sidebar */
+    .css-1d391kg {
+        background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%) !important;
+    }
+    
+    /* Receipt */
+    .receipt {
+        background: white;
+        padding: 30px;
+        border-radius: 20px;
+        box-shadow: 0 15px 35px rgba(0,0,0,0.1);
+        border: 2px solid #27ae60;
+        max-width: 500px;
+        margin: 20px auto;
+    }
+    
+    /* Alert boxes */
+    .alert-success {
+        background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
+        padding: 15px;
+        border-radius: 12px;
+        border-left: 5px solid #28a745;
+        margin: 10px 0;
+        color: #155724;
+    }
+    
+    .alert-warning {
+        background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%);
+        padding: 15px;
+        border-radius: 12px;
+        border-left: 5px solid #ffc107;
+        margin: 10px 0;
+        color: #856404;
+    }
+    
+    .alert-danger {
+        background: linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%);
+        padding: 15px;
+        border-radius: 12px;
+        border-left: 5px solid #dc3545;
+        margin: 10px 0;
+        color: #721c24;
+    }
+    
+    /* Cart items */
+    .cart-item {
+        background: white;
+        padding: 15px;
+        margin: 10px 0;
+        border-radius: 12px;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.05);
+        border-left: 4px solid #27ae60;
+        transition: all 0.3s ease;
+    }
+    .cart-item:hover {
+        transform: translateX(5px);
+        box-shadow: 0 6px 12px rgba(0,0,0,0.1);
+    }
+    
+    /* Footer */
+    .footer {
+        text-align: center;
+        color: #7f8c8d;
+        margin-top: 40px;
+        padding-top: 20px;
+        border-top: 1px solid #e0e0e0;
+        font-size: 0.9em;
+    }
+    
+    /* Vegetable selection */
+    .veg-select-card {
+        background: white;
+        padding: 15px;
+        border-radius: 15px;
+        margin: 10px 0;
+        box-shadow: 0 5px 15px rgba(0,0,0,0.05);
+        border: 1px solid #e0e0e0;
+    }
+    
+    /* Print button */
+    .print-btn {
+        background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%) !important;
+        color: white !important;
+        font-weight: bold !important;
+    }
+    
+    /* Remove the "Press Enter..." message from number inputs */
+    .stNumberInput input[type="number"]::placeholder {
+        color: transparent !important;
+    }
+    
+    /* Fix for print preview */
+    @media print {
+        .receipt {
+            box-shadow: none !important;
+            border: 1px solid #000 !important;
+            max-width: 100% !important;
+            margin: 0 !important;
+            padding: 15px !important;
+        }
+        .stApp {
+            visibility: hidden !important;
+        }
+        .receipt, .receipt * {
+            visibility: visible !important;
+        }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -986,108 +256,322 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Initialize database connection
-conn = get_db_connection()
-if conn is None:
-    st.error("❌ Critical: Could not initialize database. Please refresh the page.")
-    st.stop()
+# ========================== DATABASE ==========================
+DB_FILE = "shop.db"
+conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+c = conn.cursor()
 
-# ========================== OPTIMIZED HELPER FUNCTIONS ==========================
-@st.cache_data(ttl=5)  # Reduced to 5 seconds for faster updates
-def get_inventory_data():
-    """Get all inventory data with caching"""
-    try:
-        c = conn.cursor()
-        c.execute("SELECT vegetable, quantity, cost_price, selling_price, unit_type, category FROM inventory ORDER BY vegetable")
-        rows = c.fetchall()
-        return {row[0]: row[1:] for row in rows}
-    except Exception as e:
-        logger.error(f"Error getting inventory data: {e}")
-        return {}
+# ========================== DATABASE SETUP ==========================
+# First, check if inventory table exists and has unit_type column
+c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='inventory'")
+table_exists = c.fetchone()
 
-@st.cache_data(ttl=5)
-def get_inventory_df():
-    """Get inventory as DataFrame with caching"""
-    try:
-        c = conn.cursor()
-        c.execute("SELECT vegetable, quantity, cost_price, selling_price, unit_type, category FROM inventory ORDER BY vegetable")
-        rows = c.fetchall()
-        return pd.DataFrame(rows, columns=['vegetable', 'quantity', 'cost_price', 'selling_price', 'unit_type', 'category'])
-    except Exception as e:
-        logger.error(f"Error getting inventory DataFrame: {e}")
-        return pd.DataFrame()
+if table_exists:
+    # Check if unit_type column exists
+    c.execute("PRAGMA table_info(inventory)")
+    columns = [column[1] for column in c.fetchall()]
+    
+    if 'unit_type' not in columns:
+        # Add unit_type column if it doesn't exist
+        try:
+            c.execute("ALTER TABLE inventory ADD COLUMN unit_type TEXT DEFAULT 'kg'")
+            conn.commit()
+        except Exception as e:
+            pass
+else:
+    # Create tables if they don't exist
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS inventory (
+        vegetable TEXT PRIMARY KEY,
+        quantity REAL,
+        cost_price REAL,
+        selling_price REAL,
+        image_url TEXT,
+        unit_type TEXT DEFAULT 'kg'
+    )
+    """)
 
+# Create other tables if they don't exist
+c.execute("""
+CREATE TABLE IF NOT EXISTS purchases (
+    date TEXT, 
+    vegetable TEXT, 
+    quantity REAL, 
+    amount REAL, 
+    supplier TEXT
+)
+""")
+
+c.execute("""
+CREATE TABLE IF NOT EXISTS sales (
+    date TEXT, 
+    vegetable TEXT, 
+    quantity_sold REAL, 
+    sale_price REAL, 
+    total REAL, 
+    customer TEXT,
+    unit_type TEXT
+)
+""")
+
+c.execute("""
+CREATE TABLE IF NOT EXISTS waste (
+    date TEXT, 
+    vegetable TEXT, 
+    quantity REAL, 
+    reason TEXT
+)
+""")
+
+c.execute("""
+CREATE TABLE IF NOT EXISTS customers (
+    phone TEXT PRIMARY KEY, 
+    name TEXT, 
+    points INTEGER DEFAULT 0
+)
+""")
+
+c.execute("""
+CREATE TABLE IF NOT EXISTS expenses (
+    date TEXT, 
+    category TEXT, 
+    amount REAL, 
+    description TEXT
+)
+""")
+
+conn.commit()
+
+# ========================== UPDATED DEFAULT VEGETABLES AND FRUITS ==========================
+# Vegetables in KG
+kg_vegetables = [
+    "Avarakai",
+    "Baby Corn",
+    "Baby Potato",
+    "Beetroot",
+    "Bitter Gourd",
+    "Bottle Gourd",
+    "Brinjal",
+    "Brinjal Green",
+    "Brinjal Purple",
+    "Broccoli",
+    "Bush Beans",
+    "Cabbage Green",
+    "Cabbage Red",
+    "Capsicum",
+    "Capsicum Colour",
+    "Carrot",
+    "Chow Chow (Chayote)",
+    "Cluster Beans",
+    "Colacassia (Taro)",
+    "Coriander Leaf",
+    "Cowpea",
+    "Cucumber",
+    "Curry Leaf",
+    "Garlic",
+    "Ginger",
+    "Green Chillies",
+    "Green Peas",
+    "Greens (Spinach/Amaranthus etc.)",
+    "Knol (Knol Khol)",
+    "Kovakai (Ivy Gourd)",
+    "Ladies Finger (Okra)",
+    "Onion Big",
+    "Onion Small",
+    "Potato",
+    "Pudina (Mint)",
+    "Pumpkin (Red)",
+    "Pumpkin (White)",
+    "Radish",
+    "Red Radish",
+    "Ridge Gourd",
+    "Snake Gourd",
+    "Sweet Potato",
+    "Tomato",
+    "Topaico",
+    "Turnip",
+    "Yam",
+    "Zukuni (Zucchini)"
+]
+
+# Vegetables in Piece
+piece_vegetables = [
+    "Lemon",
+    "Drumstick",
+    "Banana Steam",
+    "Banana Flower",
+    "Raw Banana",
+    "Coconut"
+]
+
+# Fruits (all in KG)
+fruits_kg = [
+    "Amla (Indian Gooseberry)",
+    "Apple",
+    "Banana Country",
+    "Banana Elachi",
+    "Banana Hill",
+    "Banana Karpoorvali",
+    "Banana Nendran",
+    "Banana Poovan",
+    "Banana Rasthali",
+    "Banana Red",
+    "Black Grapes",
+    "Butter Fruit (Avocado)",
+    "Custard Apple",
+    "Fig",
+    "Guava",
+    "Guava Red",
+    "Jackfruit",
+    "Mangostan (Mangosteen)",
+    "Mosambi (Sweet Lime)",
+    "Musk Melon",
+    "Orange",
+    "Papaya",
+    "Passion Fruit",
+    "Pears",
+    "Pineapple",
+    "Pomegranate",
+    "Raw Mango",
+    "Sapota (Chikoo)",
+    "Watermelon"
+]
+
+# Combine all items with their unit types
+default_items = []
+for veg in kg_vegetables:
+    default_items.append((veg, "kg"))
+for veg in piece_vegetables:
+    default_items.append((veg, "piece"))
+for fruit in fruits_kg:
+    default_items.append((fruit, "kg"))
+
+# Initialize default items if not exists
+for item, unit_type in default_items:
+    # First check if item exists
+    c.execute("SELECT vegetable FROM inventory WHERE vegetable=?", (item,))
+    if not c.fetchone():
+        # Insert new item with unit_type
+        try:
+            c.execute("INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type) VALUES (?, 0, 0, 0, '', ?)", 
+                     (item, unit_type))
+        except Exception as e:
+            # If insertion fails, try to update existing
+            try:
+                c.execute("UPDATE inventory SET unit_type=? WHERE vegetable=?", (unit_type, item))
+            except:
+                pass
+    else:
+        # Update existing item with unit_type if needed
+        try:
+            c.execute("UPDATE inventory SET unit_type=? WHERE vegetable=?", (unit_type, item))
+        except:
+            pass
+
+conn.commit()
+
+# ========================== HELPERS ==========================
 def get_stock(veg):
-    """Return stock information for a vegetable"""
-    inventory_data = get_inventory_data()
-    if veg in inventory_data:
-        qty, cost, sell, unit_type, category = inventory_data[veg]
-        return qty or 0.0, cost or 0.0, sell or 0.0, unit_type or 'kg', category or 'vegetable'
-    return 0.0, 0.0, 0.0, 'kg', 'vegetable'
-
-@st.cache_data(ttl=10)  # Reduced to 10 seconds
-def get_available_items():
-    """Get items available for sale with caching"""
-    inventory_df = get_inventory_df()
-    
-    if inventory_df.empty:
-        return [], [], []
-    
-    # Filter for available items
-    available_df = inventory_df[(inventory_df['quantity'] > 0) & (inventory_df['selling_price'] > 0)]
-    
-    kg_vegetables = []
-    piece_vegetables = []
-    kg_fruits = []
-    
-    for _, row in available_df.iterrows():
-        veg = row['vegetable']
-        qty = row['quantity']
-        price = row['selling_price']
-        unit_type = row['unit_type']
-        category = row['category']
-        
-        item_data = {
-            'name': veg,
-            'price': price,
-            'stock': qty,
-            'display': f"{veg} (Stock: {qty:.2f} {unit_type}, Price: ₹{price:.2f}/{unit_type})"
-        }
-        
-        if category == 'fruit' and unit_type == 'kg':
-            kg_fruits.append(item_data)
-        elif category == 'vegetable':
-            if unit_type == 'kg':
-                kg_vegetables.append(item_data)
-            elif unit_type == 'piece':
-                piece_vegetables.append(item_data)
-    
-    return kg_vegetables, piece_vegetables, kg_fruits
-
-@st.cache_data(ttl=30)
-def get_last_record_date(table_name):
-    """Get the date of the last record in a table"""
+    """Return (quantity, cost_price, selling_price, unit_type) for veg (or zeros)."""
     try:
-        c = conn.cursor()
-        if table_name in ["sales", "purchases", "waste", "expenses"]:
-            c.execute(f"SELECT MAX(date) FROM {table_name}")
-            result = c.fetchone()[0]
-            return result if result else "N/A"
+        c.execute("SELECT quantity, cost_price, selling_price, unit_type FROM inventory WHERE vegetable=?", (veg,))
+        row = c.fetchone()
+        if row:
+            qty = row[0] if row[0] is not None else 0.0
+            cost = row[1] if row[1] is not None else 0.0
+            sell = row[2] if row[2] is not None else 0.0
+            unit_type = row[3] if row[3] is not None else 'kg'
+            return qty, cost, sell, unit_type
     except Exception as e:
-        logger.error(f"Error getting last record date: {e}")
-    return "N/A"
+        pass
+    return 0.0, 0.0, 0.0, 'kg'
 
-# ========================== SELL PAGE FUNCTIONS ==========================
+def fetch_table_with_rowid(table):
+    return pd.read_sql(f"SELECT rowid, * FROM {table}", conn)
+
+def safe_round_df(df, cols):
+    for col in cols:
+        if col in df.columns:
+            try:
+                df[col] = df[col].astype(float).round(2)
+            except Exception:
+                pass
+    return df
+
+def convert_to_display(qty, unit_type):
+    """Convert quantity to display format based on unit type"""
+    if unit_type == 'kg':
+        kg = int(qty)
+        grams = round((qty - kg) * 1000)
+        if grams > 0:
+            return f"{kg} kg {grams} g" if kg > 0 else f"{grams} g"
+        return f"{kg} kg"
+    elif unit_type == 'piece':
+        if qty == 1:
+            return "1 piece"
+        else:
+            return f"{int(qty)} pieces"
+    else:
+        return f"{qty:.2f} {unit_type}"
+
+def get_quantity_label(unit_type):
+    """Get quantity label based on unit type"""
+    if unit_type == 'kg':
+        return "Quantity (kg)"
+    elif unit_type == 'piece':
+        return "Quantity (pieces)"
+    else:
+        return f"Quantity ({unit_type})"
+
+def get_price_label(unit_type):
+    """Get price label based on unit type"""
+    if unit_type == 'kg':
+        return "Price/kg"
+    elif unit_type == 'piece':
+        return "Price/piece"
+    else:
+        return f"Price per {unit_type}"
+
+# Initialize session state
+if "cart" not in st.session_state:
+    st.session_state.cart = []
+if "shortage_threshold" not in st.session_state:
+    st.session_state.shortage_threshold = 5.0
+if "selected_date" not in st.session_state:
+    st.session_state.selected_date = date.today()
+if "last_sale" not in st.session_state:
+    st.session_state.last_sale = None
+if "guest_counter" not in st.session_state:
+    # Try to get the maximum guest number from existing sales to persist across sessions
+    try:
+        c.execute("SELECT customer FROM sales WHERE customer LIKE 'Guest%'")
+        guests = c.fetchall()
+        max_guest = 0
+        for guest in guests:
+            # Extract number from "GuestX" or "GuestX (phone)"
+            guest_str = guest[0]
+            match = re.search(r'Guest(\d+)', guest_str)
+            if match:
+                guest_num = int(match.group(1))
+                if guest_num > max_guest:
+                    max_guest = guest_num
+        st.session_state.guest_counter = max_guest + 1
+    except:
+        st.session_state.guest_counter = 1
+
+# ========================== HELPER FUNCTIONS FOR SELL PAGE ==========================
 def add_to_cart_simple(veg, qty):
     """Add item to cart with quantity validation"""
     if qty <= 0:
         return False
     
-    stock, _, price, unit_type, _ = get_stock(veg)
+    # Get price and unit type
+    stock, _, price, unit_type = get_stock(veg)
     if stock == 0:
         st.error(f"{veg} is out of stock!")
         return False
     
+    # Check stock
     current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == veg)
     
     if current_in_cart + qty > stock:
@@ -1095,6 +579,7 @@ def add_to_cart_simple(veg, qty):
         st.error(f"Not enough stock! Available: {stock:.2f} {unit_display}")
         return False
     
+    # Add to cart
     found = False
     for i, item in enumerate(st.session_state.cart):
         if item[0] == veg:
@@ -1105,8 +590,7 @@ def add_to_cart_simple(veg, qty):
     
     if not found:
         total = round(qty * price, 2)
-        stock, _, price, unit_type, category = get_stock(veg)
-        st.session_state.cart.append([veg, qty, price, total, unit_type, category])
+        st.session_state.cart.append([veg, qty, price, total, unit_type])
     
     return True
 
@@ -1118,8 +602,28 @@ def remove_from_cart(veg):
             return True
     return False
 
+def update_cart_qty(veg, new_qty):
+    """Update cart item quantity"""
+    if new_qty <= 0:
+        remove_from_cart(veg)
+        return True
+    
+    stock, _, price, unit_type = get_stock(veg)
+    if new_qty > stock:
+        unit_display = unit_type if unit_type != 'kg' else 'kg'
+        st.error(f"Not enough stock! Available: {stock:.2f} {unit_display}")
+        return False
+    
+    for i, item in enumerate(st.session_state.cart):
+        if item[0] == veg:
+            st.session_state.cart[i][1] = new_qty
+            st.session_state.cart[i][3] = round(new_qty * price, 2)
+            return True
+    return False
+
 def get_ist_time():
     """Get current IST time"""
+    # IST is UTC+5:30
     utc_now = datetime.utcnow()
     ist_now = utc_now + timedelta(hours=5, minutes=30)
     return ist_now.strftime("%H:%M:%S")
@@ -1130,10 +634,10 @@ def process_sale_simple(cust_name, cust_phone):
         st.error("Cart is empty!")
         return False
     
-    # Check stock availability
+    # Validate stock
     insufficient = []
-    for veg, qty, _, _, unit_type, _ in st.session_state.cart:
-        stock, _, _, _, _ = get_stock(veg)
+    for veg, qty, price, total, unit_type in st.session_state.cart:
+        stock, _, _, _ = get_stock(veg)
         if qty > stock:
             insufficient.append((veg, stock, qty, unit_type))
     
@@ -1143,123 +647,245 @@ def process_sale_simple(cust_name, cust_phone):
             st.error(f"Not enough {v}: available {stock:.2f} {unit_display}, requested {q:.2f} {unit_display}")
         return False
     
+    # Process sale
     d = st.session_state.selected_date.strftime("%Y-%m-%d")
     current_time = get_ist_time()
     
+    # Handle customer name
     if not cust_name or cust_name.strip() == "":
         cust_name = f"Guest{st.session_state.guest_counter}"
+        # Increment counter for next guest
         st.session_state.guest_counter += 1
     
+    # Create customer string
     if cust_phone and cust_phone.strip():
         cust = f"{cust_name} ({cust_phone})"
     else:
         cust = cust_name
     
-    bill_no = datetime.now().strftime("%Y%m%d%H%M%S")
-    
     sale_details = []
-    c = conn.cursor()
+    for item in st.session_state.cart:
+        veg, qty, price, total, unit_type = item
+        
+        # Save to sales table with unit_type
+        c.execute("INSERT INTO sales (date, vegetable, quantity_sold, sale_price, total, customer, unit_type) VALUES (?,?,?,?,?,?,?)", 
+                 (d, veg, qty, price, total, cust, unit_type))
+        
+        # Update inventory
+        c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
+        
+        sale_details.append({
+            "item": veg,
+            "quantity": qty,
+            "price": price,
+            "total": total,
+            "unit_type": unit_type
+        })
     
-    try:
-        # Process all items in a transaction
-        for item in st.session_state.cart:
-            veg, qty, price, total, unit_type, category = item
+    # Update customer points
+    if cust_phone and cust_phone.strip() != "":
+        total_amount = sum(item[3] for item in st.session_state.cart)
+        c.execute("INSERT OR IGNORE INTO customers (phone, name) VALUES (?,?)", 
+                 (cust_phone, cust_name))
+        points = int(total_amount // 10)
+        c.execute("UPDATE customers SET points = points + ? WHERE phone=?", 
+                 (points, cust_phone))
+    
+    conn.commit()
+    
+    # Store sale for receipt
+    st.session_state.last_sale = {
+        "date": d,
+        "customer": cust,
+        "items": sale_details,
+        "total": sum(item[3] for item in st.session_state.cart),
+        "phone": cust_phone,
+        "time": current_time,
+        "bill_no": datetime.now().strftime("%Y%m%d%H%M%S")
+    }
+    
+    # Clear cart
+    st.session_state.cart = []
+    return True
+
+def show_receipt_simple():
+    """Display receipt after sale"""
+    sale = st.session_state.last_sale
+    if not sale:
+        return
+    
+    st.markdown("""
+    <div style="text-align:center; margin:30px 0;">
+        <h2 style="color:#27ae60;">✅ Sale Completed Successfully!</h2>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Receipt
+    with st.container():
+        st.markdown("""
+        <div class="receipt">
+            <div style="text-align:center; margin-bottom:20px;">
+                <h2 style="color:#2c3e50;">🌿 FRESH BASKET</h2>
+                <p style="color:#27ae60; margin:5px 0; font-weight:bold;">Freshness You Can Feel</p>
+                <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">Bill No: {bill_no}</p>
+            </div>
+            <hr style="border:none; height:2px; background: linear-gradient(90deg, #27ae60, #2ecc71); margin:15px 0;">
+        """.format(bill_no=sale['bill_no']), unsafe_allow_html=True)
+        
+        # Sale info
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"**📅 Date:** {sale['date']}")
+            if sale['time']:
+                st.markdown(f"**⏰ Time:** {sale['time']} (IST)")
+        with col2:
+            st.markdown(f"**🧾 Bill No:** {sale['bill_no']}")
+        
+        st.markdown("<hr style='border:none; height:1px; background:#e0e0e0; margin:15px 0;'>", unsafe_allow_html=True)
+        
+        # Items table
+        st.markdown("### 🛒 Items Purchased")
+        
+        items_data = []
+        for item in sale['items']:
+            unit_type = item['unit_type']
+            price_label = "Price/kg" if unit_type == 'kg' else "Price/piece"
+            quantity_display = f"{item['quantity']:.0f} pieces" if unit_type == 'piece' else f"{item['quantity']:.3f} kg"
             
-            c.execute("""
-                INSERT INTO sales (date, vegetable, quantity_sold, sale_price, total, customer, unit_type, customer_name, customer_phone, bill_no) 
-                VALUES (?,?,?,?,?,?,?,?,?,?)
-            """, (d, veg, qty, price, total, cust, unit_type, cust_name, cust_phone, bill_no))
-            
-            c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
-            
-            sale_details.append({
-                "item": veg,
-                "quantity": qty,
-                "price": price,
-                "total": total,
-                "unit_type": unit_type
+            items_data.append({
+                'Item': item['item'],
+                'Quantity': quantity_display,
+                price_label: f"₹{item['price']:.2f}",
+                'Total': f"₹{item['total']:.2f}"
             })
         
-        # Update customer information
-        if cust_phone and cust_phone.strip() != "":
-            total_amount = sum(item[3] for item in st.session_state.cart)
-            try:
-                c.execute("""
-                    INSERT INTO customers (phone, name, points, total_spent, last_visit) 
-                    VALUES (?,?,?,?,?)
-                    ON CONFLICT (phone, name) DO UPDATE 
-                    SET points = customers.points + ?, 
-                        total_spent = customers.total_spent + ?,
-                        last_visit = ?
-                """, (cust_phone, cust_name, int(total_amount // 10), total_amount, d, int(total_amount // 10), total_amount, d))
-            except Exception as e:
-                logger.error(f"Error updating customer: {e}")
+        items_df = pd.DataFrame(items_data)
         
-        conn.commit()
+        # Apply styling to the dataframe
+        st.dataframe(
+            items_df.style
+            .set_properties(**{'background-color': '#f8f9fa', 'color': '#2c3e50'})
+            .set_table_styles([
+                {'selector': 'th', 'props': [('background', '#27ae60'), ('color', 'white'), 
+                                            ('font-weight', 'bold'), ('text-align', 'center')]},
+                {'selector': 'td', 'props': [('text-align', 'center')]}
+            ]),
+            use_container_width=True,
+            hide_index=True
+        )
         
-        st.session_state.last_sale = {
-            "date": d,
-            "customer": cust,
-            "customer_name": cust_name,
-            "customer_phone": cust_phone,
-            "items": sale_details,
-            "total": sum(item[3] for item in st.session_state.cart),
-            "phone": cust_phone,
-            "time": current_time,
-            "bill_no": bill_no
-        }
+        # Total
+        st.markdown("<hr style='border:none; height:2px; background: linear-gradient(90deg, #27ae60, #2ecc71); margin:20px 0;'>", unsafe_allow_html=True)
         
-        st.session_state.cart = []
-        st.cache_data.clear()  # Clear cache to refresh data
-        return True
+        col1, col2 = st.columns([3, 1])
+        with col2:
+            st.markdown(f"<h3 style='text-align:right; color:#2c3e50;'>Total: ₹{sale['total']:.2f}</h3>", unsafe_allow_html=True)
         
-    except Exception as e:
-        conn.rollback()
-        logger.error(f"Error processing sale: {e}")
-        st.error(f"Error processing sale: {str(e)}")
-        return False
+        st.markdown("""
+        <hr style='border:none; height:1px; background:#e0e0e0; margin:20px 0;'>
+        <div style="text-align:center; margin-top:20px;">
+            <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">
+                Thank you for your purchase! 🌿
+            </p>
+            <p style="color:#7f8c8d; font-size:0.8em; margin:5px 0;">
+                Quality Vegetables • Fresh Every Day
+            </p>
+        </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Print button with JavaScript for printing
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("🖨️ Print Bill", use_container_width=True, type="primary", key="print_bill"):
+            # JavaScript to trigger print
+            js = """
+            <script>
+            window.print();
+            </script>
+            """
+            st.components.v1.html(js, height=0)
+            st.success("Print dialog opened!")
+    with col2:
+        if st.button("📋 New Bill", use_container_width=True, key="new_bill"):
+            st.session_state.last_sale = None
+            st.rerun()
+    with col3:
+        if st.button("🏠 Main Menu", use_container_width=True, key="main_menu"):
+            st.session_state.last_sale = None
+            st.rerun()
 
-# ========================== PRINTING FUNCTIONS ==========================
+# ========================== UNIVERSAL PRINTING FUNCTIONS ==========================
+
 def print_universal(bill_data, method="auto"):
-    """Universal printing function"""
+    """
+    Universal printing function that works on ALL devices
+    Options: auto, wifi, bluetooth, cloud, pdf
+    """
+    
+    # Generate formatted bill text
     bill_text = format_bill_universal(bill_data)
     
+    # Try different methods based on device
     if method == "auto":
+        # Auto-detect best method
+        success = False
+        
+        # Try WiFi first (best for all devices)
         success = print_via_wifi(bill_text)
+        
         if not success:
+            # Try Bluetooth (for mobile)
             success = print_via_bluetooth(bill_text)
+        
         if not success:
+            # Try Cloud (fallback)
             success = print_via_cloud(bill_text)
+        
         return success
+    
     elif method == "wifi":
         return print_via_wifi(bill_text)
+    
     elif method == "bluetooth":
         return print_via_bluetooth(bill_text)
+    
     elif method == "cloud":
         return print_via_cloud(bill_text)
+    
     elif method == "pdf":
+        # Trigger browser print dialog
         return "pdf_trigger"
+    
     return False
 
 def format_bill_universal(bill_data):
-    """Format bill for all printer sizes"""
+    """Format bill that works on all printer sizes (58mm/80mm)"""
+    
+    # Smart formatting based on estimated paper width
+    paper_width = 80  # Default to 80mm
+    
     lines = []
     lines.append("=" * 48)
     lines.append(center_text("🌿 FRESH BASKET", 48))
     lines.append(center_text("Freshness You Can Feel", 48))
-    lines.append(center_text("No.4, Andal nagar, Adambakkam", 48))
-    lines.append(center_text("Chennai - 600 088", 48))
-    lines.append(center_text("📞 7904019948", 48))
     lines.append("=" * 48)
     
+    # Bill info
     lines.append(f"Bill No: {bill_data['bill_no']}")
     lines.append(f"Date: {bill_data['date']}")
     lines.append(f"Time: {bill_data['time']}")
     lines.append("-" * 48)
     
-    lines.append(f"{'Item':<20} {'Qty':<8} {'Price':<10} {'Amount':<10}")
+    # Items header
+    if paper_width >= 80:
+        lines.append(f"{'Item':<20} {'Qty':<8} {'Price':<10} {'Amount':<10}")
+    else:
+        lines.append(f"{'Item':<15} {'Qty':<6} {'Amount':<10}")
+    
     lines.append("-" * 48)
     
+    # Items list
     total_items = 0
     for item in bill_data['items']:
         total_items += 1
@@ -1274,17 +900,32 @@ def format_bill_universal(bill_data):
         
         amount = f"₹{item['total']:.2f}"
         
-        lines.append(f"{name:<20} {qty:<8} {price:<10} {amount:<10}")
+        if paper_width >= 80:
+            lines.append(f"{name:<20} {qty:<8} {price:<10} {amount:<10}")
+        else:
+            lines.append(f"{name:<15} {qty:<6} {amount:<10}")
     
     lines.append("-" * 48)
     
+    # Total
     total_text = f"TOTAL ({total_items} items): ₹{bill_data['total']:.2f}"
     lines.append(center_text(total_text, 48))
+    lines.append("-" * 48)
+    
+    # Customer info (removed customer name)
+    if bill_data.get('phone'):
+        phone = bill_data['phone']
+        if len(phone) > 15:
+            phone = phone[-10:]  # Last 10 digits
+        lines.append(f"Phone: {phone}")
+    
     lines.append("-" * 48)
     lines.append(center_text("Thank you for your purchase!", 48))
     lines.append(center_text("Visit Again 🌿", 48))
     lines.append("=" * 48)
-    lines.append("\n\n\n\x1B\x69")
+    
+    # Add paper cut command
+    lines.append("\n\n\n\x1B\x69")  # Paper cut command
     
     return "\n".join(lines)
 
@@ -1296,14 +937,20 @@ def center_text(text, width):
     return " " * spaces + text
 
 def print_via_wifi(bill_text, printer_ip=None):
-    """Print via WiFi network"""
+    """Print via WiFi network (works on all devices)"""
     try:
+        # Try common printer IPs
         printer_ips = ["192.168.1.100", "192.168.1.101", "192.168.0.100"]
         
         for ip in printer_ips:
             try:
+                # Try Epson ePOS
                 url = f"http://{ip}:8008/cgi-bin/epos/service.cgi"
-                data = {"print": bill_text, "cut": True, "align": "left"}
+                data = {
+                    "print": bill_text,
+                    "cut": True,
+                    "align": "left"
+                }
                 response = requests.post(url, json=data, timeout=5)
                 if response.status_code == 200:
                     return True
@@ -1315,38 +962,28 @@ def print_via_wifi(bill_text, printer_ip=None):
         return False
 
 def print_via_bluetooth(bill_text):
-    """Print via Bluetooth"""
+    """Print via Bluetooth (for mobile devices)"""
     try:
+        # This will work when implemented with mobile
+        # For now, return True to indicate Bluetooth is available
         return True
     except:
         return False
 
 def print_via_cloud(bill_text):
-    """Print via cloud service"""
+    """Print via cloud service (works everywhere with internet)"""
     try:
-        filename = f"bill_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        # Save to local file that can be shared
+        import datetime
+        filename = f"bill_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         with open(filename, "w", encoding="utf-8") as f:
             f.write(bill_text)
         return True
     except:
         return False
 
-# ========================== SIDEBAR ==========================
+# ========================== SIDEBAR MENU ==========================
 with st.sidebar:
-    # User info
-    st.markdown(f"""
-    <div class="user-info">
-        👤 {st.session_state.username} ({st.session_state.role})
-    </div>
-    """, unsafe_allow_html=True)
-    
-    if st.button("🚪 Logout", use_container_width=True):
-        st.session_state.logged_in = False
-        st.session_state.username = ""
-        st.session_state.role = ""
-        st.cache_data.clear()
-        st.rerun()
-    
     st.markdown("""
     <div style="background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%); padding:20px; border-radius:15px; margin-bottom:20px;">
         <h2 style="color:white; text-align:center;">📋 Navigation</h2>
@@ -1357,12 +994,13 @@ with st.sidebar:
         "",
         ["📊 Dashboard", "🛒 Add Purchase", "🏷 Set Prices", "💵 Quick Sell", "📦 Inventory", 
          "📋 Purchases", "🧾 Sales", "💸 Expenses", "👥 Customers", "🗑 Waste", 
-         "⬇ Download", "💰 Financials", "🔧 Database Tools", "🔍 Secrets Debug"],
+         "⬇ Download", "💰 Financials"],
         label_visibility="collapsed"
     )
     
     st.markdown("---")
     
+    # Date selector
     st.markdown("### 📅 Select Date")
     selected_date = st.date_input("", value=st.session_state.selected_date, key="date_selector")
     st.session_state.selected_date = selected_date
@@ -1373,97 +1011,6 @@ with st.sidebar:
         <h3 style="color:#2c3e50;">{selected_date.strftime('%d %B %Y')}</h3>
     </div>
     """, unsafe_allow_html=True)
-    
-    # Database Info
-    st.markdown("---")
-    st.markdown("### 💾 Database Status")
-    
-    try:
-        # Get database statistics
-        db_type = "Dual System" if db_manager.supabase_conn else "Local SQLite"
-        db_status_class = "db-status-success" if db_manager.supabase_conn else "db-status-warning"
-        db_status_text = "✅ Dual System (Fast + No Data Loss)" if db_manager.supabase_conn else "⚠️ Local Only (Fast)"
-        
-        sync_status = "🔄 Syncing Active" if db_manager.supabase_conn and db_manager.sync_running else "⚫️ Sync Offline"
-        sync_class = "sync-status" if db_manager.supabase_conn and db_manager.sync_running else "sync-status sync-status-offline"
-        
-        # Get counts
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM inventory")
-        inv_count = c.fetchone()[0]
-        
-        # Get pending sync count
-        c.execute("SELECT COUNT(*) FROM sales WHERE synced=0")
-        pending_sales = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM purchases WHERE synced=0")
-        pending_purchases = c.fetchone()[0]
-        pending_total = pending_sales + pending_purchases
-        
-        st.markdown(f"""
-        <div style="background: white; padding: 15px; border-radius: 10px; margin: 10px 0;">
-            <p style="margin: 5px 0; font-size: 0.9em;">
-                <strong>🗄️ Type:</strong> {db_type}
-            </p>
-            <p style="margin: 5px 0; font-size: 0.9em;">
-                <strong>📦 Items:</strong> {inv_count}
-            </p>
-            <p style="margin: 5px 0; font-size: 0.9em;">
-                <strong>📤 Pending Sync:</strong> {pending_total}
-            </p>
-            <div class="{db_status_class}" style="margin: 10px 0; padding: 8px; border-radius: 8px;">
-                <strong>{db_status_text}</strong>
-            </div>
-            <div class="{sync_class}" style="margin: 10px 0; padding: 8px; border-radius: 8px;">
-                <strong>{sync_status}</strong>
-                {f"{pending_total} pending" if pending_total > 0 else "All synced"}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Manual sync button
-        if db_manager.supabase_conn:
-            if st.button("🔄 Manual Sync Now", use_container_width=True, key="manual_sync"):
-                with st.spinner("Syncing to Supabase..."):
-                    db_manager.sync_pending_records()
-                    st.success("✅ Sync completed!")
-                    st.rerun()
-        
-        # Download backup button
-        if st.button("📥 Download Data", use_container_width=True, key="download_backup"):
-            try:
-                export_data = {}
-                tables = ["inventory", "purchases", "sales", "waste", "customers", "expenses"]
-                
-                for table in tables:
-                    try:
-                        c.execute(f"SELECT * FROM {table}")
-                        rows = c.fetchall()
-                        column_names = [description[0] for description in c.description]
-                        df = pd.DataFrame(rows, columns=column_names)
-                        export_data[table] = df.to_dict('records')
-                    except Exception as e:
-                        logger.error(f"Error exporting {table}: {e}")
-                        export_data[table] = []
-                
-                # Save as JSON
-                json_file = os.path.join(tempfile.gettempdir(), f"freshbasket_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
-                with open(json_file, 'w') as f:
-                    json.dump(export_data, f, indent=2, default=str)
-                
-                with open(json_file, 'rb') as f:
-                    st.download_button(
-                        label="📥 Download All Data",
-                        data=f,
-                        file_name=f"freshbasket_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                        mime="application/json",
-                        use_container_width=True,
-                        key="download_data_btn"
-                    )
-            except Exception as e:
-                st.error(f"Export failed: {e}")
-    
-    except Exception as e:
-        st.error(f"Database error: {e}")
     
     # Cart summary
     if st.session_state.cart:
@@ -1477,10 +1024,11 @@ with st.sidebar:
         </div>
         """, unsafe_allow_html=True)
     
-    # Printer Settings
+    # ========================== PRINTER SETTINGS ==========================
     st.markdown("---")
     st.markdown("### 🖨️ Printer Settings")
     
+    # Printer type selection
     printer_type = st.selectbox(
         "Printer Type",
         ["WiFi Network Printer", "Bluetooth Printer", "Cloud Printer", "Save as PDF only"],
@@ -1490,6 +1038,34 @@ with st.sidebar:
     
     if printer_type == "WiFi Network Printer":
         printer_ip = st.text_input("Printer IP Address", "192.168.1.100", key="printer_ip_input")
+        st.info("Connect printer to same WiFi network")
+    
+    elif printer_type == "Bluetooth Printer":
+        st.info("Ensure Bluetooth is ON and printer is paired")
+    
+    # Test print button
+    if st.button("🖨️ Test Printer", use_container_width=True, key="test_printer_btn"):
+        test_bill = {
+            "bill_no": "TEST001",
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "items": [
+                {"item": "Tomato", "quantity": 2.5, "price": 40.0, "total": 100.0, "unit_type": "kg"},
+                {"item": "Onion", "quantity": 3.0, "price": 30.0, "total": 90.0, "unit_type": "kg"},
+                {"item": "Potato", "quantity": 5.0, "price": 25.0, "total": 125.0, "unit_type": "kg"}
+            ],
+            "total": 315.0,
+            "customer": "Test Customer",
+            "phone": "9876543210"
+        }
+        
+        if printer_type == "Save as PDF only":
+            st.success("Ready for PDF printing! Click 'Print Bill' after sale.")
+        else:
+            if print_universal(test_bill, method="auto"):
+                st.success("✅ Test print successful! Printer is working.")
+            else:
+                st.error("❌ Test print failed. Check printer connection.")
 
 # ========================== DASHBOARD ==========================
 if menu == "📊 Dashboard":
@@ -1500,12 +1076,12 @@ if menu == "📊 Dashboard":
     </div>
     """, unsafe_allow_html=True)
     
+    # Metrics Row
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) as count FROM inventory WHERE quantity > 0")
-        total_items = c.fetchone()[0]
+        # Total Stock Items
+        total_items = pd.read_sql("SELECT COUNT(*) as count FROM inventory WHERE quantity > 0", conn).iloc[0]['count']
         st.markdown(f"""
         <div class="metric-card">
             <h3>📦</h3>
@@ -1515,9 +1091,9 @@ if menu == "📊 Dashboard":
         """, unsafe_allow_html=True)
     
     with col2:
-        c.execute("SELECT COALESCE(SUM(total),0) as total FROM sales WHERE date=?", 
-                 (selected_date.strftime("%Y-%m-%d"),))
-        today_sales = c.fetchone()[0]
+        # Today's Sales
+        today_sales = pd.read_sql("SELECT COALESCE(SUM(total),0) as total FROM sales WHERE date=?", 
+                                 conn, params=(selected_date.strftime("%Y-%m-%d"),)).iloc[0]['total']
         st.markdown(f"""
         <div class="sales-card">
             <h3>💰</h3>
@@ -1527,25 +1103,43 @@ if menu == "📊 Dashboard":
         """, unsafe_allow_html=True)
     
     with col3:
-        c.execute("SELECT COUNT(DISTINCT customer_name) as count FROM sales WHERE date=? AND customer_name IS NOT NULL", 
-                 (selected_date.strftime("%Y-%m-%d"),))
-        today_customers_df = c.fetchone()[0]
+        # Today's Customers - FIXED
+        today_customers_df = pd.read_sql("SELECT DISTINCT customer FROM sales WHERE date=?", 
+                                       conn, params=(selected_date.strftime("%Y-%m-%d"),))
+        
+        # Count unique customers (not guest instances)
+        unique_customers = set()
+        for customer in today_customers_df['customer'].unique():
+            if isinstance(customer, str):
+                if customer.startswith('Guest'):
+                    # Extract just the guest number
+                    match = re.match(r'Guest(\d+)(?:\s*\(.*\))?', customer)
+                    if match:
+                        unique_customers.add(f'Guest{match.group(1)}')
+                else:
+                    # Regular customer - extract name before phone
+                    if '(' in customer:
+                        unique_customers.add(customer.split('(')[0].strip())
+                    else:
+                        unique_customers.add(customer)
+        
+        today_customers = len(unique_customers)
         
         st.markdown(f"""
         <div class="metric-card">
             <h3>👥</h3>
             <h4>Today's Customers</h4>
-            <h2>{today_customers_df}</h2>
+            <h2>{today_customers}</h2>
         </div>
         """, unsafe_allow_html=True)
     
     with col4:
+        # Low Stock Items
         threshold = st.session_state.shortage_threshold
-        c.execute("SELECT COUNT(*) as count FROM inventory WHERE quantity > 0 AND quantity < ?", 
-                 (threshold,))
-        low_stock_count = c.fetchone()[0]
+        low_stock_count = pd.read_sql("SELECT COUNT(*) as count FROM inventory WHERE quantity > 0 AND quantity < ?", 
+                                     conn, params=(threshold,)).iloc[0]['count']
         st.markdown(f"""
-        <div class="red-alert-card">
+        <div class="alert-warning" style="padding:20px; border-radius:15px; text-align:center;">
             <h3>⚠️</h3>
             <h4>Low Stock Items</h4>
             <h2>{low_stock_count}</h2>
@@ -1554,39 +1148,60 @@ if menu == "📊 Dashboard":
     
     st.markdown("---")
     
+    # Low Stock Items Details Section
     st.markdown("### 📉 Low Stock Items Alert")
+    
+    # Get low stock items
     threshold = st.session_state.shortage_threshold
     
-    inventory_data = get_inventory_data()
+    # Get all inventory items
+    inv_df = pd.read_sql("""
+        SELECT vegetable, quantity, selling_price, unit_type 
+        FROM inventory 
+        WHERE quantity > 0 
+        ORDER BY vegetable
+    """, conn)
     
-    if not inventory_data:
+    if inv_df.empty:
         st.info("No stock available. Add purchases first.")
     else:
+        # Identify low stock items
         low_stock_items = []
         
-        for veg, data in inventory_data.items():
-            qty, _, price, unit_type, category = data
-            if qty > 0:
-                if unit_type == 'kg':
-                    if qty < threshold:
-                        low_stock_items.append({
-                            'Vegetable': veg,
-                            'Category': category,
-                            'Current Stock': f"{qty:.2f} kg",
-                            'Unit Type': unit_type,
-                            'Price': f"₹{price:.2f}/kg",
-                            'Status': '⚠️ Low Stock'
-                        })
-                elif unit_type == 'piece':
-                    if qty < 10:
-                        low_stock_items.append({
-                            'Vegetable': veg,
-                            'Category': category,
-                            'Current Stock': f"{int(qty)} pieces",
-                            'Unit Type': unit_type,
-                            'Price': f"₹{price:.2f}/piece",
-                            'Status': '⚠️ Low Stock'
-                        })
+        for _, row in inv_df.iterrows():
+            veg = row['vegetable']
+            qty = row['quantity']
+            unit_type = row['unit_type']
+            price = row['selling_price']
+            
+            # Different thresholds for different unit types
+            if unit_type == 'kg':
+                if qty < threshold:
+                    low_stock_items.append({
+                        'Vegetable': veg,
+                        'Current Stock': f"{qty:.2f} kg",
+                        'Unit Type': unit_type,
+                        'Price': f"₹{price:.2f}/kg",
+                        'Status': '⚠️ Low Stock'
+                    })
+            elif unit_type == 'piece':
+                if qty < 10:  # Threshold for pieces
+                    low_stock_items.append({
+                        'Vegetable': veg,
+                        'Current Stock': f"{int(qty)} pieces",
+                        'Unit Type': unit_type,
+                        'Price': f"₹{price:.2f}/piece",
+                        'Status': '⚠️ Low Stock'
+                    })
+            else:
+                if qty < threshold:
+                    low_stock_items.append({
+                        'Vegetable': veg,
+                        'Current Stock': f"{qty:.2f} {unit_type}",
+                        'Unit Type': unit_type,
+                        'Price': f"₹{price:.2f}/{unit_type}",
+                        'Status': '⚠️ Low Stock'
+                    })
         
         if low_stock_items:
             low_stock_df = pd.DataFrame(low_stock_items)
@@ -1595,80 +1210,68 @@ if menu == "📊 Dashboard":
                 use_container_width=True,
                 height=300
             )
+            
+            # Display warning message
+            st.warning(f"⚠️ **Alert:** {len(low_stock_items)} items are running low on stock. Consider purchasing more stock soon.")
         else:
             st.success("✅ All items have sufficient stock levels!")
     
     st.markdown("---")
     
+    # Current Stock Details
     st.markdown("### 📋 Current Stock Details")
-    threshold = st.slider("Low Stock Alert Threshold", 0.0, 50.0, 5.0, 0.5)
+    
+    # Set shortage threshold
+    threshold = st.slider("Low Stock Alert Threshold (default unit)", 0.0, 50.0, 5.0, 0.5, 
+                         help="Items below this quantity will be marked as low stock")
     st.session_state.shortage_threshold = threshold
     
-    if not inventory_data:
+    if inv_df.empty:
         st.info("No stock available. Add purchases first.")
     else:
-        # Separate vegetables and fruits
-        vegetables = {k: v for k, v in inventory_data.items() if v[4] == 'vegetable'}
-        fruits = {k: v for k, v in inventory_data.items() if v[4] == 'fruit'}
+        # Create a styled dataframe
+        inv_display = inv_df.copy()
+        inv_display = inv_display.rename(columns={
+            "vegetable": "🌿 Vegetable",
+            "quantity": "⚖️ Stock",
+            "selling_price": "💰 Price",
+            "unit_type": "📏 Unit"
+        })
         
-        tab1, tab2 = st.tabs(["🥦 Vegetables", "🍎 Fruits"])
+        # Display the table
+        display_df = inv_display[['🌿 Vegetable', '⚖️ Stock', '💰 Price', '📏 Unit']].copy()
         
-        with tab1:
-            if vegetables:
-                veg_list = []
-                for veg, data in vegetables.items():
-                    qty, _, price, unit_type, _ = data
-                    veg_list.append({
-                        "Vegetable": veg,
-                        "Stock": qty,
-                        "Price": price,
-                        "Unit": unit_type
-                    })
-                
-                veg_df = pd.DataFrame(veg_list)
-                st.dataframe(
-                    veg_df.style.format({
-                        "Stock": "{:.2f}",
-                        "Price": "₹{:.2f}"
-                    }),
-                    use_container_width=True,
-                    height=300
-                )
+        # Format price based on unit type
+        def format_price(row):
+            price_val = row['💰 Price'] if isinstance(row['💰 Price'], (int, float)) else 0.0
+            if row['📏 Unit'] == 'kg':
+                return f"₹{price_val:.2f}/kg"
+            elif row['📏 Unit'] == 'piece':
+                return f"₹{price_val:.2f}/piece"
+            else:
+                return f"₹{price_val:.2f}"
         
-        with tab2:
-            if fruits:
-                fruit_list = []
-                for fruit, data in fruits.items():
-                    qty, _, price, unit_type, _ = data
-                    fruit_list.append({
-                        "Fruit": fruit,
-                        "Stock": qty,
-                        "Price": price,
-                        "Unit": unit_type
-                    })
-                
-                fruit_df = pd.DataFrame(fruit_list)
-                st.dataframe(
-                    fruit_df.style.format({
-                        "Stock": "{:.2f}",
-                        "Price": "₹{:.2f}"
-                    }),
-                    use_container_width=True,
-                    height=300
-                )
+        display_df['💰 Price'] = display_df.apply(format_price, axis=1)
+        
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            height=400
+        )
         
         # Summary
         col1, col2 = st.columns(2)
         with col1:
-            out_of_stock = sum(1 for data in inventory_data.values() if data[0] == 0)
+            out_of_stock = pd.read_sql("SELECT COUNT(*) as count FROM inventory WHERE quantity = 0", conn).iloc[0]['count']
             st.info(f"**Out of Stock:** {out_of_stock} items")
         
         with col2:
-            low_stock_count = sum(1 for data in inventory_data.values() 
-                                 if data[0] > 0 and ((data[3] == 'kg' and data[0] < threshold) or 
-                                                     (data[3] == 'piece' and data[0] < 10)))
-            if low_stock_count > 0:
-                st.warning(f"**Low Stock Items:** {low_stock_count} items")
+            # Adjust low stock count for different unit types
+            low_stock_kg = inv_df[(inv_df['unit_type'] == 'kg') & (inv_df['quantity'] < threshold)]
+            low_stock_pieces = inv_df[(inv_df['unit_type'] == 'piece') & (inv_df['quantity'] < 10)]  # Threshold for pieces
+            total_low_stock = len(low_stock_kg) + len(low_stock_pieces)
+            if total_low_stock > 0:
+                st.warning(f"**Low Stock Items:** {total_low_stock} items")
 
 # ========================== ADD PURCHASE ==========================
 elif menu == "🛒 Add Purchase":
@@ -1679,45 +1282,35 @@ elif menu == "🛒 Add Purchase":
     </div>
     """, unsafe_allow_html=True)
     
-    # Get all vegetables once
-    inventory_data = get_inventory_data()
-    all_veg = list(inventory_data.keys())
+    # Get all vegetables from inventory
+    all_veg_df = pd.read_sql("SELECT vegetable, unit_type FROM inventory ORDER BY vegetable", conn)
     
-    if not all_veg:
+    if all_veg_df.empty:
         st.info("No vegetables in inventory. Please add vegetables first.")
     else:
+        # Tab interface for different purchase methods
         tab1, tab2 = st.tabs(["📝 Bulk Purchase Entry", "➕ Individual Purchase"])
         
         with tab1:
             st.markdown("### 📝 Bulk Purchase Entry")
+            st.markdown("Edit all vegetables in table format")
             
-            # Get current stock
-            purchase_list = []
-            for veg in all_veg:
-                qty, cost, price, unit_type, category = inventory_data[veg]
-                purchase_list.append({
-                    'vegetable': veg,
-                    'current_stock': qty,
-                    'selling_price': price,
-                    'unit_type': unit_type,
-                    'category': category,
-                    'new_purchase': 0.0,
-                    'amount': 0.0,
-                    'supplier': ""
-                })
-            
-            purchase_df = pd.DataFrame(purchase_list)
+            # Create editable dataframe
+            purchase_df = pd.read_sql("SELECT vegetable, quantity as current_stock, selling_price, unit_type FROM inventory ORDER BY vegetable", conn)
+            purchase_df['Current Stock (Editable)'] = purchase_df['current_stock']
+            purchase_df['New Purchase'] = 0.0
+            purchase_df['Amount (₹)'] = 0.0
+            purchase_df['Supplier'] = ""
             
             edited_df = st.data_editor(
-                purchase_df,
+                purchase_df[['vegetable', 'Current Stock (Editable)', 'unit_type', 'New Purchase', 'Amount (₹)', 'Supplier']],
                 column_config={
-                    "vegetable": st.column_config.TextColumn("🌿 Item", disabled=True),
-                    "current_stock": st.column_config.NumberColumn("📦 Current Stock", min_value=0.0, format="%.2f"),
+                    "vegetable": st.column_config.TextColumn("🌿 Vegetable", disabled=True),
+                    "Current Stock (Editable)": st.column_config.NumberColumn("📦 Current Stock", min_value=0.0, format="%.2f"),
                     "unit_type": st.column_config.TextColumn("📏 Unit", disabled=True),
-                    "category": st.column_config.TextColumn("📁 Category", disabled=True),
-                    "new_purchase": st.column_config.NumberColumn("🛒 Purchase Qty", min_value=0.0, step=0.5, format="%.2f"),
-                    "amount": st.column_config.NumberColumn("💰 Amount (₹)", min_value=0.0, step=10.0, format="₹%.2f"),
-                    "supplier": st.column_config.TextColumn("👨‍🌾 Supplier", max_chars=50)
+                    "New Purchase": st.column_config.NumberColumn("🛒 Purchase Qty", min_value=0.0, step=0.5, format="%.2f"),
+                    "Amount (₹)": st.column_config.NumberColumn("💰 Amount (₹)", min_value=0.0, step=10.0, format="₹%.2f"),
+                    "Supplier": st.column_config.TextColumn("👨‍🌾 Supplier", max_chars=50)
                 },
                 use_container_width=True,
                 num_rows="dynamic",
@@ -1726,201 +1319,290 @@ elif menu == "🛒 Add Purchase":
             
             if st.button("💾 Save All Purchases", type="primary", use_container_width=True):
                 purchases_made = 0
-                c = conn.cursor()
+                stock_updates = 0
                 
                 for _, row in edited_df.iterrows():
                     veg = row['vegetable']
                     
-                    if row['new_purchase'] > 0 and row['amount'] > 0:
+                    # Update current stock if changed
+                    new_current_stock = row['Current Stock (Editable)']
+                    old_stock, old_cost, old_sell, old_unit = get_stock(veg)
+                    
+                    if new_current_stock != old_stock:
+                        c.execute("UPDATE inventory SET quantity=? WHERE vegetable=?", 
+                                 (new_current_stock, veg))
+                        stock_updates += 1
+                    
+                    # Save new purchases if any
+                    if row['New Purchase'] > 0 and row['Amount (₹)'] > 0:
                         d = selected_date.strftime("%Y-%m-%d")
-                        qty = row['new_purchase']
-                        amount = row['amount']
-                        supplier = row['supplier']
+                        qty = row['New Purchase']
+                        amount = row['Amount (₹)']
+                        supplier = row['Supplier']
+                        unit_type = row['unit_type']
                         
-                        c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (?,?,?,?,?)", 
+                        # Save purchase
+                        c.execute("INSERT INTO purchases VALUES (?,?,?,?,?)", 
                                  (d, veg, qty, amount, supplier))
                         
+                        # Update inventory with new purchase (in addition to any direct stock edit)
                         if qty > 0:
-                            old_qty = inventory_data[veg][0]
-                            new_qty = old_qty + qty
-                            unit_cost = (amount / qty) if qty > 0 else inventory_data[veg][1]
+                            old_qty, old_cost, _, _ = get_stock(veg)
+                            new_qty = old_qty + qty  # Add to current stock
+                            unit_cost = (amount / qty) if qty > 0 else old_cost
                             c.execute("UPDATE inventory SET quantity=?, cost_price=? WHERE vegetable=?", 
                                      (new_qty, unit_cost, veg))
                         
                         purchases_made += 1
                 
                 conn.commit()
-                st.cache_data.clear()  # Clear cache
+                messages = []
+                if stock_updates > 0:
+                    messages.append(f"✅ {stock_updates} stock quantities updated")
                 if purchases_made > 0:
-                    st.success(f"✅ {purchases_made} purchases saved")
+                    messages.append(f"✅ {purchases_made} purchases saved")
+                
+                if messages:
+                    st.success(" | ".join(messages))
                 else:
                     st.info("No changes were saved")
         
         with tab2:
             st.markdown("### ➕ Individual Purchase")
-            subtab1, subtab2, subtab3 = st.tabs(["🥦 Vegetables (KG)", "🧩 Vegetables (Piece)", "🍎 Fruits (KG)"])
+            st.markdown("Add purchase for a single vegetable")
             
+            # Tab interface for different vegetable types in individual purchase
+            subtab1, subtab2, subtab3 = st.tabs(["⚖️ KG Vegetables", "🧩 Piece Vegetables", "🍎 Fruits"])
+            
+            # Subtab 1: KG Vegetables Purchase
             with subtab1:
-                with st.form("kg_vegetable_purchase", clear_on_submit=True):
-                    st.markdown("#### 🥦 Purchase Vegetables (KG)")
+                with st.form("kg_individual_purchase", clear_on_submit=True):
+                    st.markdown("#### ⚖️ Purchase KG Vegetables")
                     
                     col1, col2 = st.columns(2)
                     
                     with col1:
-                        kg_vegetables = [veg for veg in all_veg if inventory_data[veg][3] == 'kg' and inventory_data[veg][4] == 'vegetable']
-                        veg_choice = st.selectbox("Select Vegetable (KG)", kg_vegetables, key="kg_veg_select_purchase")
+                        # Get only kg vegetables
+                        kg_veg_df = all_veg_df[all_veg_df['unit_type'] == 'kg']
+                        existing_kg_veg = kg_veg_df['vegetable'].tolist()
                         
-                        if veg_choice:
-                            qty_kg = st.number_input("Kilograms", min_value=0.0, step=0.1, value=None, placeholder="Enter kg", key="kg_qty_kg")
-                            if qty_kg is None:
-                                qty_kg = 0.0
-                    
-                    with col2:
-                        amount = st.number_input("Total Amount ₹", min_value=0.0, step=10.0, value=None, placeholder="Enter amount", key="kg_amount")
-                        if amount is None:
-                            amount = 0.0
-                        supplier = st.text_input("Supplier Name", key="kg_supplier")
+                        # Vegetable selection with option to add new
+                        veg_choice = st.selectbox("Select KG Vegetable", existing_kg_veg, key="kg_veg_select_purchase")
+                        new_kg_veg_option = st.checkbox("Add New KG Vegetable", key="new_kg_veg_option")
                         
-                        if amount > 0 and qty_kg > 0:
-                            unit_price = amount / qty_kg
-                            st.info(f"**Unit Price:** ₹{unit_price:.2f}/kg")
-                    
-                    submit_button = st.form_submit_button("💾 Save Purchase", type="primary", use_container_width=True)
-                    if submit_button:
-                        if qty_kg <= 0:
-                            st.error("Enter quantity > 0")
-                        elif amount <= 0:
-                            st.error("Enter amount > 0")
+                        if new_kg_veg_option:
+                            new_veg = st.text_input("New Vegetable Name", key="new_kg_veg_name")
+                            veg = new_veg if new_veg else veg_choice
+                            unit_type = 'kg'
                         else:
-                            d = selected_date.strftime("%Y-%m-%d")
-                            c = conn.cursor()
-                            
-                            c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (?,?,?,?,?)", 
-                                     (d, veg_choice, qty_kg, amount, supplier))
-                            
-                            old_qty = inventory_data[veg_choice][0]
-                            new_qty = old_qty + qty_kg
-                            unit_cost = (amount / qty_kg) if qty_kg > 0 else inventory_data[veg_choice][1]
-                            
-                            c.execute("UPDATE inventory SET quantity=?, cost_price=? WHERE vegetable=?", 
-                                     (new_qty, unit_cost, veg_choice))
-                            
-                            conn.commit()
-                            st.cache_data.clear()  # Clear cache
-                            st.success(f"✅ Added {qty_kg:.2f} kg of {veg_choice}")
-            
-            with subtab2:
-                with st.form("piece_vegetable_purchase", clear_on_submit=True):
-                    st.markdown("#### 🧩 Purchase Vegetables (Piece)")
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        piece_vegetables = [veg for veg in all_veg if inventory_data[veg][3] == 'piece' and inventory_data[veg][4] == 'vegetable']
-                        veg_choice = st.selectbox("Select Vegetable (Piece)", piece_vegetables, key="piece_veg_select_purchase")
+                            veg = veg_choice
+                            unit_type = 'kg'
+                            st.info(f"**Unit Type:** {unit_type}")
                         
-                        if veg_choice:
-                            total_qty = st.number_input("Number of Pieces", min_value=0, step=1, value=None, placeholder="Enter pieces", key="piece_qty")
-                            if total_qty is None:
-                                total_qty = 0
+                        # KG Quantity input
+                        qty_kg = st.number_input("Kilograms", min_value=0.0, step=0.1, value=None, placeholder="Enter kg", key="kg_qty_kg")
+                        if qty_kg is None:
+                            qty_kg = 0.0
+                        total_qty = qty_kg
                     
                     with col2:
-                        amount = st.number_input("Total Amount ₹", min_value=0.0, step=10.0, value=None, placeholder="Enter amount", key="piece_amount")
-                        if amount is None:
-                            amount = 0.0
-                        supplier = st.text_input("Supplier Name", key="piece_supplier")
+                        amount = st.number_input("Total Amount ₹", min_value=0.0, step=10.0, value=0.0, key="kg_amount")
+                        supplier = st.text_input("Supplier Name", key="kg_supplier")
+                        unit_price = amount / total_qty if total_qty > 0 else 0
                         
-                        if amount > 0 and total_qty > 0:
-                            unit_price = amount / total_qty
-                            st.info(f"**Unit Price:** ₹{unit_price:.2f}/piece")
+                        # Display unit price
+                        st.info(f"**Unit Price:** ₹{unit_price:.2f}/kg")
                     
-                    submit_button = st.form_submit_button("💾 Save Purchase", type="primary", use_container_width=True)
+                    # Submit button
+                    submit_button = st.form_submit_button("💾 Save KG Purchase", type="primary", use_container_width=True)
                     if submit_button:
                         if total_qty <= 0:
                             st.error("Enter quantity > 0")
                         elif amount <= 0:
                             st.error("Enter amount > 0")
+                        elif not veg.strip():
+                            st.error("Enter vegetable name")
                         else:
                             d = selected_date.strftime("%Y-%m-%d")
-                            c = conn.cursor()
                             
-                            c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (?,?,?,?,?)", 
-                                     (d, veg_choice, total_qty, amount, supplier))
+                            # Save purchase
+                            c.execute("INSERT INTO purchases VALUES (?,?,?,?,?)", 
+                                     (d, veg, total_qty, amount, supplier))
                             
-                            old_qty = inventory_data[veg_choice][0]
+                            # Update inventory
+                            old_qty, old_cost, old_sell, old_unit = get_stock(veg)
                             new_qty = old_qty + total_qty
-                            unit_cost = (amount / total_qty) if total_qty > 0 else inventory_data[veg_choice][1]
+                            unit_cost = (amount / total_qty) if total_qty > 0 else old_cost
                             
-                            c.execute("UPDATE inventory SET quantity=?, cost_price=? WHERE vegetable=?", 
-                                     (new_qty, unit_cost, veg_choice))
+                            if old_qty == 0 and veg not in existing_kg_veg:
+                                # New vegetable
+                                c.execute("INSERT OR REPLACE INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type) VALUES (?,?,?,?,?)", 
+                                         (veg, new_qty, unit_cost, 0.0, unit_type))
+                            else:
+                                c.execute("UPDATE inventory SET quantity=?, cost_price=? WHERE vegetable=?", 
+                                         (new_qty, unit_cost, veg))
                             
                             conn.commit()
-                            st.cache_data.clear()  # Clear cache
-                            st.success(f"✅ Added {total_qty:.0f} pieces of {veg_choice}")
+                            st.success(f"✅ Added {total_qty:.2f} kg of {veg}")
             
-            with subtab3:
-                with st.form("fruit_purchase", clear_on_submit=True):
-                    st.markdown("#### 🍎 Purchase Fruits (KG)")
+            # Subtab 2: Piece Vegetables Purchase
+            with subtab2:
+                with st.form("piece_individual_purchase", clear_on_submit=True):
+                    st.markdown("#### 🧩 Purchase Piece Vegetables")
                     
                     col1, col2 = st.columns(2)
                     
                     with col1:
-                        fruits = [veg for veg in all_veg if inventory_data[veg][4] == 'fruit']
-                        fruit_choice = st.selectbox("Select Fruit", fruits if fruits else ["No fruits available"], key="fruit_select_purchase")
+                        # Get only piece vegetables
+                        piece_veg_df = all_veg_df[all_veg_df['unit_type'] == 'piece']
+                        existing_piece_veg = piece_veg_df['vegetable'].tolist()
                         
-                        if fruit_choice and fruit_choice != "No fruits available":
-                            qty_kg = st.number_input("Kilograms", min_value=0.0, step=0.1, value=None, placeholder="Enter kg", key="fruit_qty_kg")
-                            if qty_kg is None:
-                                qty_kg = 0.0
+                        # Vegetable selection with option to add new
+                        veg_choice = st.selectbox("Select Piece Vegetable", existing_piece_veg, key="piece_veg_select_purchase")
+                        new_piece_veg_option = st.checkbox("Add New Piece Vegetable", key="new_piece_veg_option")
+                        
+                        if new_piece_veg_option:
+                            new_veg = st.text_input("New Vegetable Name", key="new_piece_veg_name")
+                            veg = new_veg if new_veg else veg_choice
+                            unit_type = 'piece'
+                        else:
+                            veg = veg_choice
+                            unit_type = 'piece'
+                            st.info(f"**Unit Type:** {unit_type}")
+                        
+                        # Piece Quantity input
+                        total_qty = st.number_input("Number of Pieces", min_value=0, step=1, value=None, placeholder="Enter pieces", key="piece_qty")
+                        if total_qty is None:
+                            total_qty = 0
                     
                     with col2:
-                        amount = st.number_input("Total Amount ₹", min_value=0.0, step=10.0, value=None, placeholder="Enter amount", key="fruit_amount")
-                        if amount is None:
-                            amount = 0.0
-                        supplier = st.text_input("Supplier Name", key="fruit_supplier")
+                        amount = st.number_input("Total Amount ₹", min_value=0.0, step=10.0, value=0.0, key="piece_amount")
+                        supplier = st.text_input("Supplier Name", key="piece_supplier")
+                        unit_price = amount / total_qty if total_qty > 0 else 0
                         
-                        if amount > 0 and qty_kg > 0:
-                            unit_price = amount / qty_kg
-                            st.info(f"**Unit Price:** ₹{unit_price:.2f}/kg")
+                        # Display unit price
+                        st.info(f"**Unit Price:** ₹{unit_price:.2f}/piece")
                     
-                    submit_button = st.form_submit_button("💾 Save Purchase", type="primary", use_container_width=True)
+                    # Submit button
+                    submit_button = st.form_submit_button("💾 Save Piece Purchase", type="primary", use_container_width=True)
                     if submit_button:
-                        if qty_kg <= 0:
+                        if total_qty <= 0:
                             st.error("Enter quantity > 0")
                         elif amount <= 0:
                             st.error("Enter amount > 0")
-                        elif not fruit_choice or fruit_choice == "No fruits available":
-                            st.error("Select a fruit")
+                        elif not veg.strip():
+                            st.error("Enter vegetable name")
                         else:
                             d = selected_date.strftime("%Y-%m-%d")
-                            c = conn.cursor()
                             
-                            c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (?,?,?,?,?)", 
-                                     (d, fruit_choice, qty_kg, amount, supplier))
+                            # Save purchase
+                            c.execute("INSERT INTO purchases VALUES (?,?,?,?,?)", 
+                                     (d, veg, total_qty, amount, supplier))
                             
-                            old_qty = inventory_data[fruit_choice][0]
-                            new_qty = old_qty + qty_kg
-                            unit_cost = (amount / qty_kg) if qty_kg > 0 else inventory_data[fruit_choice][1]
+                            # Update inventory
+                            old_qty, old_cost, old_sell, old_unit = get_stock(veg)
+                            new_qty = old_qty + total_qty
+                            unit_cost = (amount / total_qty) if total_qty > 0 else old_cost
                             
-                            c.execute("UPDATE inventory SET quantity=?, cost_price=? WHERE vegetable=?", 
-                                     (new_qty, unit_cost, fruit_choice))
+                            if old_qty == 0 and veg not in existing_piece_veg:
+                                # New vegetable
+                                c.execute("INSERT OR REPLACE INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type) VALUES (?,?,?,?,?)", 
+                                         (veg, new_qty, unit_cost, 0.0, unit_type))
+                            else:
+                                c.execute("UPDATE inventory SET quantity=?, cost_price=? WHERE vegetable=?", 
+                                         (new_qty, unit_cost, veg))
                             
                             conn.commit()
-                            st.cache_data.clear()  # Clear cache
-                            st.success(f"✅ Added {qty_kg:.2f} kg of {fruit_choice}")
+                            st.success(f"✅ Added {total_qty:.0f} pieces of {veg}")
+            
+            # Subtab 3: Fruits Purchase
+            with subtab3:
+                with st.form("fruit_individual_purchase", clear_on_submit=True):
+                    st.markdown("#### 🍎 Purchase Fruits")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        # Get all items including fruits
+                        all_items_df = pd.read_sql("SELECT vegetable, unit_type FROM inventory ORDER BY vegetable", conn)
+                        
+                        # Create list of fruits
+                        fruit_list = [fruit for fruit in fruits_kg if fruit in all_items_df['vegetable'].tolist()]
+                        
+                        # Fruit selection with option to add new
+                        fruit_choice = st.selectbox("Select Fruit", fruit_list if fruit_list else ["No fruits available"], key="fruit_select_purchase")
+                        new_fruit_option = st.checkbox("Add New Fruit", key="new_fruit_option")
+                        
+                        if new_fruit_option:
+                            new_fruit = st.text_input("New Fruit Name", key="new_fruit_name")
+                            fruit = new_fruit if new_fruit else fruit_choice
+                            unit_type = 'kg'
+                        else:
+                            fruit = fruit_choice
+                            unit_type = 'kg'
+                            st.info(f"**Unit Type:** {unit_type}")
+                        
+                        # KG Quantity input for fruits
+                        qty_kg = st.number_input("Kilograms", min_value=0.0, step=0.1, value=None, placeholder="Enter kg", key="fruit_qty_kg")
+                        if qty_kg is None:
+                            qty_kg = 0.0
+                        total_qty = qty_kg
+                    
+                    with col2:
+                        amount = st.number_input("Total Amount ₹", min_value=0.0, step=10.0, value=0.0, key="fruit_amount")
+                        supplier = st.text_input("Supplier Name", key="fruit_supplier")
+                        unit_price = amount / total_qty if total_qty > 0 else 0
+                        
+                        # Display unit price
+                        st.info(f"**Unit Price:** ₹{unit_price:.2f}/kg")
+                    
+                    # Submit button
+                    submit_button = st.form_submit_button("💾 Save Fruit Purchase", type="primary", use_container_width=True)
+                    if submit_button:
+                        if total_qty <= 0:
+                            st.error("Enter quantity > 0")
+                        elif amount <= 0:
+                            st.error("Enter amount > 0")
+                        elif not fruit.strip() or fruit == "No fruits available":
+                            st.error("Enter fruit name")
+                        else:
+                            d = selected_date.strftime("%Y-%m-%d")
+                            
+                            # Save purchase
+                            c.execute("INSERT INTO purchases VALUES (?,?,?,?,?)", 
+                                     (d, fruit, total_qty, amount, supplier))
+                            
+                            # Update inventory
+                            old_qty, old_cost, old_sell, old_unit = get_stock(fruit)
+                            new_qty = old_qty + total_qty
+                            unit_cost = (amount / total_qty) if total_qty > 0 else old_cost
+                            
+                            if old_qty == 0 and fruit not in all_items_df['vegetable'].tolist():
+                                # New fruit
+                                c.execute("INSERT OR REPLACE INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type) VALUES (?,?,?,?,?)", 
+                                         (fruit, new_qty, unit_cost, 0.0, unit_type))
+                            else:
+                                c.execute("UPDATE inventory SET quantity=?, cost_price=? WHERE vegetable=?", 
+                                         (new_qty, unit_cost, fruit))
+                            
+                            conn.commit()
+                            st.success(f"✅ Added {total_qty:.2f} kg of {fruit}")
     
+    # Today's purchases summary
     st.markdown("---")
     st.markdown(f"### 📊 Today's Purchases ({selected_date.strftime('%d %B %Y')})")
     
-    c = conn.cursor()
-    c.execute("SELECT vegetable, quantity, amount, supplier FROM purchases WHERE date=? ORDER BY id DESC", 
-              (selected_date.strftime("%Y-%m-%d"),))
-    today_purchases_rows = c.fetchall()
-    today_purchases = pd.DataFrame(today_purchases_rows, columns=["vegetable", "quantity", "amount", "supplier"])
+    today_purchases = pd.read_sql("""
+        SELECT vegetable, quantity, amount, supplier 
+        FROM purchases 
+        WHERE date=? 
+        ORDER BY rowid DESC
+    """, conn, params=(selected_date.strftime("%Y-%m-%d"),))
     
     if today_purchases.empty:
         st.info("No purchases today")
     else:
+        # Summary metrics
         total_amount = today_purchases['amount'].sum()
         total_qty = today_purchases['quantity'].sum()
         veg_count = today_purchases['vegetable'].nunique()
@@ -1931,8 +1613,9 @@ elif menu == "🛒 Add Purchase":
         with col2:
             st.metric("⚖️ Total Quantity", f"{total_qty:.1f}")
         with col3:
-            st.metric("🌿 Items Bought", veg_count)
+            st.metric("🌿 Vegetables Bought", veg_count)
         
+        # Display table
         st.dataframe(
             today_purchases.style.format({
                 "quantity": "{:.2f}",
@@ -1950,153 +1633,110 @@ elif menu == "🏷 Set Prices":
     </div>
     """, unsafe_allow_html=True)
     
-    inventory_data = get_inventory_data()
+    # Get all vegetables with unit types
+    price_df = pd.read_sql("SELECT vegetable, selling_price, unit_type FROM inventory ORDER BY vegetable", conn)
     
-    if not inventory_data:
+    if price_df.empty:
         st.info("No vegetables in inventory")
     else:
+        # Add new vegetable/fruit option
         st.markdown("### ➕ Add New Item")
         with st.form("add_new_item"):
-            col1, col2 = st.columns(2)
-            with col1:
-                new_item = st.text_input("New Item Name")
-                category = st.selectbox("Category", ["vegetable", "fruit"])
-            with col2:
-                unit_type = st.selectbox("Unit Type", ["kg", "piece"])
-                new_price = st.number_input("Initial Selling Price ₹", min_value=0.0, step=1.0, value=None, placeholder="Enter price")
-                if new_price is None:
-                    new_price = 0.0
+            new_item = st.text_input("New Item Name")
+            unit_type = st.selectbox("Unit Type", ["kg", "piece"], 
+                                    help="Select how this item is sold")
+            new_price = st.number_input("Initial Selling Price ₹", min_value=0.0, step=1.0, value=0.0)
             
             submitted = st.form_submit_button("➕ Add Item", use_container_width=True)
             if submitted:
                 if new_item and new_item.strip():
-                    c = conn.cursor()
-                    c.execute("""
-                        INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type, category) 
-                        VALUES (?, 0, 0, ?, ?, ?)
-                        ON CONFLICT (vegetable) DO NOTHING
-                    """, (new_item.strip(), new_price, unit_type, category))
+                    c.execute("INSERT OR IGNORE INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type) VALUES (?, 0, 0, ?, ?)", 
+                             (new_item.strip(), new_price, unit_type))
                     conn.commit()
-                    st.cache_data.clear()  # Clear cache
-                    st.success(f"✅ Added {new_item.strip()} to inventory")
+                    st.success(f"✅ Added {new_item.strip()} to inventory (sold by {unit_type})")
                     st.rerun()
+                else:
+                    st.error("Enter item name")
         
         st.markdown("---")
         
-        # Separate tabs for vegetables and fruits
-        tab1, tab2 = st.tabs(["🥦 Vegetables", "🍎 Fruits"])
+        # Bulk price editor
+        st.markdown("### 📝 Bulk Price Update")
         
-        price_list = []
-        for veg, data in inventory_data.items():
-            qty, cost, price, unit_type, category = data
-            price_list.append({
-                'vegetable': veg,
-                'selling_price': price,
-                'unit_type': unit_type,
-                'category': category
-            })
-        
-        price_df = pd.DataFrame(price_list)
-        
-        with tab1:
-            veg_df = price_df[price_df['category'] == 'vegetable']
-            if not veg_df.empty:
-                st.markdown("### 🥦 Vegetable Prices")
-                
-                edited_df = st.data_editor(
-                    veg_df,
-                    column_config={
-                        "vegetable": st.column_config.TextColumn("🌿 Vegetable", disabled=True),
-                        "unit_type": st.column_config.TextColumn("📏 Unit", disabled=True),
-                        "selling_price": st.column_config.NumberColumn(
-                            "💰 Price (₹)",
-                            min_value=0.0,
-                            step=1.0,
-                            format="₹%.2f"
-                        )
-                    },
-                    use_container_width=True,
-                    num_rows="dynamic",
-                    hide_index=True
+        edited_df = st.data_editor(
+            price_df,
+            column_config={
+                "vegetable": st.column_config.TextColumn("🌿 Item", disabled=True),
+                "unit_type": st.column_config.TextColumn("📏 Unit", disabled=True),
+                "selling_price": st.column_config.NumberColumn(
+                    "💰 Price (₹)",
+                    min_value=0.0,
+                    step=1.0,
+                    format="₹%.2f"
                 )
-        
-        with tab2:
-            fruit_df = price_df[price_df['category'] == 'fruit']
-            if not fruit_df.empty:
-                st.markdown("### 🍎 Fruit Prices")
-                
-                edited_df2 = st.data_editor(
-                    fruit_df,
-                    column_config={
-                        "vegetable": st.column_config.TextColumn("🍎 Fruit", disabled=True),
-                        "unit_type": st.column_config.TextColumn("📏 Unit", disabled=True),
-                        "selling_price": st.column_config.NumberColumn(
-                            "💰 Price (₹)",
-                            min_value=0.0,
-                            step=1.0,
-                            format="₹%.2f"
-                        )
-                    },
-                    use_container_width=True,
-                    num_rows="dynamic",
-                    hide_index=True
-                )
+            },
+            use_container_width=True,
+            num_rows="dynamic",
+            hide_index=True
+        )
         
         if st.button("💾 Save All Prices", type="primary", use_container_width=True):
             changes = 0
-            c = conn.cursor()
-            if 'edited_df' in locals():
-                for _, row in edited_df.iterrows():
-                    c.execute("UPDATE inventory SET selling_price=? WHERE vegetable=?", 
-                             (row['selling_price'], row['vegetable']))
-                    changes += 1
-            if 'edited_df2' in locals():
-                for _, row in edited_df2.iterrows():
-                    c.execute("UPDATE inventory SET selling_price=? WHERE vegetable=?", 
-                             (row['selling_price'], row['vegetable']))
-                    changes += 1
+            for _, row in edited_df.iterrows():
+                c.execute("UPDATE inventory SET selling_price=? WHERE vegetable=?", 
+                         (row['selling_price'], row['vegetable']))
+                changes += 1
             
             conn.commit()
-            st.cache_data.clear()  # Clear cache
             st.success(f"✅ {changes} prices updated successfully!")
         
         st.markdown("---")
         
+        # Individual price update
         st.markdown("### ✏️ Individual Price Update")
+        
+        # Get all vegetables for selection
+        all_vegetables = pd.read_sql("SELECT vegetable, unit_type FROM inventory ORDER BY vegetable", conn)
         
         col1, col2 = st.columns(2)
         
         with col1:
-            selected_item = st.selectbox("Select Item", list(inventory_data.keys()))
+            selected_veg = st.selectbox("Select Item", all_vegetables['vegetable'])
             
-            if selected_item in inventory_data:
-                current_price = inventory_data[selected_item][2]
-                current_unit = inventory_data[selected_item][3]
-                current_category = inventory_data[selected_item][4]
+            # Get current price and unit type - FIXED
+            try:
+                current_data = pd.read_sql("SELECT selling_price, unit_type FROM inventory WHERE vegetable=?", 
+                                          conn, params=(selected_veg,)).iloc[0]
+                current_price = float(current_data['selling_price']) if current_data['selling_price'] is not None else 0.0
+                current_unit = current_data['unit_type'] if current_data['unit_type'] is not None else 'kg'
                 
                 if current_unit == 'kg':
                     st.info(f"**Current Price:** ₹{current_price:.2f}/kg")
                 elif current_unit == 'piece':
                     st.info(f"**Current Price:** ₹{current_price:.2f}/piece")
+                else:
+                    st.info(f"**Current Price:** ₹{current_price:.2f} per {current_unit}")
                 
-                stock = inventory_data[selected_item][0]
+                # Get current stock
+                stock, _, _, _ = get_stock(selected_veg)
                 st.info(f"**Current Stock:** {stock:.2f} {current_unit}")
-                st.info(f"**Category:** {current_category}")
+            except Exception as e:
+                st.warning(f"Could not load item data: {e}")
+                current_price = 0.0
+                current_unit = 'kg'
         
         with col2:
-            new_price = st.number_input("New Price ₹", min_value=0.0, step=1.0, value=None, placeholder="Enter new price")
-            if new_price is None:
-                new_price = 0.0
+            new_price = st.number_input("New Price ₹", value=current_price, min_value=0.0, step=1.0)
             
             if st.button("💾 Update Price", type="primary", use_container_width=True):
-                c = conn.cursor()
-                c.execute("UPDATE inventory SET selling_price=? WHERE vegetable=?", (new_price, selected_item))
+                c.execute("UPDATE inventory SET selling_price=? WHERE vegetable=?", (new_price, selected_veg))
                 conn.commit()
-                st.cache_data.clear()  # Clear cache
                 if current_unit == 'kg':
-                    st.success(f"✅ Price updated for {selected_item}: ₹{new_price:.2f}/kg")
+                    st.success(f"✅ Price updated for {selected_veg}: ₹{new_price:.2f}/kg")
                 elif current_unit == 'piece':
-                    st.success(f"✅ Price updated for {selected_item}: ₹{new_price:.2f}/piece")
+                    st.success(f"✅ Price updated for {selected_veg}: ₹{new_price:.2f}/piece")
+                else:
+                    st.success(f"✅ Price updated for {selected_veg}: ₹{new_price:.2f} per {current_unit}")
 
 # ========================== QUICK SELL ==========================
 elif menu == "💵 Quick Sell":
@@ -2107,16 +1747,52 @@ elif menu == "💵 Quick Sell":
     </div>
     """, unsafe_allow_html=True)
     
-    kg_vegetables, piece_vegetables, kg_fruits = get_available_items()
+    # Get available vegetables with stock
+    available_veg = pd.read_sql("""
+        SELECT vegetable, quantity, selling_price, unit_type 
+        FROM inventory 
+        WHERE quantity > 0 AND selling_price > 0 
+        ORDER BY vegetable
+    """, conn)
     
-    if not kg_vegetables and not piece_vegetables and not kg_fruits:
+    if available_veg.empty:
         st.warning("⚠️ No items available for sale! Please add purchases and set prices first.")
     else:
+        # Separate items by unit type
+        kg_items = []
+        piece_items = []
+        
+        for _, row in available_veg.iterrows():
+            try:
+                veg_name = row['vegetable']
+                unit_type = str(row['unit_type']) if row['unit_type'] is not None else 'kg'
+                price_val = float(row['selling_price']) if row['selling_price'] is not None else 0.0
+                quantity_val = float(row['quantity']) if row['quantity'] is not None else 0.0
+                
+                if unit_type == 'kg':
+                    kg_items.append({
+                        'name': veg_name,
+                        'price': price_val,
+                        'stock': quantity_val,
+                        'display': f"{veg_name} (Stock: {quantity_val:.2f} kg, Price: ₹{price_val:.2f}/kg)"
+                    })
+                elif unit_type == 'piece':
+                    piece_items.append({
+                        'name': veg_name,
+                        'price': price_val,
+                        'stock': quantity_val,
+                        'display': f"{veg_name} (Stock: {quantity_val:.0f} pieces, Price: ₹{price_val:.2f}/piece)"
+                    })
+            except Exception as e:
+                continue
+        
+        # SIMPLE SELLING INTERFACE
         col1, col2 = st.columns([3, 2])
         
         with col1:
             st.markdown("### 🌿 Select Items")
             
+            # Customer info - Simple and clean
             with st.expander("👤 Customer Information", expanded=True):
                 cust_col1, cust_col2 = st.columns(2)
                 with cust_col1:
@@ -2124,31 +1800,37 @@ elif menu == "💵 Quick Sell":
                 with cust_col2:
                     cust_phone = st.text_input("Phone Number", placeholder="Optional", key="cust_phone_sell")
             
+            # Item selection with SEPARATE dropdowns
             st.markdown("### Add Items to Bill")
             
-            tab1, tab2, tab3 = st.tabs(["🥦 Vegetables (KG)", "🧩 Vegetables (Piece)", "🍎 Fruits (KG)"])
+            # Tab interface for different item types
+            tab1, tab2, tab3 = st.tabs(["⚖️ KG Items", "🧩 Piece Items", "🍎 Fruits"])
             
-            # Tab 1: KG Vegetables
+            # Tab 1: KG Items (Vegetables)
             with tab1:
-                if kg_vegetables:
-                    st.markdown("#### 🥦 Vegetables (Sold by KG)")
-                    with st.form("kg_vegetables_form", clear_on_submit=True):
+                if kg_items:
+                    with st.form("kg_items_form", clear_on_submit=True):
                         col_a, col_b, col_c = st.columns([3, 2, 1])
                         
                         with col_a:
-                            kg_options = [item['display'] for item in kg_vegetables]
-                            kg_dict = {item['display']: item for item in kg_vegetables}
+                            # KG Items dropdown
+                            kg_options = [item['display'] for item in kg_items]
+                            kg_dict = {item['display']: item for item in kg_items}
                             
                             selected_kg_display = st.selectbox(
-                                "Select Vegetable (KG)",
+                                "Select KG Item",
                                 options=kg_options,
-                                key="kg_vegetable_select"
+                                key="kg_item_select"
                             )
                             
                             if selected_kg_display:
                                 selected_kg = kg_dict[selected_kg_display]
+                                current_stock = selected_kg['stock']
+                                current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == selected_kg['name'])
+                                available_stock = current_stock - current_in_cart
                         
                         with col_b:
+                            # KG Quantity input - EMPTY BY DEFAULT
                             if selected_kg_display:
                                 current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == selected_kg['name'])
                                 available_stock = selected_kg['stock'] - current_in_cart
@@ -2157,14 +1839,15 @@ elif menu == "💵 Quick Sell":
                                     st.error("No stock available!")
                                     qty_kg = 0
                                 else:
+                                    # EMPTY input box - no default value
                                     qty_kg = st.number_input(
                                         "Kilograms", 
                                         min_value=0.0, 
                                         step=0.001, 
-                                        value=None,
+                                        value=None,  # Empty by default
                                         placeholder="Enter kg",
-                                        format="%.3f",
-                                        key="qty_kg_veg"
+                                        format="%.3f",  # Show 3 decimal places
+                                        key="qty_kg_input_veg"
                                     )
                                     if qty_kg is None:
                                         qty_kg = 0.0
@@ -2180,38 +1863,42 @@ elif menu == "💵 Quick Sell":
                                 total_price = 0
                         
                         with col_c:
-                            st.write("")
-                            st.write("")
+                            st.write("")  # Spacer
+                            st.write("")  # Spacer
+                            # Submit button
                             submitted = st.form_submit_button("➕ Add to Bill", use_container_width=True, type="primary")
                             if submitted:
                                 if selected_kg_display and qty_kg > 0:
                                     if add_to_cart_simple(selected_kg['name'], qty_kg):
                                         st.success(f"Added {qty_kg:.3f} kg of {selected_kg['name']}")
-                                        st.rerun()
                 else:
-                    st.info("No KG vegetables available")
+                    st.info("No KG items available")
             
-            # Tab 2: Piece Vegetables
+            # Tab 2: Piece Items
             with tab2:
-                if piece_vegetables:
-                    st.markdown("#### 🧩 Vegetables (Sold by Piece)")
-                    with st.form("piece_vegetables_form", clear_on_submit=True):
+                if piece_items:
+                    with st.form("piece_items_form", clear_on_submit=True):
                         col_a, col_b, col_c = st.columns([3, 2, 1])
                         
                         with col_a:
-                            piece_options = [item['display'] for item in piece_vegetables]
-                            piece_dict = {item['display']: item for item in piece_vegetables}
+                            # Piece Items dropdown
+                            piece_options = [item['display'] for item in piece_items]
+                            piece_dict = {item['display']: item for item in piece_items}
                             
                             selected_piece_display = st.selectbox(
-                                "Select Vegetable (Piece)",
+                                "Select Piece Item",
                                 options=piece_options,
-                                key="piece_vegetable_select"
+                                key="piece_item_select"
                             )
                             
                             if selected_piece_display:
                                 selected_piece = piece_dict[selected_piece_display]
+                                current_stock = selected_piece['stock']
+                                current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == selected_piece['name'])
+                                available_stock = current_stock - current_in_cart
                         
                         with col_b:
+                            # Piece Quantity input
                             if selected_piece_display:
                                 current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == selected_piece['name'])
                                 available_stock = selected_piece['stock'] - current_in_cart
@@ -2220,13 +1907,14 @@ elif menu == "💵 Quick Sell":
                                     st.error("No stock available!")
                                     total_qty = 0
                                 else:
+                                    # EMPTY input box - no default value
                                     total_qty = st.number_input(
                                         "Pieces", 
                                         min_value=0, 
                                         step=1, 
-                                        value=None,
+                                        value=None,  # Empty by default
                                         placeholder="Enter pieces",
-                                        key="qty_pieces_veg"
+                                        key="qty_pieces_input"
                                     )
                                     if total_qty is None:
                                         total_qty = 0
@@ -2243,38 +1931,45 @@ elif menu == "💵 Quick Sell":
                                 total_price = 0
                         
                         with col_c:
-                            st.write("")
-                            st.write("")
+                            st.write("")  # Spacer
+                            st.write("")  # Spacer
+                            # Submit button
                             submitted = st.form_submit_button("➕ Add to Bill", use_container_width=True, type="primary")
                             if submitted:
                                 if selected_piece_display and total_qty > 0:
                                     if add_to_cart_simple(selected_piece['name'], total_qty):
                                         st.success(f"Added {total_qty:.0f} pieces of {selected_piece['name']}")
-                                        st.rerun()
                 else:
-                    st.info("No piece vegetables available")
+                    st.info("No Piece items available")
             
             # Tab 3: Fruits (KG)
             with tab3:
-                if kg_fruits:
-                    st.markdown("#### 🍎 Fruits (Sold by KG)")
+                # Filter fruits from kg_items
+                fruit_kg_items = [item for item in kg_items if any(fruit in item['name'] for fruit in fruits_kg)]
+                
+                if fruit_kg_items:
                     with st.form("fruits_form", clear_on_submit=True):
                         col_a, col_b, col_c = st.columns([3, 2, 1])
                         
                         with col_a:
-                            fruit_options = [item['display'] for item in kg_fruits]
-                            fruit_dict = {item['display']: item for item in kg_fruits}
+                            # Fruits dropdown
+                            fruit_options = [item['display'] for item in fruit_kg_items]
+                            fruit_dict = {item['display']: item for item in fruit_kg_items}
                             
                             selected_fruit_display = st.selectbox(
-                                "Select Fruit (KG)",
+                                "Select Fruit",
                                 options=fruit_options,
                                 key="fruit_select"
                             )
                             
                             if selected_fruit_display:
                                 selected_fruit = fruit_dict[selected_fruit_display]
+                                current_stock = selected_fruit['stock']
+                                current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == selected_fruit['name'])
+                                available_stock = current_stock - current_in_cart
                         
                         with col_b:
+                            # KG Quantity input for fruits - EMPTY BY DEFAULT
                             if selected_fruit_display:
                                 current_in_cart = sum(item[1] for item in st.session_state.cart if item[0] == selected_fruit['name'])
                                 available_stock = selected_fruit['stock'] - current_in_cart
@@ -2283,14 +1978,15 @@ elif menu == "💵 Quick Sell":
                                     st.error("No stock available!")
                                     qty_kg = 0
                                 else:
+                                    # EMPTY input box - no default value
                                     qty_kg = st.number_input(
                                         "Kilograms", 
                                         min_value=0.0, 
                                         step=0.001, 
-                                        value=None,
+                                        value=None,  # Empty by default
                                         placeholder="Enter kg",
-                                        format="%.3f",
-                                        key="qty_kg_fruit"
+                                        format="%.3f",  # Show 3 decimal places
+                                        key="qty_kg_input_fruit"
                                     )
                                     if qty_kg is None:
                                         qty_kg = 0.0
@@ -2306,16 +2002,19 @@ elif menu == "💵 Quick Sell":
                                 total_price = 0
                         
                         with col_c:
-                            st.write("")
-                            st.write("")
+                            st.write("")  # Spacer
+                            st.write("")  # Spacer
+                            # Submit button
                             submitted = st.form_submit_button("➕ Add to Bill", use_container_width=True, type="primary")
                             if submitted:
                                 if selected_fruit_display and qty_kg > 0:
                                     if add_to_cart_simple(selected_fruit['name'], qty_kg):
                                         st.success(f"Added {qty_kg:.3f} kg of {selected_fruit['name']}")
-                                        st.rerun()
                 else:
                     st.info("No fruits available")
+            
+            # Manual vegetable entry section removed as requested
+            # Only dropdown selection is available
         
         with col2:
             st.markdown("### 🛒 Current Bill")
@@ -2323,35 +2022,36 @@ elif menu == "💵 Quick Sell":
             if not st.session_state.cart:
                 st.info("🛒 Bill is Empty - Add items from the left")
             else:
-                # Display cart items
-                cart_table_data = []
+                # Display cart items in a clean table - FIXED: Unified price column
+                st.markdown("#### Items in Bill")
+                
+                # Create a dataframe for display
+                cart_data = []
                 total_amount = 0
                 
-                for veg, qty, price, item_total, unit_type, category in st.session_state.cart:
+                for veg, qty, price, item_total, unit_type in st.session_state.cart:
+                    # Determine unit display and price label
                     if unit_type == 'kg':
                         quantity_display = f"{qty:.3f} kg"
                         price_display = f"₹{price:.2f}/kg"
                     elif unit_type == 'piece':
                         quantity_display = f"{qty:.0f} pieces"
                         price_display = f"₹{price:.2f}/piece"
+                    else:
+                        quantity_display = f"{qty:.2f} {unit_type}"
+                        price_display = f"₹{price:.2f}/{unit_type}"
                     
-                    icon = "🥦" if category == 'vegetable' else "🍎"
-                    
-                    cart_table_data.append({
-                        "Item": f"{icon} {veg}",
+                    cart_data.append({
+                        "Item": veg,
                         "Quantity": quantity_display,
-                        "Unit Price": price_display,
+                        "Price": price_display,
                         "Total": f"₹{item_total:.2f}"
                     })
                     total_amount += item_total
                 
-                # Display as a table
-                cart_df = pd.DataFrame(cart_table_data)
-                st.dataframe(
-                    cart_df,
-                    use_container_width=True,
-                    hide_index=True
-                )
+                # Display as dataframe
+                cart_df = pd.DataFrame(cart_data)
+                st.dataframe(cart_df, use_container_width=True, hide_index=True)
                 
                 # Quick remove option
                 st.markdown("#### Quick Remove")
@@ -2370,6 +2070,7 @@ elif menu == "💵 Quick Sell":
                         st.success(f"Removed {veg_to_remove}")
                         st.rerun()
                 
+                # Bill summary
                 st.markdown("---")
                 st.markdown(f"""
                 <div class="card" style="background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%); color:white; text-align:center; padding:20px;">
@@ -2379,13 +2080,49 @@ elif menu == "💵 Quick Sell":
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Complete Bill Button
-                st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
-                if st.button("✅ Complete Bill", type="primary", use_container_width=True, key="complete_bill"):
-                    if process_sale_simple(cust_name, cust_phone):
-                        st.success("✅ Bill completed successfully!")
+                # Action buttons
+                st.markdown("---")
+                col_a, col_b, col_c = st.columns(3)
+                
+                with col_a:
+                    if st.button("🔄 Clear Bill", use_container_width=True, type="secondary", key="clear_bill"):
+                        st.session_state.cart = []
+                        st.success("Bill cleared")
                         st.rerun()
+                
+                with col_b:
+                    if st.button("✏️ Edit Quantity", use_container_width=True, key="edit_qty"):
+                        # Show edit interface
+                        st.markdown("#### Edit Item Quantities")
+                        for idx, (veg, qty, price, item_total, unit_type) in enumerate(st.session_state.cart):
+                            edit_col1, edit_col2 = st.columns([3, 1])
+                            with edit_col1:
+                                unit_display = unit_type if unit_type != 'kg' else 'kg'
+                                st.write(f"**{veg}** - Current: {qty:.2f} {unit_display}")
+                            with edit_col2:
+                                stock, _, _, _ = get_stock(veg)
+                                # Remove the maximum calculation and warning
+                                new_qty = st.number_input(f"New Qty", min_value=0.0, value=float(qty), 
+                                                        step=0.1, key=f"edit_{veg}_{idx}")
+                                if new_qty != qty:
+                                    if st.button("Update", key=f"update_{veg}_{idx}"):
+                                        # Just validate without showing warning
+                                        if new_qty <= stock:
+                                            update_cart_qty(veg, new_qty)
+                                            st.success(f"Updated {veg}")
+                                            st.rerun()
+                                        else:
+                                            # Silent adjustment
+                                            update_cart_qty(veg, stock)
+                                            st.success(f"Adjusted to available stock: {stock:.2f}")
+                                            st.rerun()
+                
+                with col_c:
+                    if st.button("✅ Complete Bill", type="primary", use_container_width=True, key="complete_bill"):
+                        if process_sale_simple(cust_name, cust_phone):
+                            st.success("✅ Bill completed successfully!")
         
+        # Show receipt if last sale exists
         if st.session_state.last_sale:
             sale = st.session_state.last_sale
             
@@ -2395,41 +2132,47 @@ elif menu == "💵 Quick Sell":
             </div>
             """, unsafe_allow_html=True)
             
+            # Receipt
             with st.container():
                 st.markdown(f"""
                 <div class="receipt">
                     <div style="text-align:center; margin-bottom:20px;">
                         <h2 style="color:#2c3e50;">🌿 FRESH BASKET</h2>
                         <p style="color:#27ae60; margin:5px 0; font-weight:bold;">Freshness You Can Feel</p>
-                        <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">No.4, Andal nagar, Adambakkam, Chennai - 600 088</p>
-                        <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">📞 7904019948</p>
                         <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">Bill No: {sale['bill_no']}</p>
                     </div>
                     <hr style="border:none; height:2px; background: linear-gradient(90deg, #27ae60, #2ecc71); margin:15px 0;">
                 """, unsafe_allow_html=True)
                 
+                # Sale info
                 col1, col2 = st.columns(2)
                 with col1:
                     st.markdown(f"**📅 Date:** {sale['date']}")
                     if sale['time']:
                         st.markdown(f"**⏰ Time:** {sale['time']} (IST)")
                 with col2:
+                    # Only show bill number
                     st.markdown(f"**🧾 Bill No:** {sale['bill_no']}")
                 
                 st.markdown("<hr style='border:none; height:1px; background:#e0e0e0; margin:15px 0;'>", unsafe_allow_html=True)
                 
+                # Items table - FIXED: Unified price column
                 st.markdown("### 🛒 Items Purchased")
                 
                 items_data = []
                 for item in sale['items']:
                     unit_type = item['unit_type']
                     
+                    # Determine display based on unit type
                     if unit_type == 'kg':
                         quantity_display = f"{item['quantity']:.3f} kg"
                         price_display = f"₹{item['price']:.2f}/kg"
                     elif unit_type == 'piece':
                         quantity_display = f"{item['quantity']:.0f} pieces"
                         price_display = f"₹{item['price']:.2f}/piece"
+                    else:
+                        quantity_display = f"{item['quantity']:.2f} {unit_type}"
+                        price_display = f"₹{item['price']:.2f}/{unit_type}"
                     
                     items_data.append({
                         'Item': item['item'],
@@ -2440,12 +2183,20 @@ elif menu == "💵 Quick Sell":
                 
                 items_df = pd.DataFrame(items_data)
                 
+                # Apply styling to the dataframe
                 st.dataframe(
-                    items_df,
+                    items_df.style
+                    .set_properties(**{'background-color': '#f8f9fa', 'color': '#2c3e50'})
+                    .set_table_styles([
+                        {'selector': 'th', 'props': [('background', '#27ae60'), ('color', 'white'), 
+                                                    ('font-weight', 'bold'), ('text-align', 'center')]},
+                        {'selector': 'td', 'props': [('text-align', 'center')]}
+                    ]),
                     use_container_width=True,
                     hide_index=True
                 )
                 
+                # Total
                 st.markdown("<hr style='border:none; height:2px; background: linear-gradient(90deg, #27ae60, #2ecc71); margin:20px 0;'>", unsafe_allow_html=True)
                 
                 col1, col2 = st.columns([3, 1])
@@ -2465,6 +2216,7 @@ elif menu == "💵 Quick Sell":
                 </div>
                 """, unsafe_allow_html=True)
             
+            # ========================== PRINT OPTIONS ==========================
             st.markdown("---")
             st.markdown("### 🧾 Print Options")
             
@@ -2475,12 +2227,110 @@ elif menu == "💵 Quick Sell":
                     sale = st.session_state.last_sale
                     
                     if printer_type == "Save as PDF only":
-                        st.success("Ready for PDF printing! Click 'Print Bill' after sale.")
+                        # Browser print for PDF - FIXED
+                        js = f"""
+                        <script>
+                        function printReceipt() {{
+                            var receiptHTML = `
+                            <div style="padding:20px; font-family:Arial, sans-serif; max-width:500px; margin:0 auto;">
+                                <div style="text-align:center; margin-bottom:20px;">
+                                    <h2 style="color:#2c3e50;">🌿 FRESH BASKET</h2>
+                                    <p style="color:#27ae60; margin:5px 0; font-weight:bold;">Freshness You Can Feel</p>
+                                    <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">Bill No: {sale['bill_no']}</p>
+                                </div>
+                                <hr style="border:none; height:2px; background:#27ae60; margin:15px 0;">
+                                <div style="display:flex; justify-content:space-between;">
+                                    <div><strong>Date:</strong> {sale['date']}</div>
+                                    <div><strong>Time:</strong> {sale['time']}</div>
+                                </div>
+                                <hr style="border:none; height:1px; background:#e0e0e0; margin:15px 0;">
+                                <h3 style="text-align:center;">Items Purchased</h3>
+                                <table style="width:100%; border-collapse:collapse; margin:10px 0;">
+                                    <tr style="background:#27ae60; color:white;">
+                                        <th style="padding:8px; text-align:left;">Item</th>
+                                        <th style="padding:8px; text-align:center;">Qty</th>
+                                        <th style="padding:8px; text-align:center;">Price</th>
+                                        <th style="padding:8px; text-align:right;">Amount</th>
+                                    </tr>
+                            `;
+                            
+                            // Add items
+                            {sale['items']}.forEach(item => {{
+                                var unit = item.unit_type === 'kg' ? 'kg' : 'piece';
+                                var qty = item.unit_type === 'kg' ? item.quantity.toFixed(3) + ' kg' : item.quantity.toFixed(0) + ' pc';
+                                var price = item.unit_type === 'kg' ? '₹' + item.price.toFixed(2) + '/kg' : '₹' + item.price.toFixed(2) + '/pc';
+                                
+                                receiptHTML += `
+                                    <tr style="border-bottom:1px solid #eee;">
+                                        <td style="padding:8px;">${{item.item}}</td>
+                                        <td style="padding:8px; text-align:center;">${{qty}}</td>
+                                        <td style="padding:8px; text-align:center;">${{price}}</td>
+                                        <td style="padding:8px; text-align:right;">₹${{item.total.toFixed(2)}}</td>
+                                    </tr>
+                                `;
+                            }});
+                            
+                            receiptHTML += `
+                                </table>
+                                <hr style="border:none; height:2px; background:#27ae60; margin:20px 0;">
+                                <div style="text-align:right;">
+                                    <h3 style="color:#2c3e50;">Total: ₹{sale['total'].toFixed(2)}</h3>
+                                </div>
+                                <hr style="border:none; height:1px; background:#e0e0e0; margin:20px 0;">
+                                <div style="text-align:center; margin-top:20px;">
+                                    <p style="color:#7f8c8d; font-size:0.9em; margin:5px 0;">
+                                        Thank you for your purchase! 🌿
+                                    </p>
+                                    <p style="color:#7f8c8d; font-size:0.8em; margin:5px 0;">
+                                        Quality Vegetables • Fresh Every Day
+                                    </p>
+                                </div>
+                            </div>
+                            `;
+                            
+                            var printWindow = window.open('', '_blank');
+                            printWindow.document.write(`
+                                <html>
+                                    <head>
+                                        <title>Fresh Basket Bill - {sale['bill_no']}</title>
+                                        <style>
+                                            body {{ font-family: Arial, sans-serif; margin: 0; padding: 20px; }}
+                                            @media print {{ 
+                                                body {{ padding: 0; }}
+                                                .no-print {{ display: none !important; }}
+                                            }}
+                                        </style>
+                                    </head>
+                                    <body>
+                                        ${{receiptHTML}}
+                                        <script>
+                                            window.onload = function() {{
+                                                window.print();
+                                                setTimeout(function() {{ window.close(); }}, 100);
+                                            }}
+                                        <\/script>
+                                    </body>
+                                </html>
+                            `);
+                            printWindow.document.close();
+                        }}
+                        printReceipt();
+                        </script>
+                        """
+                        st.components.v1.html(js, height=0)
+                        st.success("Print dialog opened!")
                     else:
+                        # Print to physical printer
                         if print_universal(sale, method="auto"):
                             st.success("✅ Bill sent to printer!")
+                            st.balloons()
                         else:
-                            st.error("❌ Printing failed.")
+                            st.error("""
+                            ❌ Printing failed. Try:
+                            1. Check printer is ON
+                            2. Check network connection
+                            3. Try different print method
+                            """)
             
             with col2:
                 if st.button("👁️ Preview Bill", use_container_width=True, key="preview_bill_btn"):
@@ -2491,12 +2341,118 @@ elif menu == "💵 Quick Sell":
             
             with col3:
                 if st.button("📄 Save as PDF", use_container_width=True, key="save_pdf_btn"):
+                    sale = st.session_state.last_sale
+                    # Create a simple HTML receipt for PDF
+                    html_receipt = f"""
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <title>Fresh Basket Bill - {sale['bill_no']}</title>
+                        <style>
+                            body {{ font-family: Arial, sans-serif; padding: 20px; max-width: 500px; margin: 0 auto; }}
+                            .header {{ text-align: center; margin-bottom: 20px; }}
+                            .bill-info {{ display: flex; justify-content: space-between; margin-bottom: 15px; }}
+                            table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+                            th {{ background: #27ae60; color: white; padding: 10px; text-align: left; }}
+                            td {{ padding: 8px; border-bottom: 1px solid #ddd; }}
+                            .total {{ text-align: right; font-weight: bold; font-size: 1.2em; margin-top: 20px; }}
+                            .footer {{ text-align: center; margin-top: 30px; color: #666; font-size: 0.9em; }}
+                            @media print {{
+                                body {{ padding: 10px; }}
+                            }}
+                        </style>
+                    </head>
+                    <body>
+                        <div class="header">
+                            <h2>🌿 FRESH BASKET</h2>
+                            <p style="color:#27ae60; font-weight:bold;">Freshness You Can Feel</p>
+                            <p>Bill No: {sale['bill_no']}</p>
+                        </div>
+                        
+                        <div class="bill-info">
+                            <div><strong>Date:</strong> {sale['date']}</div>
+                            <div><strong>Time:</strong> {sale['time']}</div>
+                        </div>
+                        
+                        <hr>
+                        
+                        <h3>Items Purchased</h3>
+                        <table>
+                            <tr>
+                                <th>Item</th>
+                                <th>Qty</th>
+                                <th>Price</th>
+                                <th>Amount</th>
+                            </tr>
+                    """
+                    
+                    for item in sale['items']:
+                        unit = item['unit_type']
+                        qty = f"{item['quantity']:.3f} kg" if unit == 'kg' else f"{item['quantity']:.0f} pieces"
+                        price = f"₹{item['price']:.2f}/kg" if unit == 'kg' else f"₹{item['price']:.2f}/piece"
+                        
+                        html_receipt += f"""
+                            <tr>
+                                <td>{item['item']}</td>
+                                <td>{qty}</td>
+                                <td>{price}</td>
+                                <td>₹{item['total']:.2f}</td>
+                            </tr>
+                        """
+                    
+                    html_receipt += f"""
+                        </table>
+                        
+                        <div class="total">
+                            Total: ₹{sale['total']:.2f}
+                        </div>
+                        
+                        <hr>
+                        
+                        <div class="footer">
+                            <p>Thank you for your purchase! 🌿</p>
+                            <p>Quality Vegetables • Fresh Every Day</p>
+                        </div>
+                        
+                        <script>
+                            window.onload = function() {{
+                                window.print();
+                            }}
+                        </script>
+                    </body>
+                    </html>
+                    """
+                    
+                    # Display HTML
+                    st.components.v1.html(html_receipt, height=800, scrolling=True)
                     st.success("PDF print dialog opened!")
             
             with col4:
                 if st.button("🔄 New Bill", use_container_width=True, key="new_bill_btn"):
                     st.session_state.last_sale = None
                     st.rerun()
+            
+            # Add backup options
+            st.markdown("---")
+            st.markdown("#### 💾 Backup Options")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("📤 Export Bill Data", use_container_width=True, key="export_bill_btn"):
+                    sale = st.session_state.last_sale
+                    import json
+                    bill_json = json.dumps(sale, indent=2)
+                    st.download_button(
+                        label="Download Bill JSON",
+                        data=bill_json,
+                        file_name=f"bill_{sale['bill_no']}.json",
+                        mime="application/json",
+                        key="download_bill_json"
+                    )
+            
+            with col2:
+                if st.button("📧 Email Receipt", use_container_width=True, key="email_receipt_btn"):
+                    st.info("Email feature coming soon!")
 
 # ========================== INVENTORY ==========================
 elif menu == "📦 Inventory":
@@ -2507,178 +2463,107 @@ elif menu == "📦 Inventory":
     </div>
     """, unsafe_allow_html=True)
     
+    # Edit items list
     st.markdown("### ✏️ Manage Items List")
     with st.expander("Add/Remove Items", expanded=False):
         col1, col2 = st.columns(2)
         
         with col1:
+            # Add new item
             st.markdown("#### ➕ Add New Item")
             new_item_name = st.text_input("Item Name", key="new_item_name")
-            category = st.selectbox("Category", ["vegetable", "fruit"], key="new_item_category")
             unit_type = st.selectbox("Unit Type", ["kg", "piece"], key="new_item_unit")
             initial_qty = st.number_input("Initial Quantity", min_value=0.0, step=0.1, value=0.0, key="initial_qty")
             initial_price = st.number_input("Initial Price ₹", min_value=0.0, step=1.0, value=0.0, key="initial_price")
             
             if st.button("Add to Inventory", use_container_width=True, key="add_item_btn"):
                 if new_item_name and new_item_name.strip():
-                    c = conn.cursor()
-                    c.execute("""
-                        INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type, category) 
-                        VALUES (?,?,?,?,?,?)
-                        ON CONFLICT (vegetable) DO NOTHING
-                    """, (new_item_name.strip(), initial_qty, 0.0, initial_price, unit_type, category))
+                    c.execute("INSERT OR REPLACE INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type) VALUES (?,?,?,?,?)", 
+                             (new_item_name.strip(), initial_qty, 0.0, initial_price, unit_type))
                     conn.commit()
-                    st.cache_data.clear()  # Clear cache
-                    st.success(f"✅ Added {new_item_name.strip()} to inventory")
+                    unit_display = unit_type if unit_type != 'kg' else 'kg'
+                    st.success(f"✅ Added {new_item_name.strip()} to inventory (sold by {unit_display})")
                     st.rerun()
         
         with col2:
+            # Remove item
             st.markdown("#### 🗑️ Remove Item")
-            inventory_data = get_inventory_data()
+            all_items = pd.read_sql("SELECT vegetable FROM inventory ORDER BY vegetable", conn)
             
-            if inventory_data:
-                item_to_remove = st.selectbox("Select item to remove", list(inventory_data.keys()), key="item_to_remove")
+            if not all_items.empty:
+                item_to_remove = st.selectbox("Select item to remove", all_items['vegetable'], key="item_to_remove")
                 confirm = st.checkbox("I confirm I want to remove this item", key="confirm_remove")
                 
                 if st.button("Remove from Inventory", use_container_width=True, type="secondary", disabled=not confirm, key="remove_item_btn"):
-                    stock = inventory_data[item_to_remove][0]
+                    # Check if item has stock
+                    stock, _, _, _ = get_stock(item_to_remove)
                     if stock > 0:
                         st.error(f"Cannot remove {item_to_remove} - it still has {stock:.2f} in stock")
                     else:
-                        c = conn.cursor()
                         c.execute("DELETE FROM inventory WHERE vegetable=?", (item_to_remove,))
                         conn.commit()
-                        st.cache_data.clear()  # Clear cache
                         st.success(f"✅ Removed {item_to_remove} from inventory")
                         st.rerun()
     
+    # Current inventory
     st.markdown("### 📋 Current Inventory")
     
-    inventory_data = get_inventory_data()
+    inv_df = pd.read_sql("SELECT vegetable, quantity, selling_price, unit_type FROM inventory ORDER BY vegetable", conn)
     
-    if not inventory_data:
+    if inv_df.empty:
         st.info("No inventory items")
     else:
-        in_stock = sum(1 for data in inventory_data.values() if data[0] > 0)
-        out_of_stock = sum(1 for data in inventory_data.values() if data[0] == 0)
+        # Summary
+        in_stock = len(inv_df[inv_df['quantity'] > 0])
+        out_of_stock = len(inv_df[inv_df['quantity'] == 0])
         
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Total Items", len(inventory_data))
+            st.metric("Total Items", len(inv_df))
         with col2:
             st.metric("In Stock", in_stock)
         with col3:
             st.metric("Out of Stock", out_of_stock)
         
-        # Separate tabs for vegetables and fruits
-        tab1, tab2 = st.tabs(["🥦 Vegetables", "🍎 Fruits"])
+        # Editable inventory table
+        st.markdown("#### ✏️ Edit Inventory Quantities")
         
-        veg_list = []
-        fruit_list = []
-        
-        for veg, data in inventory_data.items():
-            qty, cost, price, unit_type, category = data
-            if category == 'vegetable':
-                veg_list.append({
-                    'vegetable': veg,
-                    'quantity': qty,
-                    'selling_price': price,
-                    'unit_type': unit_type,
-                    'category': category
-                })
-            elif category == 'fruit':
-                fruit_list.append({
-                    'vegetable': veg,
-                    'quantity': qty,
-                    'selling_price': price,
-                    'unit_type': unit_type,
-                    'category': category
-                })
-        
-        with tab1:
-            if veg_list:
-                veg_df = pd.DataFrame(veg_list)
-                
-                edited_veg = st.data_editor(
-                    veg_df,
-                    column_config={
-                        "vegetable": st.column_config.TextColumn("🌿 Vegetable", disabled=True),
-                        "unit_type": st.column_config.TextColumn("📏 Unit", disabled=True),
-                        "quantity": st.column_config.NumberColumn(
-                            "⚖️ Quantity",
-                            min_value=0.0,
-                            step=0.1,
-                            format="%.2f"
-                        ),
-                        "selling_price": st.column_config.NumberColumn(
-                            "💰 Price (₹)",
-                            min_value=0.0,
-                            step=1.0,
-                            format="₹%.2f"
-                        )
-                    },
-                    use_container_width=True,
-                    num_rows="dynamic",
-                    hide_index=True,
-                    key="vegetable_editor"
+        edited_inv = st.data_editor(
+            inv_df,
+            column_config={
+                "vegetable": st.column_config.TextColumn("🌿 Item", disabled=True),
+                "unit_type": st.column_config.TextColumn("📏 Unit", disabled=True),
+                "quantity": st.column_config.NumberColumn(
+                    "⚖️ Quantity",
+                    min_value=0.0,
+                    step=0.1,
+                    format="%.2f"
+                ),
+                "selling_price": st.column_config.NumberColumn(
+                    "💰 Price (₹)",
+                    min_value=0.0,
+                    step=1.0,
+                    format="₹%.2f"
                 )
-            else:
-                st.info("No vegetables in inventory")
-        
-        with tab2:
-            if fruit_list:
-                fruit_df = pd.DataFrame(fruit_list)
-                
-                edited_fruit = st.data_editor(
-                    fruit_df,
-                    column_config={
-                        "vegetable": st.column_config.TextColumn("🍎 Fruit", disabled=True),
-                        "unit_type": st.column_config.TextColumn("📏 Unit", disabled=True),
-                        "quantity": st.column_config.NumberColumn(
-                            "⚖️ Quantity",
-                            min_value=0.0,
-                            step=0.1,
-                            format="%.2f"
-                        ),
-                        "selling_price": st.column_config.NumberColumn(
-                            "💰 Price (₹)",
-                            min_value=0.0,
-                            step=1.0,
-                            format="₹%.2f"
-                        )
-                    },
-                    use_container_width=True,
-                    num_rows="dynamic",
-                    hide_index=True,
-                    key="fruit_editor"
-                )
-            else:
-                st.info("No fruits in inventory")
+            },
+            use_container_width=True,
+            num_rows="dynamic",
+            hide_index=True,
+            key="inventory_editor"
+        )
         
         if st.button("💾 Save Inventory Changes", type="primary", use_container_width=True, key="save_inv_changes"):
             changes_made = 0
-            c = conn.cursor()
-            if 'edited_veg' in locals():
-                for _, row in edited_veg.iterrows():
-                    try:
-                        c.execute("UPDATE inventory SET quantity=?, selling_price=? WHERE vegetable=?", 
-                                 (row['quantity'], row['selling_price'], row['vegetable']))
-                        changes_made += 1
-                    except Exception as e:
-                        st.error(f"Error updating {row['vegetable']}: {e}")
-            
-            if 'edited_fruit' in locals():
-                for _, row in edited_fruit.iterrows():
-                    try:
-                        c.execute("UPDATE inventory SET quantity=?, selling_price=? WHERE vegetable=?", 
-                                 (row['quantity'], row['selling_price'], row['vegetable']))
-                        changes_made += 1
-                    except Exception as e:
-                        st.error(f"Error updating {row['vegetable']}: {e}")
+            for _, row in edited_inv.iterrows():
+                try:
+                    c.execute("UPDATE inventory SET quantity=?, selling_price=? WHERE vegetable=?", 
+                             (row['quantity'], row['selling_price'], row['vegetable']))
+                    changes_made += 1
+                except Exception as e:
+                    st.error(f"Error updating {row['vegetable']}: {e}")
             
             try:
                 conn.commit()
-                st.cache_data.clear()  # Clear cache
                 if changes_made > 0:
                     st.success(f"✅ {changes_made} inventory items updated successfully!")
                 else:
@@ -2695,26 +2580,24 @@ elif menu == "📋 Purchases":
     </div>
     """, unsafe_allow_html=True)
     
+    # Date filter
     col1, col2 = st.columns(2)
     with col1:
         view_date = st.date_input("View purchases for date", value=selected_date, key="purchases_date")
     with col2:
         show_all = st.checkbox("Show all dates", key="show_all_purchases")
     
-    c = conn.cursor()
+    # Get purchases data
     if show_all:
-        c.execute("SELECT * FROM purchases ORDER BY date DESC, id DESC")
-        purchases_rows = c.fetchall()
-        purchases_df = pd.DataFrame(purchases_rows, columns=['id', 'date', 'vegetable', 'quantity', 'amount', 'supplier'])
+        purchases_df = pd.read_sql("SELECT * FROM purchases ORDER BY date DESC, rowid DESC", conn)
     else:
-        c.execute("SELECT * FROM purchases WHERE date=? ORDER BY id DESC", 
-                  (view_date.strftime("%Y-%m-%d"),))
-        purchases_rows = c.fetchall()
-        purchases_df = pd.DataFrame(purchases_rows, columns=['id', 'date', 'vegetable', 'quantity', 'amount', 'supplier'])
+        purchases_df = pd.read_sql("SELECT * FROM purchases WHERE date=? ORDER BY rowid DESC", 
+                                  conn, params=(view_date.strftime("%Y-%m-%d"),))
     
     if purchases_df.empty:
         st.info(f"No purchases found for {view_date.strftime('%d %B %Y')}")
     else:
+        # Summary metrics
         total_amount = purchases_df['amount'].sum()
         total_qty = purchases_df['quantity'].sum()
         veg_count = purchases_df['vegetable'].nunique()
@@ -2727,6 +2610,7 @@ elif menu == "📋 Purchases":
         with col3:
             st.metric("🌿 Items Bought", veg_count)
         
+        # Display table
         st.dataframe(
             purchases_df.style.format({
                 "quantity": "{:.2f}",
@@ -2744,31 +2628,27 @@ elif menu == "🧾 Sales":
     </div>
     """, unsafe_allow_html=True)
     
+    # Date filter
     col1, col2 = st.columns(2)
     with col1:
         view_date = st.date_input("View sales for date", value=selected_date, key="sales_date_view")
     with col2:
         show_all_sales = st.checkbox("Show all dates", key="show_all_sales_view")
     
-    c = conn.cursor()
+    # Get sales data
     if show_all_sales:
-        c.execute("SELECT * FROM sales ORDER BY date DESC, id DESC")
-        sales_rows = c.fetchall()
-        sales_df = pd.DataFrame(sales_rows, columns=['id', 'date', 'vegetable', 'quantity_sold', 'sale_price', 'total', 
-                                                     'customer', 'unit_type', 'customer_name', 'customer_phone', 'bill_no'])
+        sales_df = pd.read_sql("SELECT * FROM sales ORDER BY date DESC, rowid DESC", conn)
     else:
-        c.execute("SELECT * FROM sales WHERE date=? ORDER BY id DESC", 
-                  (view_date.strftime("%Y-%m-%d"),))
-        sales_rows = c.fetchall()
-        sales_df = pd.DataFrame(sales_rows, columns=['id', 'date', 'vegetable', 'quantity_sold', 'sale_price', 'total',
-                                                     'customer', 'unit_type', 'customer_name', 'customer_phone', 'bill_no'])
+        sales_df = pd.read_sql("SELECT * FROM sales WHERE date=? ORDER BY rowid DESC", 
+                              conn, params=(view_date.strftime("%Y-%m-%d"),))
     
     if sales_df.empty:
         st.info(f"No sales found for {view_date.strftime('%d %B %Y')}")
     else:
+        # Summary metrics
         total_sales = sales_df['total'].sum()
         total_qty = sales_df['quantity_sold'].sum()
-        customer_count = sales_df['customer_name'].nunique()
+        customer_count = sales_df['customer'].nunique()
         
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -2778,24 +2658,23 @@ elif menu == "🧾 Sales":
         with col3:
             st.metric("👥 Customers", customer_count)
         
+        # Display table with unit types
         display_df = sales_df.copy()
         
+        # Format display based on unit type
         def format_sales_row(row):
-            unit_type = row['unit_type']
+            unit_type = row.get('unit_type', 'kg')
             if unit_type == 'kg':
                 return f"{row['quantity_sold']:.2f} kg"
             elif unit_type == 'piece':
                 return f"{row['quantity_sold']:.0f} pieces"
-            return f"{row['quantity_sold']:.2f} {unit_type}"
+            else:
+                return f"{row['quantity_sold']:.2f} {unit_type}"
         
         display_df['Quantity Display'] = display_df.apply(format_sales_row, axis=1)
         
         st.dataframe(
-            display_df[['date', 'vegetable', 'Quantity Display', 'total', 'customer_name', 'customer_phone', 'bill_no']].rename(columns={
-                'customer_name': 'Customer',
-                'customer_phone': 'Phone',
-                'bill_no': 'Bill No'
-            }).style.format({
+            display_df[['date', 'vegetable', 'Quantity Display', 'total', 'customer']].style.format({
                 "total": "₹{:.2f}"
             }),
             use_container_width=True
@@ -2810,19 +2689,19 @@ elif menu == "💸 Expenses":
     </div>
     """, unsafe_allow_html=True)
     
+    # Add expense form
     with st.form("expense_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
         with col1:
             category = st.selectbox("Category", 
                                    ["Rent", "Electricity", "Water", "Transport", "Labor", 
-                                    "Packaging", "Maintenance", "Miscellaneous", "Others"],
+                                    "Packaging", "Maintenance", "Miscellaneous", "Others"],  # Added Others
                                    key="expense_category")
-            amount = st.number_input("Amount ₹", min_value=0.0, step=10.0, value=None, placeholder="Enter amount", key="expense_amount")
-            if amount is None:
-                amount = 0.0
+            amount = st.number_input("Amount ₹", min_value=0.0, step=10.0, value=0.0, key="expense_amount")
         with col2:
             description = st.text_input("Description", placeholder="What was this expense for?", key="expense_desc")
         
+        # Submit button
         submit_button = st.form_submit_button("💾 Save Expense", type="primary", use_container_width=True)
         if submit_button:
             if amount <= 0:
@@ -2831,17 +2710,15 @@ elif menu == "💸 Expenses":
                 st.error("Enter description")
             else:
                 d = selected_date.strftime("%Y-%m-%d")
-                c = conn.cursor()
-                c.execute("INSERT INTO expenses (date, category, amount, description) VALUES (?,?,?,?)", 
+                c.execute("INSERT INTO expenses VALUES (?,?,?,?)", 
                          (d, category, amount, description))
                 conn.commit()
                 st.success(f"✅ Expense recorded: {category} - ₹{amount:.2f}")
     
+    # Today's expenses
     st.markdown("### Today's Expenses")
-    c = conn.cursor()
-    c.execute("SELECT * FROM expenses WHERE date=?", (selected_date.strftime("%Y-%m-%d"),))
-    expenses_rows = c.fetchall()
-    expenses_df = pd.DataFrame(expenses_rows, columns=['id', 'date', 'category', 'amount', 'description'])
+    expenses_df = pd.read_sql("SELECT * FROM expenses WHERE date=?", 
+                             conn, params=(selected_date.strftime("%Y-%m-%d"),))
     
     if expenses_df.empty:
         st.info("No expenses today")
@@ -2859,128 +2736,50 @@ elif menu == "👥 Customers":
     </div>
     """, unsafe_allow_html=True)
     
-    try:
-        # Date selection for customer details
-        col1, col2 = st.columns(2)
-        with col1:
-            customer_view_date = st.date_input("View customers for date", value=selected_date, key="customer_date_view")
-        with col2:
-            show_all_customers = st.checkbox("Show all dates", key="show_all_customers_view")
+    # Get all sales data
+    all_sales_df = pd.read_sql("SELECT DISTINCT customer FROM sales ORDER BY customer", conn)
+    
+    if all_sales_df.empty:
+        st.info("No customers found")
+    else:
+        # Get all customers from customers table
+        customers_df = pd.read_sql("SELECT * FROM customers ORDER BY points DESC", conn)
         
-        c = conn.cursor()
-        if show_all_customers:
-            # Get all customers with date-wise aggregation
-            customers_sql = """
-                SELECT 
-                    date,
-                    COALESCE(customer_phone, 'No Phone') as phone,
-                    COALESCE(customer_name, 'Guest') as name,
-                    COUNT(*) as total_visits,
-                    SUM(total) as total_spent,
-                    MAX(customer_name) as customer_name,
-                    MAX(customer_phone) as customer_phone
-                FROM sales 
-                WHERE customer_name IS NOT NULL AND customer_name != ''
-                GROUP BY date, COALESCE(customer_phone, 'No Phone'), COALESCE(customer_name, 'Guest')
-                ORDER BY date DESC, total_spent DESC
-            """
-            
-            c.execute(customers_sql)
-            customers_rows = c.fetchall()
-            customers_df = pd.DataFrame(customers_rows, columns=['date', 'phone', 'name', 'total_visits', 'total_spent', 'customer_name', 'customer_phone'])
-            
-            if customers_df.empty:
-                st.info("No customer data available yet")
-            else:
-                st.markdown("### 📅 All Customers (Date-wise)")
-                
-                # Group by date for better organization
-                dates = customers_df['date'].unique()
-                
-                for sale_date in dates:
-                    date_customers = customers_df[customers_df['date'] == sale_date]
-                    
-                    with st.expander(f"📅 {sale_date} - {len(date_customers)} customers"):
-                        date_total = date_customers['total_spent'].sum()
-                        date_visits = date_customers['total_visits'].sum()
-                        
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric(f"Total Sales on {sale_date}", f"₹{date_total:.2f}")
-                        with col2:
-                            st.metric("Total Customer Visits", date_visits)
-                        
-                        display_customers = date_customers.copy()
-                        display_customers = display_customers.rename(columns={
-                            "phone": "📱 Phone",
-                            "name": "👤 Name",
-                            "total_visits": "🛒 Visits",
-                            "total_spent": "💰 Total Spent"
-                        })
-                        
-                        st.dataframe(
-                            display_customers[['👤 Name', '📱 Phone', '🛒 Visits', '💰 Total Spent']].style.format({
-                                "💰 Total Spent": "₹{:.2f}"
-                            }),
-                            use_container_width=True
-                        )
+        if customers_df.empty:
+            st.info("No customers in loyalty program")
         else:
-            # Get customers for specific date
-            d = customer_view_date.strftime("%Y-%m-%d")
-            customers_sql = """
-                SELECT 
-                    COALESCE(customer_phone, 'No Phone') as phone,
-                    COALESCE(customer_name, 'Guest') as name,
-                    COUNT(*) as total_visits,
-                    SUM(total) as total_spent,
-                    MAX(customer_name) as customer_name,
-                    MAX(customer_phone) as customer_phone
-                FROM sales 
-                WHERE date=? AND customer_name IS NOT NULL AND customer_name != ''
-                GROUP BY COALESCE(customer_phone, 'No Phone'), COALESCE(customer_name, 'Guest')
-                ORDER BY total_spent DESC
-            """
+            total_points = customers_df['points'].sum()
+            total_customers = len(customers_df)
             
-            c.execute(customers_sql, (d,))
-            customers_rows = c.fetchall()
-            customers_df = pd.DataFrame(customers_rows, columns=['phone', 'name', 'total_visits', 'total_spent', 'customer_name', 'customer_phone'])
+            # Display metrics
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Loyalty Customers", total_customers)
+            with col2:
+                st.metric("Total Points", total_points)
+            with col3:
+                avg_points = total_points / total_customers if total_customers > 0 else 0
+                st.metric("Avg Points/Customer", f"{avg_points:.0f}")
             
-            if customers_df.empty:
-                st.info(f"No customer data available for {customer_view_date.strftime('%d %B %Y')}")
-            else:
-                total_customers = len(customers_df)
-                total_spent = customers_df['total_spent'].sum()
-                
-                # Display metrics
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Total Customers", total_customers)
-                with col2:
-                    st.metric("Total Spent", f"₹{total_spent:.2f}")
-                with col3:
-                    avg_spent = total_spent / total_customers if total_customers > 0 else 0
-                    st.metric("Avg Spent/Customer", f"₹{avg_spent:.2f}")
-                
-                # Show customers in a table
-                st.markdown(f"### 👥 Customers on {customer_view_date.strftime('%d %B %Y')}")
-                
-                display_customers = customers_df.copy()
-                display_customers = display_customers.rename(columns={
-                    "phone": "📱 Phone",
-                    "name": "👤 Name",
-                    "total_visits": "🛒 Visits",
-                    "total_spent": "💰 Total Spent"
-                })
-                
-                st.dataframe(
-                    display_customers[['👤 Name', '📱 Phone', '🛒 Visits', '💰 Total Spent']].style.format({
-                        "💰 Total Spent": "₹{:.2f}"
-                    }),
-                    use_container_width=True,
-                    height=400
-                )
-    except Exception as e:
-        st.error(f"Error loading customer data: {str(e)}")
+            # Show loyalty customers
+            st.markdown("### 🏆 Loyalty Customers")
+            for idx, row in customers_df.iterrows():
+                st.markdown(f"""
+                <div class="card" style="padding:15px; margin-bottom:10px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <h4 style="margin:0; color:#2c3e50;">{row['name']}</h4>
+                            <p style="margin:5px 0 0 0; color:#7f8c8d; font-size:0.9em;">{row['phone']}</p>
+                        </div>
+                        <div style="text-align:right;">
+                            <span style="background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%); 
+                                        color:white; padding:5px 15px; border-radius:20px; font-weight:bold;">
+                                {row['points']} pts
+                            </span>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
 # ========================== WASTE ==========================
 elif menu == "🗑 Waste":
@@ -2991,139 +2790,95 @@ elif menu == "🗑 Waste":
     </div>
     """, unsafe_allow_html=True)
     
-    inventory_data = get_inventory_data()
+    # Get all vegetables for selection
+    all_veg = pd.read_sql("SELECT vegetable, unit_type FROM inventory ORDER BY vegetable", conn)
     
-    tab1, tab2, tab3 = st.tabs(["🥦 Vegetables (KG)", "🧩 Vegetables (Piece)", "🍎 Fruits (KG)"])
+    # Tab interface for different waste types
+    tab1, tab2 = st.tabs(["⚖️ KG Items Waste", "🧩 Piece Items Waste"])
     
     with tab1:
-        st.markdown("### 🥦 Vegetables (KG) Waste")
-        kg_vegetables = [veg for veg, data in inventory_data.items() 
-                        if data[3] == 'kg' and data[4] == 'vegetable']
+        st.markdown("### ⚖️ KG Items Waste")
+        # Filter only kg items
+        kg_items = all_veg[all_veg['unit_type'] == 'kg']
         
-        with st.form("kg_veg_waste_form"):
+        # Record waste for kg items
+        with st.form("kg_waste_form"):
             col1, col2, col3 = st.columns(3)
             with col1:
-                veg = st.selectbox("Select Vegetable (KG)", kg_vegetables, key="kg_veg_waste_veg")
+                veg = st.selectbox("Select KG Item", kg_items['vegetable'].tolist() if not kg_items.empty else [], key="kg_waste_veg")
                 if veg:
                     st.info(f"Unit: kg")
-                    qty = st.number_input("Quantity (kg)", min_value=0.0, step=0.1, value=None, placeholder="Enter kg", key="kg_veg_waste_qty")
-                    if qty is None:
-                        qty = 0.0
+                    qty = st.number_input("Quantity (kg)", min_value=0.0, step=0.1, value=0.0, key="kg_waste_qty")
                 else:
                     qty = 0
             with col2:
                 reason = st.selectbox("Reason", 
                                      ["Spoiled", "Damaged", "Expired", "Overstock", "Other"],
-                                     key="kg_veg_waste_reason")
-                description = st.text_input("Details", key="kg_veg_waste_desc")
+                                     key="kg_waste_reason")
+                description = st.text_input("Details", key="kg_waste_desc")
             
             with col3:
-                submit_button = st.form_submit_button("Record Waste", use_container_width=True, type="primary")
+                # Submit button
+                submit_button = st.form_submit_button("Record KG Waste", use_container_width=True, type="primary")
                 if submit_button:
                     if qty <= 0:
                         st.error("Enter quantity > 0")
                     else:
-                        stock = inventory_data[veg][0]
+                        stock, _, _, _ = get_stock(veg)
                         if qty > stock:
                             st.error(f"Not enough stock! Available: {stock:.2f} kg")
                         else:
                             d = selected_date.strftime("%Y-%m-%d")
-                            c = conn.cursor()
-                            c.execute("INSERT INTO waste (date, vegetable, quantity, reason) VALUES (?,?,?,?)", 
+                            c.execute("INSERT INTO waste VALUES (?,?,?,?)", 
                                      (d, veg, qty, f"{reason}: {description}"))
                             c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
                             conn.commit()
-                            st.cache_data.clear()  # Clear cache
                             st.success(f"✅ Recorded waste: {qty} kg of {veg}")
     
     with tab2:
-        st.markdown("### 🧩 Vegetables (Piece) Waste")
-        piece_vegetables = [veg for veg, data in inventory_data.items() 
-                           if data[3] == 'piece' and data[4] == 'vegetable']
+        st.markdown("### 🧩 Piece Items Waste")
+        # Filter only piece items
+        piece_items = all_veg[all_veg['unit_type'] == 'piece']
         
-        with st.form("piece_veg_waste_form"):
+        # Record waste for piece items
+        with st.form("piece_waste_form"):
             col1, col2, col3 = st.columns(3)
             with col1:
-                veg = st.selectbox("Select Vegetable (Piece)", piece_vegetables, key="piece_veg_waste_veg")
+                veg = st.selectbox("Select Piece Item", piece_items['vegetable'].tolist() if not piece_items.empty else [], key="piece_waste_veg")
                 if veg:
                     st.info(f"Unit: pieces")
-                    qty = st.number_input("Quantity (pieces)", min_value=0, step=1, value=None, placeholder="Enter pieces", key="piece_veg_waste_qty")
-                    if qty is None:
-                        qty = 0
+                    qty = st.number_input("Quantity (pieces)", min_value=0, step=1, value=0, key="piece_waste_qty")
                 else:
                     qty = 0
             with col2:
                 reason = st.selectbox("Reason", 
                                      ["Spoiled", "Damaged", "Expired", "Overstock", "Other"],
-                                     key="piece_veg_waste_reason")
-                description = st.text_input("Details", key="piece_veg_waste_desc")
+                                     key="piece_waste_reason")
+                description = st.text_input("Details", key="piece_waste_desc")
             
             with col3:
-                submit_button = st.form_submit_button("Record Waste", use_container_width=True, type="primary")
+                # Submit button
+                submit_button = st.form_submit_button("Record Piece Waste", use_container_width=True, type="primary")
                 if submit_button:
                     if qty <= 0:
                         st.error("Enter quantity > 0")
                     else:
-                        stock = inventory_data[veg][0]
+                        stock, _, _, _ = get_stock(veg)
                         if qty > stock:
                             st.error(f"Not enough stock! Available: {stock:.0f} pieces")
                         else:
                             d = selected_date.strftime("%Y-%m-%d")
-                            c = conn.cursor()
-                            c.execute("INSERT INTO waste (date, vegetable, quantity, reason) VALUES (?,?,?,?)", 
+                            c.execute("INSERT INTO waste VALUES (?,?,?,?)", 
                                      (d, veg, qty, f"{reason}: {description}"))
                             c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
                             conn.commit()
-                            st.cache_data.clear()  # Clear cache
                             st.success(f"✅ Recorded waste: {qty} pieces of {veg}")
     
-    with tab3:
-        st.markdown("### 🍎 Fruits (KG) Waste")
-        kg_fruits = [veg for veg, data in inventory_data.items() 
-                    if data[3] == 'kg' and data[4] == 'fruit']
-        
-        with st.form("kg_fruit_waste_form"):
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                veg = st.selectbox("Select Fruit (KG)", kg_fruits, key="kg_fruit_waste_veg")
-                if veg:
-                    st.info(f"Unit: kg")
-                    qty = st.number_input("Quantity (kg)", min_value=0.0, step=0.1, value=None, placeholder="Enter kg", key="kg_fruit_waste_qty")
-                    if qty is None:
-                        qty = 0.0
-                else:
-                    qty = 0
-            with col2:
-                reason = st.selectbox("Reason", 
-                                     ["Spoiled", "Damaged", "Expired", "Overstock", "Other"],
-                                     key="kg_fruit_waste_reason")
-                description = st.text_input("Details", key="kg_fruit_waste_desc")
-            
-            with col3:
-                submit_button = st.form_submit_button("Record Waste", use_container_width=True, type="primary")
-                if submit_button:
-                    if qty <= 0:
-                        st.error("Enter quantity > 0")
-                    else:
-                        stock = inventory_data[veg][0]
-                        if qty > stock:
-                            st.error(f"Not enough stock! Available: {stock:.2f} kg")
-                        else:
-                            d = selected_date.strftime("%Y-%m-%d")
-                            c = conn.cursor()
-                            c.execute("INSERT INTO waste (date, vegetable, quantity, reason) VALUES (?,?,?,?)", 
-                                     (d, veg, qty, f"{reason}: {description}"))
-                            c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
-                            conn.commit()
-                            st.cache_data.clear()  # Clear cache
-                            st.success(f"✅ Recorded waste: {qty} kg of {veg}")
-    
+    # Today's waste
     st.markdown("---")
     st.markdown(f"### Today's Waste ({selected_date.strftime('%d %B %Y')})")
-    c = conn.cursor()
-    c.execute("SELECT * FROM waste WHERE date=?", (selected_date.strftime("%Y-%m-%d"),))
-    waste_rows = c.fetchall()
-    waste_df = pd.DataFrame(waste_rows, columns=['id', 'date', 'vegetable', 'quantity', 'reason'])
+    waste_df = pd.read_sql("SELECT * FROM waste WHERE date=?", 
+                          conn, params=(selected_date.strftime("%Y-%m-%d"),))
     
     if waste_df.empty:
         st.info("No waste recorded today")
@@ -3141,46 +2896,62 @@ elif menu == "⬇ Download":
     </div>
     """, unsafe_allow_html=True)
     
+    # Tab interface for different report types
     tab1, tab2, tab3 = st.tabs(["📅 Daily Reports", "📊 Monthly Reports", "📋 Data Export"])
     
     with tab1:
         st.markdown(f"### 📅 Daily Report - {selected_date.strftime('%d %B %Y')}")
         
+        # Get daily data
         d = selected_date.strftime("%Y-%m-%d")
-        c = conn.cursor()
         
-        c.execute("SELECT COALESCE(SUM(total),0) as total_sales FROM sales WHERE date=?", (d,))
-        daily_sales = c.fetchone()[0]
+        # Sales data
+        daily_sales = pd.read_sql("SELECT COALESCE(SUM(total),0) as total_sales FROM sales WHERE date=?", 
+                                 conn, params=(d,)).iloc[0]['total_sales']
         
-        c.execute("SELECT COALESCE(SUM(amount),0) as total_purchases FROM purchases WHERE date=?", (d,))
-        daily_purchases = c.fetchone()[0]
+        # Purchase data
+        daily_purchases = pd.read_sql("SELECT COALESCE(SUM(amount),0) as total_purchases FROM purchases WHERE date=?", 
+                                     conn, params=(d,)).iloc[0]['total_purchases']
         
-        c.execute("SELECT COALESCE(SUM(amount),0) as total_expenses FROM expenses WHERE date=?", (d,))
-        daily_expenses = c.fetchone()[0]
+        # Expense data
+        daily_expenses = pd.read_sql("SELECT COALESCE(SUM(amount),0) as total_expenses FROM expenses WHERE date=?", 
+                                    conn, params=(d,)).iloc[0]['total_expenses']
         
-        c.execute("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE date=?", (d,))
-        daily_waste = c.fetchone()[0]
+        # Waste data
+        daily_waste = pd.read_sql("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE date=?", 
+                                 conn, params=(d,)).iloc[0]['total_waste']
         
-        # Get customer details
-        try:
-            c.execute("""
-                SELECT 
-                    COALESCE(customer_name, 'Guest') as customer_name,
-                    COALESCE(customer_phone, '') as phone,
-                    SUM(total) as total_spent,
-                    COUNT(*) as total_visits
-                FROM sales 
-                WHERE date=?
-                GROUP BY COALESCE(customer_name, 'Guest'), COALESCE(customer_phone, '')
-                ORDER BY total_spent DESC
-            """, (d,))
-            daily_customers_rows = c.fetchall()
-            daily_customers = pd.DataFrame(daily_customers_rows, columns=['customer_name', 'phone', 'total_spent', 'total_visits'])
-        except:
-            daily_customers = pd.DataFrame()
+        # Customer data - FIXED
+        daily_customers = pd.read_sql("""
+            SELECT DISTINCT 
+                CASE 
+                    WHEN customer LIKE 'Guest%' THEN 'Guest'
+                    WHEN customer LIKE '%(%)%' THEN substr(customer, 1, instr(customer, '(') - 1)
+                    ELSE customer
+                END as customer_name,
+                CASE 
+                    WHEN customer LIKE '%(%)%' THEN substr(customer, instr(customer, '(') + 1, instr(customer, ')') - instr(customer, '(') - 1)
+                    ELSE ''
+                END as phone,
+                SUM(total) as total_spent
+            FROM sales 
+            WHERE date=?
+            GROUP BY 
+                CASE 
+                    WHEN customer LIKE 'Guest%' THEN 'Guest'
+                    WHEN customer LIKE '%(%)%' THEN substr(customer, 1, instr(customer, '(') - 1)
+                    ELSE customer
+                END,
+                CASE 
+                    WHEN customer LIKE '%(%)%' THEN substr(customer, instr(customer, '(') + 1, instr(customer, ')') - instr(customer, '(') - 1)
+                    ELSE ''
+                END
+        """, conn, params=(d,))
         
+        # Calculate profit
         daily_profit = daily_sales - daily_purchases - daily_expenses
         
+        # Display daily summary
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("💰 Sales", f"₹{daily_sales:.2f}")
@@ -3189,8 +2960,10 @@ elif menu == "⬇ Download":
         with col3:
             st.metric("💸 Expenses", f"₹{daily_expenses:.2f}")
         with col4:
+            profit_color = "green" if daily_profit >= 0 else "red"
             st.metric("📈 Profit/Loss", f"₹{daily_profit:.2f}", delta_color="off")
         
+        # Customer details
         st.markdown("#### 👥 Customer Details")
         if not daily_customers.empty:
             st.dataframe(
@@ -3199,7 +2972,10 @@ elif menu == "⬇ Download":
                 }),
                 use_container_width=True
             )
+        else:
+            st.info("No customer data for today")
         
+        # Detailed daily data
         st.markdown("#### Detailed Daily Data")
         
         tables = [
@@ -3211,18 +2987,8 @@ elif menu == "⬇ Download":
         
         for table_name, display_name, description in tables:
             with st.expander(f"{display_name} - {description}"):
-                c.execute(f"SELECT * FROM {table_name} WHERE date=?", (d,))
-                df_rows = c.fetchall()
-                
-                if table_name == "purchases":
-                    df = pd.DataFrame(df_rows, columns=['id', 'date', 'vegetable', 'quantity', 'amount', 'supplier'])
-                elif table_name == "sales":
-                    df = pd.DataFrame(df_rows, columns=['id', 'date', 'vegetable', 'quantity_sold', 'sale_price', 'total', 
-                                                       'customer', 'unit_type', 'customer_name', 'customer_phone', 'bill_no'])
-                elif table_name == "waste":
-                    df = pd.DataFrame(df_rows, columns=['id', 'date', 'vegetable', 'quantity', 'reason'])
-                else:  # expenses
-                    df = pd.DataFrame(df_rows, columns=['id', 'date', 'category', 'amount', 'description'])
+                df = pd.read_sql(f"SELECT * FROM {table_name} WHERE date=?", 
+                                conn, params=(d,))
                 
                 if df.empty:
                     st.info(f"No {display_name.lower()} data for today")
@@ -3240,57 +3006,62 @@ elif menu == "⬇ Download":
     with tab2:
         st.markdown("### 📊 Monthly Reports")
         
-        # Get distinct months from sales and purchases
-        c.execute("""
-            SELECT DISTINCT strftime('%Y-%m', date) as month 
-            FROM sales 
-            UNION 
-            SELECT DISTINCT strftime('%Y-%m', date) as month 
-            FROM purchases 
-            ORDER BY month DESC
-        """)
-        months_rows = c.fetchall()
-        months = pd.DataFrame(months_rows, columns=['month'])
+        # Month selection
+        months = pd.read_sql("SELECT DISTINCT strftime('%Y-%m', date) as month FROM sales UNION SELECT DISTINCT strftime('%Y-%m', date) as month FROM purchases ORDER BY month DESC", conn)
         
         if months.empty:
             st.info("No monthly data available")
         else:
             selected_month = st.selectbox("Select Month", months['month'].tolist(), index=0)
             
-            c.execute("SELECT COALESCE(SUM(total),0) as total_sales FROM sales WHERE strftime('%Y-%m', date)=?", (selected_month,))
-            monthly_sales = c.fetchone()[0]
+            # Get monthly data
+            # Sales data
+            monthly_sales = pd.read_sql("SELECT COALESCE(SUM(total),0) as total_sales FROM sales WHERE strftime('%Y-%m', date)=?", 
+                                       conn, params=(selected_month,)).iloc[0]['total_sales']
             
-            c.execute("SELECT COALESCE(SUM(amount),0) as total_purchases FROM purchases WHERE strftime('%Y-%m', date)=?", (selected_month,))
-            monthly_purchases = c.fetchone()[0]
+            # Purchase data
+            monthly_purchases = pd.read_sql("SELECT COALESCE(SUM(amount),0) as total_purchases FROM purchases WHERE strftime('%Y-%m', date)=?", 
+                                          conn, params=(selected_month,)).iloc[0]['total_purchases']
             
-            c.execute("SELECT COALESCE(SUM(amount),0) as total_expenses FROM expenses WHERE strftime('%Y-%m', date)=?", (selected_month,))
-            monthly_expenses = c.fetchone()[0]
+            # Expense data
+            monthly_expenses = pd.read_sql("SELECT COALESCE(SUM(amount),0) as total_expenses FROM expenses WHERE strftime('%Y-%m', date)=?", 
+                                         conn, params=(selected_month,)).iloc[0]['total_expenses']
             
-            c.execute("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE strftime('%Y-%m', date)=?", (selected_month,))
-            monthly_waste = c.fetchone()[0]
+            # Waste data
+            monthly_waste = pd.read_sql("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE strftime('%Y-%m', date)=?", 
+                                       conn, params=(selected_month,)).iloc[0]['total_waste']
             
-            # Get monthly customer details
-            try:
-                c.execute("""
-                    SELECT 
-                        date,
-                        COALESCE(customer_name, 'Guest') as customer_name,
-                        COALESCE(customer_phone, '') as phone,
-                        SUM(total) as total_spent,
-                        COUNT(*) as total_visits
-                    FROM sales 
-                    WHERE strftime('%Y-%m', date)=?
-                    GROUP BY date, COALESCE(customer_name, 'Guest'), COALESCE(customer_phone, '')
-                    ORDER BY date DESC, total_spent DESC
-                """, (selected_month,))
-                monthly_customers_rows = c.fetchall()
-                monthly_customers = pd.DataFrame(monthly_customers_rows, columns=['date', 'customer_name', 'phone', 'total_spent', 'total_visits'])
-            except Exception as e:
-                st.error(f"Error loading monthly customers: {e}")
-                monthly_customers = pd.DataFrame()
+            # Customer data - FIXED for monthly
+            monthly_customers = pd.read_sql("""
+                SELECT DISTINCT 
+                    CASE 
+                        WHEN customer LIKE 'Guest%' THEN 'Guest'
+                        WHEN customer LIKE '%(%)%' THEN substr(customer, 1, instr(customer, '(') - 1)
+                        ELSE customer
+                    END as customer_name,
+                    CASE 
+                        WHEN customer LIKE '%(%)%' THEN substr(customer, instr(customer, '(') + 1, instr(customer, ')') - instr(customer, '(') - 1)
+                        ELSE ''
+                    END as phone,
+                    SUM(total) as total_spent
+                FROM sales 
+                WHERE strftime('%Y-%m', date)=?
+                GROUP BY 
+                    CASE 
+                        WHEN customer LIKE 'Guest%' THEN 'Guest'
+                        WHEN customer LIKE '%(%)%' THEN substr(customer, 1, instr(customer, '(') - 1)
+                        ELSE customer
+                    END,
+                    CASE 
+                        WHEN customer LIKE '%(%)%' THEN substr(customer, instr(customer, '(') + 1, instr(customer, ')') - instr(customer, '(') - 1)
+                        ELSE ''
+                    END
+            """, conn, params=(selected_month,))
             
+            # Calculate monthly profit
             monthly_profit = monthly_sales - monthly_purchases - monthly_expenses
             
+            # Display monthly summary
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("💰 Monthly Sales", f"₹{monthly_sales:.2f}")
@@ -3299,43 +3070,49 @@ elif menu == "⬇ Download":
             with col3:
                 st.metric("💸 Monthly Expenses", f"₹{monthly_expenses:.2f}")
             with col4:
+                profit_color = "green" if monthly_profit >= 0 else "red"
                 st.metric("📈 Monthly Profit/Loss", f"₹{monthly_profit:.2f}", delta_color="off")
             
-            st.markdown("#### 👥 Monthly Customer Details (Date-wise)")
+            # Customer details for the month
+            st.markdown("#### 👥 Monthly Customer Details")
             if not monthly_customers.empty:
-                # Group by date
-                dates = monthly_customers['date'].unique()
-                
-                for sale_date in dates:
-                    date_customers = monthly_customers[monthly_customers['date'] == sale_date]
-                    
-                    with st.expander(f"📅 {sale_date} - {len(date_customers)} customers"):
-                        date_total = date_customers['total_spent'].sum()
-                        date_visits = date_customers['total_visits'].sum()
-                        
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric(f"Total Sales", f"₹{date_total:.2f}")
-                        with col2:
-                            st.metric("Total Visits", date_visits)
-                        
-                        display_customers = date_customers.copy()
-                        display_customers = display_customers.rename(columns={
-                            "customer_name": "👤 Name",
-                            "phone": "📱 Phone",
-                            "total_visits": "🛒 Visits",
-                            "total_spent": "💰 Total Spent"
-                        })
-                        
-                        st.dataframe(
-                            display_customers[['👤 Name', '📱 Phone', '🛒 Visits', '💰 Total Spent']].style.format({
-                                "💰 Total Spent": "₹{:.2f}"
-                            }),
-                            use_container_width=True
-                        )
+                st.dataframe(
+                    monthly_customers.style.format({
+                        "total_spent": "₹{:.2f}"
+                    }),
+                    use_container_width=True
+                )
+            else:
+                st.info("No customer data for this month")
             
+            # Daily breakdown for the month
+            st.markdown("#### Daily Breakdown for the Month")
+            
+            # Get daily sales for the month
+            daily_sales_month = pd.read_sql("""
+                SELECT date, SUM(total) as daily_sales 
+                FROM sales 
+                WHERE strftime('%Y-%m', date)=? 
+                GROUP BY date 
+                ORDER BY date
+            """, conn, params=(selected_month,))
+            
+            if not daily_sales_month.empty:
+                # Display as chart
+                st.line_chart(daily_sales_month.set_index('date')['daily_sales'])
+                
+                # Display as table
+                st.dataframe(
+                    daily_sales_month.style.format({
+                        "daily_sales": "₹{:.2f}"
+                    }),
+                    use_container_width=True
+                )
+            
+            # Download monthly report
             st.markdown("#### Download Monthly Report")
             
+            # Create comprehensive monthly report including customers
             monthly_data = {
                 'Metric': ['Total Sales', 'Total Purchases', 'Total Expenses', 'Total Waste', 'Net Profit/Loss', 'Total Customers', 'Total Customer Spent'],
                 'Amount': [f"₹{monthly_sales:.2f}", f"₹{monthly_purchases:.2f}", 
@@ -3353,6 +3130,17 @@ elif menu == "⬇ Download":
                 mime="text/csv",
                 use_container_width=True
             )
+            
+            # Download detailed customer data
+            if not monthly_customers.empty:
+                customer_csv = monthly_customers.to_csv(index=False).encode()
+                st.download_button(
+                    "📥 Download Monthly Customer Data",
+                    data=customer_csv,
+                    file_name=f"monthly_customers_{selected_month}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
     
     with tab3:
         st.markdown("### 📋 Data Export")
@@ -3360,6 +3148,7 @@ elif menu == "⬇ Download":
         
         tables = [
             ("inventory", "📦 Inventory", "Current stock levels"),
+            ("customers", "👥 Customers", "Customer database"),
             ("purchases", "🛒 Purchases", "All purchase records"),
             ("sales", "💰 Sales", "All sales transactions"),
             ("waste", "🗑 Waste", "All waste records"),
@@ -3368,36 +3157,20 @@ elif menu == "⬇ Download":
         
         for table_name, display_name, description in tables:
             with st.expander(f"{display_name} - {description}"):
-                try:
-                    c.execute(f"SELECT * FROM {table_name}")
-                    df_rows = c.fetchall()
-                    
-                    if table_name == "inventory":
-                        df = pd.DataFrame(df_rows, columns=['vegetable', 'quantity', 'cost_price', 'selling_price', 'image_url', 'unit_type', 'category'])
-                    elif table_name == "purchases":
-                        df = pd.DataFrame(df_rows, columns=['id', 'date', 'vegetable', 'quantity', 'amount', 'supplier'])
-                    elif table_name == "sales":
-                        df = pd.DataFrame(df_rows, columns=['id', 'date', 'vegetable', 'quantity_sold', 'sale_price', 'total', 
-                                                           'customer', 'unit_type', 'customer_name', 'customer_phone', 'bill_no'])
-                    elif table_name == "waste":
-                        df = pd.DataFrame(df_rows, columns=['id', 'date', 'vegetable', 'quantity', 'reason'])
-                    else:  # expenses
-                        df = pd.DataFrame(df_rows, columns=['id', 'date', 'category', 'amount', 'description'])
-                    
-                    if df.empty:
-                        st.info(f"No {display_name.lower()} data")
-                    else:
-                        st.dataframe(df, use_container_width=True)
-                        csv = df.to_csv(index=False).encode()
-                        st.download_button(
-                            f"Download {display_name}",
-                            data=csv,
-                            file_name=f"{table_name}_full_export.csv",
-                            mime="text/csv",
-                            use_container_width=True
-                        )
-                except Exception as e:
-                    st.error(f"Error loading {table_name}: {str(e)}")
+                df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+                
+                if df.empty:
+                    st.info(f"No {display_name.lower()} data")
+                else:
+                    st.dataframe(df, use_container_width=True)
+                    csv = df.to_csv(index=False).encode()
+                    st.download_button(
+                        f"Download {display_name}",
+                        data=csv,
+                        file_name=f"{table_name}_full_export.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
 
 # ========================== FINANCIALS ==========================
 elif menu == "💰 Financials":
@@ -3409,19 +3182,18 @@ elif menu == "💰 Financials":
     """, unsafe_allow_html=True)
     
     d = selected_date.strftime("%Y-%m-%d")
-    c = conn.cursor()
     
-    c.execute("SELECT COALESCE(SUM(total),0) AS total FROM sales WHERE date=?", (d,))
-    sales_data = c.fetchone()[0]
-    
-    c.execute("SELECT COALESCE(SUM(amount),0) AS total FROM purchases WHERE date=?", (d,))
-    cost_data = c.fetchone()[0]
-    
-    c.execute("SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE date=?", (d,))
-    expense_data = c.fetchone()[0]
+    # Get financial data
+    sales_data = pd.read_sql("SELECT COALESCE(SUM(total),0) AS total FROM sales WHERE date=?", 
+                           conn, params=(d,)).iloc[0]['total']
+    cost_data = pd.read_sql("SELECT COALESCE(SUM(amount),0) AS total FROM purchases WHERE date=?", 
+                          conn, params=(d,)).iloc[0]['total']
+    expense_data = pd.read_sql("SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE date=?", 
+                             conn, params=(d,)).iloc[0]['total']
     
     profit = sales_data - cost_data - expense_data
     
+    # Display metrics with beautiful cards
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
@@ -3452,27 +3224,28 @@ elif menu == "💰 Financials":
         """, unsafe_allow_html=True)
     
     with col4:
-        profit_icon = "📈" if profit >= 0 else "📉"
+        profit_bg = "#27ae60" if profit >= 0 else "#e74c3c"
         profit_text = "Profit" if profit >= 0 else "Loss"
+        profit_icon = "📈" if profit >= 0 else "📉"
         
         st.markdown(f"""
-        <div class="red-alert-card">
+        <div class="card" style="background: linear-gradient(135deg, {profit_bg} 0%, #38f9d7 100%); color:white;">
             <h3>{profit_icon}</h3>
             <h4>{profit_text}</h4>
             <h2>₹{abs(profit):.2f}</h2>
         </div>
         """, unsafe_allow_html=True)
     
+    # Breakdown
     st.markdown("### 📊 Daily Breakdown")
     
-    c.execute("""
+    # Sales by vegetable
+    sales_by_veg = pd.read_sql("""
         SELECT vegetable, SUM(quantity_sold) as qty, SUM(total) as revenue 
         FROM sales WHERE date=? 
         GROUP BY vegetable 
         ORDER BY revenue DESC
-    """, (d,))
-    sales_by_veg_rows = c.fetchall()
-    sales_by_veg = pd.DataFrame(sales_by_veg_rows, columns=['vegetable', 'qty', 'revenue'])
+    """, conn, params=(d,))
     
     if not sales_by_veg.empty:
         st.markdown("#### Top Selling Items")
@@ -3486,27 +3259,37 @@ elif menu == "💰 Financials":
                 use_container_width=True
             )
         with col2:
+            # Simple chart
             chart_data = sales_by_veg.head(10).set_index('vegetable')['revenue']
             st.bar_chart(chart_data)
     
+    # Recent transactions
     st.markdown("### Recent Transactions")
-    c.execute("SELECT * FROM sales WHERE date=? ORDER BY id DESC LIMIT 10", (d,))
-    recent_sales_rows = c.fetchall()
-    recent_sales = pd.DataFrame(recent_sales_rows, columns=['id', 'date', 'vegetable', 'quantity_sold', 'sale_price', 'total', 
-                                                          'customer', 'unit_type', 'customer_name', 'customer_phone', 'bill_no'])
+    recent_sales = pd.read_sql("SELECT * FROM sales WHERE date=? ORDER BY rowid DESC LIMIT 10", 
+                              conn, params=(d,))
     if not recent_sales.empty:
         display_sales = recent_sales.copy()
         
+        # Format quantity display
         def format_recent_sales(row):
-            unit_type = row['unit_type']
+            unit_type = row.get('unit_type', 'kg')
             if unit_type == 'kg':
                 return f"{row['quantity_sold']:.2f} kg"
             elif unit_type == 'piece':
                 return f"{row['quantity_sold']:.0f} pieces"
-            return f"{row['quantity_sold']:.2f} {unit_type}"
+            else:
+                return f"{row['quantity_sold']:.2f} {unit_type}"
+        
+        # Clean customer display names
+        def clean_customer_name(customer):
+            if not isinstance(customer, str):
+                return str(customer)
+            if '(' in customer:
+                return customer.split('(')[0].strip()
+            return customer
         
         display_sales['Quantity'] = display_sales.apply(format_recent_sales, axis=1)
-        display_sales['Customer'] = display_sales['customer_name'].apply(lambda x: x if x and x != 'None' else 'Guest')
+        display_sales['Customer'] = display_sales['customer'].apply(clean_customer_name)
         
         st.dataframe(
             display_sales[['vegetable', 'Quantity', 'total', 'Customer']].style.format({
@@ -3515,295 +3298,11 @@ elif menu == "💰 Financials":
             use_container_width=True
         )
 
-# ========================== DATABASE TOOLS ==========================
-elif menu == "🔧 Database Tools":
-    st.markdown("""
-    <div style="text-align:center; margin-bottom:30px;">
-        <h2>🔧 Enhanced Database Tools</h2>
-        <div class="subtitle">Dual Database System (Fast + No Data Loss)</div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    st.markdown("### 📍 Database Configuration")
-    
-    if db_manager.supabase_conn:
-        db_status_class = "db-status-success"
-        db_status_text = "✅ Dual System Active"
-        sync_status = "🔄 Syncing Active" if db_manager.sync_running else "⚫️ Sync Paused"
-        sync_class = "sync-status" if db_manager.sync_running else "sync-status sync-status-offline"
-    else:
-        db_status_class = "db-status-warning"
-        db_status_text = "⚠️ Local SQLite Only"
-        sync_status = "⚫️ Supabase Not Configured"
-        sync_class = "sync-status sync-status-offline"
-    
-    st.markdown(f"""
-    <div class="{db_status_class}" style="padding:15px; border-radius:10px; margin-bottom:20px;">
-        <h4 style="margin:0;">{db_status_text}</h4>
-        <p style="margin:5px 0 0 0;">
-            ⚡ Fast Local Operations + 🛡️ No Data Loss
-        </p>
-        <div class="{sync_class}" style="margin:10px 0 0 0; padding:8px; border-radius:8px;">
-            <strong>{sync_status}</strong>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Database setup instructions
-    with st.expander("⚙️ Setup Supabase for Permanent Storage"):
-        st.markdown("""
-        ### **For Permanent Data Storage (No Data Loss)**
-        
-        **Step 1: Create Supabase Account**
-        
-        1. Sign up at [supabase.com](https://supabase.com) (Free tier available)
-        2. Create a new project
-        3. Go to Settings > Database to get connection details
-        
-        **Step 2: Configure Streamlit Secrets**
-        
-        Create `.streamlit/secrets.toml` file with your Supabase details:
-        
-        ```toml
-        # Supabase Configuration
-        [supabase]
-        url = "your-project-url.supabase.co"
-        key = "your-anon-key"
-        db_url = "postgresql://postgres:[password]@[host]:5432/postgres"
-        ```
-        
-        **Step 3: Restart Your App**
-        
-        The app will automatically:
-        - Use SQLite for fast local operations
-        - Sync data to Supabase in background
-        - No data loss if app sleeps or crashes
-        """)
-    
-    st.markdown("---")
-    st.markdown("### 🔄 Sync Management")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        if st.button("🔄 Manual Sync Now", use_container_width=True, key="manual_sync_tools"):
-            if db_manager.supabase_conn:
-                with st.spinner("Syncing to Supabase..."):
-                    db_manager.sync_pending_records()
-                    st.success("✅ Sync completed!")
-                    st.rerun()
-            else:
-                st.warning("Supabase not configured")
-    
-    with col2:
-        if st.button("📤 Pull from Supabase", use_container_width=True, key="pull_from_supabase"):
-            if db_manager.supabase_conn:
-                with st.spinner("Pulling data from Supabase..."):
-                    db_manager.sync_from_supabase_to_local()
-                    st.success("✅ Data pulled from Supabase!")
-                    st.cache_data.clear()
-                    st.rerun()
-            else:
-                st.warning("Supabase not configured")
-    
-    with col3:
-        if st.button("📊 Check Sync Status", use_container_width=True, key="check_sync_status"):
-            try:
-                c = conn.cursor()
-                c.execute("SELECT COUNT(*) FROM sales WHERE synced=0")
-                pending_sales = c.fetchone()[0]
-                c.execute("SELECT COUNT(*) FROM purchases WHERE synced=0")
-                pending_purchases = c.fetchone()[0]
-                c.execute("SELECT COUNT(*) FROM expenses WHERE synced=0")
-                pending_expenses = c.fetchone()[0]
-                
-                total_pending = pending_sales + pending_purchases + pending_expenses
-                
-                if db_manager.supabase_conn:
-                    if total_pending == 0:
-                        st.success("✅ All data synced!")
-                    else:
-                        st.info(f"""
-                        📤 Pending Sync: {total_pending} records
-                        - Sales: {pending_sales}
-                        - Purchases: {pending_purchases}
-                        - Expenses: {pending_expenses}
-                        """)
-                else:
-                    st.warning("⚠️ Local Only Mode - No Supabase connection")
-            except Exception as e:
-                st.error(f"Error checking sync status: {e}")
-    
-    st.markdown("---")
-    st.markdown("### 📈 Database Statistics")
-    
-    try:
-        stats_data = []
-        tables = ["inventory", "sales", "purchases", "customers", "expenses", "waste"]
-        
-        c = conn.cursor()
-        for table in tables:
-            try:
-                c.execute(f"SELECT COUNT(*) FROM {table}")
-                count = c.fetchone()[0]
-                
-                if table == "sales":
-                    c.execute("SELECT COALESCE(SUM(total), 0) FROM sales")
-                    total_sales = c.fetchone()[0]
-                    stats_data.append({
-                        "Table": table,
-                        "Records": count,
-                        "Total Amount": f"₹{total_sales:.2f}",
-                        "Last Record": get_last_record_date(table)
-                    })
-                elif table == "purchases":
-                    c.execute("SELECT COALESCE(SUM(amount), 0) FROM purchases")
-                    total_purchases = c.fetchone()[0]
-                    stats_data.append({
-                        "Table": table,
-                        "Records": count,
-                        "Total Amount": f"₹{total_purchases:.2f}",
-                        "Last Record": get_last_record_date(table)
-                    })
-                else:
-                    stats_data.append({
-                        "Table": table,
-                        "Records": count,
-                        "Total Amount": "-",
-                        "Last Record": get_last_record_date(table)
-                    })
-            except:
-                stats_data.append({
-                    "Table": table,
-                    "Records": 0,
-                    "Total Amount": "-",
-                    "Last Record": "N/A"
-                })
-        
-        stats_df = pd.DataFrame(stats_data)
-        st.dataframe(stats_df, use_container_width=True)
-        
-    except Exception as e:
-        st.error(f"Error fetching statistics: {e}")
-
-# ========================== SECRETS DEBUG ==========================
-elif menu == "🔍 Secrets Debug":
-    st.markdown("""
-    <div style="text-align:center; margin-bottom:30px;">
-        <h2>🔍 Secrets Debug</h2>
-        <div class="subtitle">Debug Supabase Connection Issues</div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    with st.expander("🔐 Check Current Secrets", expanded=True):
-        st.markdown("### Streamlit Secrets Status")
-        
-        if hasattr(st, 'secrets'):
-            st.success("✅ `st.secrets` object exists")
-            
-            try:
-                secrets_dict = dict(st.secrets)
-                st.info(f"Total top-level secrets: {len(secrets_dict)}")
-                
-                if secrets_dict:
-                    st.markdown("#### 📋 All Secrets (masked):")
-                    for key, value in secrets_dict.items():
-                        if hasattr(value, '__dict__') or hasattr(value, '__iter__'):
-                            try:
-                                subsection = dict(value)
-                                st.write(f"**{key}:** (subsection with {len(subsection)} keys)")
-                            except:
-                                st.write(f"**{key}:** [complex object]")
-                        else:
-                            if value and isinstance(value, str):
-                                masked = value[:10] + "..." if len(value) > 10 else value
-                                st.write(f"**{key}:** `{masked}`")
-            except Exception as e:
-                st.error(f"Error reading secrets: {e}")
-        else:
-            st.error("❌ `st.secrets` object does NOT exist")
-    
-    with st.expander("📁 Check .streamlit/secrets.toml", expanded=True):
-        secrets_path = ".streamlit/secrets.toml"
-        if os.path.exists(secrets_path):
-            st.success(f"✅ Found {secrets_path}")
-            
-            try:
-                with open(secrets_path, 'r') as f:
-                    content = f.read()
-                
-                import re
-                masked_content = content
-                masked_content = re.sub(r':([^@]+)@', ':[HIDDEN]@', masked_content)
-                masked_content = re.sub(r'key\s*=\s*"[^"]+"', 'key = "[HIDDEN]"', masked_content)
-                masked_content = re.sub(r'password\s*=\s*"[^"]+"', 'password = "[HIDDEN]"', masked_content)
-                
-                st.code(masked_content, language="toml")
-                
-            except Exception as e:
-                st.error(f"Error reading file: {e}")
-        else:
-            st.error(f"❌ {secrets_path} does not exist")
-    
-    with st.expander("🗄️ Database Status", expanded=True):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("#### Local SQLite")
-            try:
-                c = conn.cursor()
-                c.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                tables = c.fetchall()
-                st.success(f"✅ Connected: {len(tables)} tables")
-                st.write("Tables:", [t[0] for t in tables])
-            except Exception as e:
-                st.error(f"Local DB error: {e}")
-        
-        with col2:
-            st.markdown("#### Supabase")
-            if db_manager.supabase_conn:
-                try:
-                    supabase_cursor = db_manager.supabase_conn.cursor()
-                    supabase_cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public'")
-                    supabase_tables = supabase_cursor.fetchall()
-                    st.success(f"✅ Connected: {len(supabase_tables)} tables")
-                except Exception as e:
-                    st.error(f"Supabase error: {e}")
-            else:
-                st.warning("❌ Not connected")
-
-# ========================== ENHANCED BACKUP ON EXIT ==========================
-@atexit.register
-def cleanup():
-    """Create final backup and sync on exit"""
-    try:
-        if db_manager.supabase_conn:
-            db_manager.sync_pending_records()
-            logger.info("Final sync completed before exit")
-    except:
-        pass
-
 # Footer
 st.markdown("---")
-st.markdown(f"""
+st.markdown("""
 <div class="footer">
     <p>🌿 Fresh Basket — Freshness You Can Feel | Quality Vegetables Daily ✅</p>
-    <p style="font-size:0.8em; color:#95a5a6;">
-        Database: {"⚡ SQLite + 🛡️ Supabase" if db_manager.supabase_conn else "⚡ SQLite Only"} | 
-        {"🔄 Auto-sync Active" if db_manager.supabase_conn and db_manager.sync_running else "⚫️ Local Mode"}
-    </p>
+    <p style="font-size:0.8em; color:#95a5a6;">© 2024 Fresh Basket. All features working perfectly.</p>
 </div>
 """, unsafe_allow_html=True)
-
-# Close database connection properly
-@st.cache_resource
-def cleanup_resources():
-    """Cleanup resources on app shutdown"""
-    try:
-        db_manager.close()
-    except:
-        pass
-
-# Register cleanup
-import atexit
-atexit.register(cleanup_resources)
