@@ -15,6 +15,10 @@ import logging
 import psycopg2
 from functools import lru_cache
 from psycopg2.extras import RealDictCursor
+import threading
+import time
+import queue
+from contextlib import contextmanager
 
 # ========================== DEBUG LOGGING ==========================
 # Reduce logging level for production
@@ -53,99 +57,185 @@ font = "sans-serif"
 
 create_streamlit_config()
 
-# ========================== EXTERNAL DATABASE SETUP ==========================
-class DatabaseCache:
-    """Cache frequently used database data"""
-    def __init__(self):
-        self.inventory_cache = None
-        self.last_refresh = None
-        self.cache_duration = 30  # seconds
-        self.inventory_df = None
+# ========================== DUAL DATABASE SYSTEM ==========================
+class DualDatabaseManager:
+    """Manage both SQLite (local) and Supabase (cloud) databases with automatic sync"""
     
-    def should_refresh(self):
-        if self.last_refresh is None:
+    def __init__(self):
+        self.local_db_path = "freshbasket_local.db"
+        self.supabase_conn = None
+        self.local_conn = None
+        self.sync_queue = queue.Queue()
+        self.sync_thread = None
+        self.sync_running = False
+        self.last_sync_time = None
+        
+    def init_databases(self):
+        """Initialize both databases"""
+        try:
+            # Initialize local SQLite database
+            self._init_local_database()
+            
+            # Initialize Supabase if available
+            supabase_available = self._init_supabase()
+            
+            if supabase_available:
+                logger.info("✅ Dual-database system: SQLite (local cache) + Supabase (permanent storage)")
+                # Start sync thread
+                self.start_sync_thread()
+                # Initial sync from Supabase to local
+                self.sync_from_supabase_to_local()
+            else:
+                logger.info("⚠️ Using local SQLite only (Supabase not configured)")
+            
             return True
-        elapsed = (datetime.now() - self.last_refresh).total_seconds()
-        return elapsed > self.cache_duration
-    
-    def refresh_inventory(self, conn):
-        """Refresh inventory cache"""
-        try:
-            c = conn.cursor()
-            c.execute("SELECT vegetable, quantity, cost_price, selling_price, unit_type, category FROM inventory ORDER BY vegetable")
-            rows = c.fetchall()
-            self.inventory_cache = {row[0]: row[1:] for row in rows}
-            
-            # Also store as DataFrame for faster operations
-            self.inventory_df = pd.DataFrame(rows, columns=['vegetable', 'quantity', 'cost_price', 'selling_price', 'unit_type', 'category'])
-            
-            self.last_refresh = datetime.now()
         except Exception as e:
-            logger.error(f"Error refreshing inventory cache: {e}")
+            logger.error(f"Database initialization failed: {e}")
+            return False
     
-    def get_inventory(self, conn):
-        """Get inventory with caching"""
-        if self.inventory_cache is None or self.should_refresh():
-            self.refresh_inventory(conn)
-        return self.inventory_cache
-    
-    def get_inventory_df(self, conn):
-        """Get inventory as DataFrame with caching"""
-        if self.inventory_df is None or self.should_refresh():
-            self.refresh_inventory(conn)
-        return self.inventory_df
-
-# Global cache instance
-db_cache = DatabaseCache()
-
-class ExternalDatabaseManager:
-    """Manage connections to external database services"""
-    
-    def __init__(self):
-        self.db_type = "supabase"
-        self.db_config = {}
-        self._conn = None  # Cached connection
-        
-    def get_connection(self, force_new=False):
-        """Get cached database connection"""
-        if not force_new and self._conn is not None:
-            try:
-                # Test if connection is still alive
-                self._conn.cursor().execute("SELECT 1")
-                return self._conn
-            except:
-                self._conn = None
-                logger.info("Connection test failed, creating new connection")
-        
-        # Create new connection
+    def _init_local_database(self):
+        """Initialize local SQLite database"""
         try:
-            if self.db_type == "supabase":
-                self._conn = self._get_supabase_connection()
-            elif self.db_type == "postgresql":
-                self._conn = self._get_postgresql_connection()
-            
-            if self._conn:
-                # Create indexes for performance
-                self._create_indexes(self._conn)
+            self.local_conn = sqlite3.connect(self.local_db_path, check_same_thread=False)
+            self.local_conn.row_factory = sqlite3.Row
+            self._create_local_tables()
+            logger.info(f"✅ Local SQLite database initialized: {self.local_db_path}")
+        except Exception as e:
+            logger.error(f"Failed to initialize local database: {e}")
+            raise
+    
+    def _init_supabase(self):
+        """Initialize Supabase connection if configured"""
+        try:
+            if hasattr(st, 'secrets') and 'supabase' in st.secrets:
+                supabase_config = dict(st.secrets.supabase)
+                db_url = supabase_config.get('db_url')
                 
+                if db_url:
+                    # Parse connection string
+                    import urllib.parse
+                    result = urllib.parse.urlparse(db_url)
+                    
+                    conn_params = {
+                        'host': result.hostname,
+                        'port': result.port or 5432,
+                        'database': result.path[1:],
+                        'user': result.username,
+                        'password': result.password,
+                        'sslmode': 'require'
+                    }
+                    
+                    self.supabase_conn = psycopg2.connect(**conn_params, connect_timeout=5)
+                    self.supabase_conn.autocommit = False
+                    self._create_supabase_tables()
+                    logger.info("✅ Supabase connection established")
+                    return True
         except Exception as e:
-            logger.error(f"Failed to create connection: {e}")
-            self._conn = None
+            logger.error(f"Supabase initialization failed (will use local only): {e}")
         
-        return self._conn
+        return False
     
-    def _create_indexes(self, conn):
-        """Create indexes for faster queries"""
-        c = conn.cursor()
+    def _create_local_tables(self):
+        """Create tables in local SQLite database"""
+        c = self.local_conn.cursor()
+        
+        tables_sql = [
+            """CREATE TABLE IF NOT EXISTS inventory (
+                vegetable TEXT PRIMARY KEY,
+                quantity REAL DEFAULT 0,
+                cost_price REAL DEFAULT 0,
+                selling_price REAL DEFAULT 0,
+                image_url TEXT,
+                unit_type TEXT DEFAULT 'kg',
+                category TEXT DEFAULT 'vegetable',
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            
+            """CREATE TABLE IF NOT EXISTS purchases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date DATE NOT NULL, 
+                vegetable TEXT NOT NULL, 
+                quantity REAL DEFAULT 0, 
+                amount REAL DEFAULT 0, 
+                supplier TEXT,
+                synced INTEGER DEFAULT 0
+            )""",
+            
+            """CREATE TABLE IF NOT EXISTS sales (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date DATE NOT NULL, 
+                vegetable TEXT NOT NULL, 
+                quantity_sold REAL DEFAULT 0, 
+                sale_price REAL DEFAULT 0, 
+                total REAL DEFAULT 0, 
+                customer TEXT,
+                unit_type TEXT,
+                customer_name TEXT,
+                customer_phone TEXT,
+                bill_no TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                synced INTEGER DEFAULT 0
+            )""",
+            
+            """CREATE TABLE IF NOT EXISTS waste (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date DATE NOT NULL, 
+                vegetable TEXT NOT NULL, 
+                quantity REAL DEFAULT 0, 
+                reason TEXT,
+                synced INTEGER DEFAULT 0
+            )""",
+            
+            """CREATE TABLE IF NOT EXISTS customers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone TEXT, 
+                name TEXT, 
+                points INTEGER DEFAULT 0,
+                total_spent REAL DEFAULT 0,
+                last_visit DATE,
+                UNIQUE(phone, name),
+                synced INTEGER DEFAULT 0
+            )""",
+            
+            """CREATE TABLE IF NOT EXISTS expenses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date DATE NOT NULL, 
+                category TEXT, 
+                amount REAL DEFAULT 0, 
+                description TEXT,
+                synced INTEGER DEFAULT 0
+            )""",
+            
+            """CREATE TABLE IF NOT EXISTS sync_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                table_name TEXT,
+                record_id INTEGER,
+                action TEXT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                synced_to_cloud INTEGER DEFAULT 0
+            )"""
+        ]
+        
+        for sql in tables_sql:
+            try:
+                c.execute(sql)
+            except Exception as e:
+                logger.error(f"Error creating local table: {e}")
+        
+        # Create indexes
         indexes = [
             "CREATE INDEX IF NOT EXISTS idx_sales_date ON sales(date)",
             "CREATE INDEX IF NOT EXISTS idx_sales_vegetable ON sales(vegetable)",
+            "CREATE INDEX IF NOT EXISTS idx_sales_synced ON sales(synced)",
             "CREATE INDEX IF NOT EXISTS idx_purchases_date ON purchases(date)",
+            "CREATE INDEX IF NOT EXISTS idx_purchases_synced ON purchases(synced)",
             "CREATE INDEX IF NOT EXISTS idx_inventory_vegetable ON inventory(vegetable)",
             "CREATE INDEX IF NOT EXISTS idx_inventory_category ON inventory(category)",
             "CREATE INDEX IF NOT EXISTS idx_inventory_unit_type ON inventory(unit_type)",
             "CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date)",
-            "CREATE INDEX IF NOT EXISTS idx_waste_date ON waste(date)"
+            "CREATE INDEX IF NOT EXISTS idx_expenses_synced ON expenses(synced)",
+            "CREATE INDEX IF NOT EXISTS idx_waste_date ON waste(date)",
+            "CREATE INDEX IF NOT EXISTS idx_waste_synced ON waste(synced)"
         ]
         
         for idx_sql in indexes:
@@ -154,96 +244,15 @@ class ExternalDatabaseManager:
             except Exception as e:
                 logger.warning(f"Could not create index: {e}")
         
-        conn.commit()
-    
-    def init_database(self):
-        """Initialize database connection"""
-        try:
-            # Check for Supabase configuration
-            if hasattr(st, 'secrets') and 'supabase' in st.secrets:
-                supabase_config = dict(st.secrets.supabase)
-                self.db_type = "supabase"
-                self.db_config = supabase_config
-                
-                # Test connection
-                conn = self.get_connection()
-                if conn:
-                    logger.info("✅ Using Supabase database from secrets")
-                    return True
-            
-            # Check for direct PostgreSQL configuration
-            elif hasattr(st, 'secrets') and 'postgresql' in st.secrets:
-                postgres_config = dict(st.secrets.postgresql)
-                self.db_type = "postgresql"
-                self.db_config = postgres_config
-                
-                # Test connection
-                conn = self.get_connection()
-                if conn:
-                    logger.info("✅ Using PostgreSQL database from secrets")
-                    return True
-            
-            st.error("❌ SUPABASE/POSTGRESQL CONFIGURATION REQUIRED!")
-            return False
-            
-        except Exception as e:
-            logger.error(f"Database initialization failed: {e}")
-            return False
-    
-    def _get_supabase_connection(self):
-        """Get Supabase PostgreSQL connection"""
-        try:
-            db_url = self.db_config.get('db_url')
-            if db_url:
-                # Parse connection string for better connection management
-                conn_params = self._parse_connection_url(db_url)
-                conn = psycopg2.connect(**conn_params, connect_timeout=5)
-                conn.autocommit = False
-                self._create_supabase_tables(conn)
-                return conn
-        except Exception as e:
-            logger.error(f"Supabase connection failed: {e}")
-            st.error(f"Supabase connection error: {str(e)}")
-        return None
-    
-    def _get_postgresql_connection(self):
-        """Get PostgreSQL connection"""
-        try:
-            conn_params = {
-                'host': self.db_config.get('host'),
-                'port': self.db_config.get('port', 5432),
-                'database': self.db_config.get('database'),
-                'user': self.db_config.get('user'),
-                'password': self.db_config.get('password')
-            }
-            conn = psycopg2.connect(**conn_params, connect_timeout=5)
-            conn.autocommit = False
-            self._create_supabase_tables(conn)
-            return conn
-        except Exception as e:
-            logger.error(f"PostgreSQL connection failed: {e}")
-            return None
-    
-    def _parse_connection_url(self, url):
-        """Parse PostgreSQL connection URL"""
-        # Simple URL parsing
-        import urllib.parse
-        result = urllib.parse.urlparse(url)
+        self.local_conn.commit()
         
-        return {
-            'host': result.hostname,
-            'port': result.port or 5432,
-            'database': result.path[1:],  # Remove leading slash
-            'user': result.username,
-            'password': result.password,
-            'sslmode': 'require' if 'supabase' in url else 'prefer'
-        }
+        # Initialize default items
+        self._initialize_default_items_local()
     
-    def _create_supabase_tables(self, conn):
-        """Create tables in Supabase/PostgreSQL"""
-        c = conn.cursor()
+    def _create_supabase_tables(self):
+        """Create tables in Supabase"""
+        c = self.supabase_conn.cursor()
         
-        # Create tables with minimal existence checks
         tables_sql = [
             """CREATE TABLE IF NOT EXISTS inventory (
                 vegetable VARCHAR(255) PRIMARY KEY,
@@ -252,7 +261,8 @@ class ExternalDatabaseManager:
                 selling_price DECIMAL(10,2) DEFAULT 0,
                 image_url TEXT,
                 unit_type VARCHAR(50) DEFAULT 'kg',
-                category VARCHAR(50) DEFAULT 'vegetable'
+                category VARCHAR(50) DEFAULT 'vegetable',
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""",
             
             """CREATE TABLE IF NOT EXISTS purchases (
@@ -261,7 +271,8 @@ class ExternalDatabaseManager:
                 vegetable VARCHAR(255) NOT NULL, 
                 quantity DECIMAL(10,3) DEFAULT 0, 
                 amount DECIMAL(10,2) DEFAULT 0, 
-                supplier VARCHAR(255)
+                supplier VARCHAR(255),
+                local_id INTEGER
             )""",
             
             """CREATE TABLE IF NOT EXISTS sales (
@@ -276,7 +287,8 @@ class ExternalDatabaseManager:
                 customer_name VARCHAR(255),
                 customer_phone VARCHAR(50),
                 bill_no VARCHAR(100),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                local_id INTEGER
             )""",
             
             """CREATE TABLE IF NOT EXISTS waste (
@@ -284,7 +296,8 @@ class ExternalDatabaseManager:
                 date DATE NOT NULL, 
                 vegetable VARCHAR(255) NOT NULL, 
                 quantity DECIMAL(10,3) DEFAULT 0, 
-                reason TEXT
+                reason TEXT,
+                local_id INTEGER
             )""",
             
             """CREATE TABLE IF NOT EXISTS customers (
@@ -294,7 +307,8 @@ class ExternalDatabaseManager:
                 points INTEGER DEFAULT 0,
                 total_spent DECIMAL(10,2) DEFAULT 0,
                 last_visit DATE,
-                UNIQUE(phone, name)
+                UNIQUE(phone, name),
+                local_id INTEGER
             )""",
             
             """CREATE TABLE IF NOT EXISTS expenses (
@@ -302,7 +316,8 @@ class ExternalDatabaseManager:
                 date DATE NOT NULL, 
                 category VARCHAR(100), 
                 amount DECIMAL(10,2) DEFAULT 0, 
-                description TEXT
+                description TEXT,
+                local_id INTEGER
             )"""
         ]
         
@@ -310,19 +325,15 @@ class ExternalDatabaseManager:
             try:
                 c.execute(sql)
             except Exception as e:
-                logger.error(f"Error creating table: {e}")
+                logger.error(f"Error creating Supabase table: {e}")
         
-        conn.commit()
-        logger.info("✅ All tables created/verified")
-        
-        # Initialize default items efficiently
-        self._initialize_default_items(conn)
+        self.supabase_conn.commit()
     
-    def _initialize_default_items(self, conn):
-        """Initialize default items efficiently"""
-        c = conn.cursor()
+    def _initialize_default_items_local(self):
+        """Initialize default items in local database"""
+        c = self.local_conn.cursor()
         
-        # Get existing items once
+        # Get existing items
         c.execute("SELECT vegetable FROM inventory")
         existing_items = {row[0] for row in c.fetchall()}
         
@@ -355,7 +366,7 @@ class ExternalDatabaseManager:
             "Raw Mango", "Sapota (Chikoo)", "Watermelon"
         ]
         
-        # Insert only non-existing items using batch operations
+        # Insert only non-existing items
         to_insert = []
         
         for veg in kg_vegetables:
@@ -373,41 +384,399 @@ class ExternalDatabaseManager:
         # Batch insert
         if to_insert:
             c.executemany("""
-                INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type, category) 
-                VALUES (%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (vegetable) DO NOTHING
+                INSERT OR IGNORE INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type, category) 
+                VALUES (?,?,?,?,?,?,?)
             """, to_insert)
         
-        conn.commit()
+        self.local_conn.commit()
     
-    def export_database(self):
-        """Export database to downloadable format"""
+    def get_connection(self, force_local=False):
+        """Get database connection - uses local by default, falls back to Supabase if needed"""
+        if force_local or not self.supabase_conn:
+            return self.local_conn
+        else:
+            return self.supabase_conn
+    
+    def sync_from_supabase_to_local(self):
+        """Sync data from Supabase to local database"""
+        if not self.supabase_conn:
+            return
+        
         try:
-            conn = self.get_connection()
-            if conn:
-                export_data = {}
-                tables = ["inventory", "purchases", "sales", "waste", "customers", "expenses"]
-                
-                for table in tables:
-                    try:
-                        df = pd.read_sql_query(f"SELECT * FROM {table}", conn)
-                        export_data[table] = df.to_dict('records')
-                    except Exception as e:
-                        logger.error(f"Error exporting {table}: {e}")
-                        export_data[table] = []
-                
-                # Save as JSON
-                json_file = os.path.join(tempfile.gettempdir(), f"freshbasket_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
-                with open(json_file, 'w') as f:
-                    json.dump(export_data, f, indent=2, default=str)
-                
-                return json_file
+            logger.info("Starting sync from Supabase to local...")
+            
+            # Sync inventory
+            self._sync_table_from_supabase("inventory", "vegetable")
+            
+            # Sync other tables
+            tables_to_sync = ["purchases", "sales", "waste", "customers", "expenses"]
+            for table in tables_to_sync:
+                self._sync_table_from_supabase(table, "id")
+            
+            self.last_sync_time = datetime.now()
+            logger.info("✅ Sync from Supabase to local completed")
+            
         except Exception as e:
-            logger.error(f"Export failed: {e}")
+            logger.error(f"Error syncing from Supabase: {e}")
+    
+    def _sync_table_from_supabase(self, table_name, primary_key):
+        """Sync a single table from Supabase to local"""
+        try:
+            # Get data from Supabase
+            supabase_cursor = self.supabase_conn.cursor()
+            supabase_cursor.execute(f"SELECT * FROM {table_name}")
+            supabase_data = supabase_cursor.fetchall()
+            column_names = [desc[0] for desc in supabase_cursor.description]
+            
+            if not supabase_data:
+                return
+            
+            # Prepare data for local insertion
+            local_cursor = self.local_conn.cursor()
+            
+            for row in supabase_data:
+                row_dict = dict(zip(column_names, row))
+                
+                # For tables with local_id mapping
+                if 'local_id' in row_dict and row_dict['local_id']:
+                    # Update existing record
+                    if table_name == "inventory":
+                        local_cursor.execute(f"""
+                            INSERT OR REPLACE INTO {table_name} 
+                            VALUES ({','.join(['?' for _ in column_names])})
+                        """, row)
+                    else:
+                        # Delete if exists with local_id then insert
+                        local_cursor.execute(f"DELETE FROM {table_name} WHERE id=?", (row_dict['local_id'],))
+                        local_cursor.execute(f"""
+                            INSERT INTO {table_name} 
+                            VALUES ({','.join(['?' for _ in column_names if col != 'local_id'])})
+                        """, [row_dict[col] for col in column_names if col != 'local_id'])
+                else:
+                    # Insert new record
+                    placeholders = ','.join(['?' for _ in column_names])
+                    local_cursor.execute(f"INSERT OR REPLACE INTO {table_name} VALUES ({placeholders})", row)
+            
+            self.local_conn.commit()
+            
+        except Exception as e:
+            logger.error(f"Error syncing table {table_name}: {e}")
+    
+    def queue_sync_to_supabase(self, table_name, record_id, action='insert'):
+        """Queue a record to be synced to Supabase"""
+        if self.supabase_conn:
+            self.sync_queue.put({
+                'table': table_name,
+                'record_id': record_id,
+                'action': action,
+                'timestamp': datetime.now()
+            })
+    
+    def start_sync_thread(self):
+        """Start background thread for syncing to Supabase"""
+        if self.supabase_conn and not self.sync_running:
+            self.sync_running = True
+            self.sync_thread = threading.Thread(target=self._sync_worker, daemon=True)
+            self.sync_thread.start()
+            logger.info("✅ Sync thread started")
+    
+    def stop_sync_thread(self):
+        """Stop the sync thread"""
+        self.sync_running = False
+        if self.sync_thread:
+            self.sync_thread.join(timeout=5)
+    
+    def _sync_worker(self):
+        """Background worker that syncs data to Supabase"""
+        while self.sync_running:
+            try:
+                # Process up to 10 items from queue
+                for _ in range(10):
+                    try:
+                        item = self.sync_queue.get_nowait()
+                        self._sync_item_to_supabase(item)
+                    except queue.Empty:
+                        break
+                
+                # Periodic full sync
+                if self.last_sync_time is None or (datetime.now() - self.last_sync_time).seconds > 300:  # 5 minutes
+                    self.sync_pending_records()
+                    self.last_sync_time = datetime.now()
+                
+                time.sleep(1)  # Small delay to prevent CPU overuse
+                
+            except Exception as e:
+                logger.error(f"Error in sync worker: {e}")
+                time.sleep(5)
+    
+    def sync_pending_records(self):
+        """Sync all pending records to Supabase"""
+        if not self.supabase_conn:
+            return
+        
+        try:
+            tables_to_sync = [
+                ("purchases", "synced=0"),
+                ("sales", "synced=0"),
+                ("waste", "synced=0"),
+                ("customers", "synced=0"),
+                ("expenses", "synced=0")
+            ]
+            
+            for table_name, condition in tables_to_sync:
+                self._sync_pending_table_records(table_name, condition)
+            
+            # Sync inventory (always sync)
+            self._sync_inventory_to_supabase()
+            
+            logger.info("✅ Periodic sync completed")
+            
+        except Exception as e:
+            logger.error(f"Error in periodic sync: {e}")
+    
+    def _sync_pending_table_records(self, table_name, condition):
+        """Sync pending records from a specific table"""
+        try:
+            local_cursor = self.local_conn.cursor()
+            local_cursor.execute(f"SELECT * FROM {table_name} WHERE {condition}")
+            pending_records = local_cursor.fetchall()
+            column_names = [desc[0] for desc in local_cursor.description]
+            
+            if not pending_records:
+                return
+            
+            supabase_cursor = self.supabase_conn.cursor()
+            
+            for record in pending_records:
+                record_dict = dict(zip(column_names, record))
+                
+                # Prepare data for Supabase
+                if table_name == "inventory":
+                    supabase_cursor.execute("""
+                        INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type, category)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT (vegetable) DO UPDATE 
+                        SET quantity=EXCLUDED.quantity,
+                            cost_price=EXCLUDED.cost_price,
+                            selling_price=EXCLUDED.selling_price,
+                            unit_type=EXCLUDED.unit_type,
+                            category=EXCLUDED.category,
+                            last_updated=CURRENT_TIMESTAMP
+                    """, (
+                        record_dict['vegetable'],
+                        record_dict['quantity'],
+                        record_dict['cost_price'],
+                        record_dict['selling_price'],
+                        record_dict.get('image_url', ''),
+                        record_dict['unit_type'],
+                        record_dict['category']
+                    ))
+                else:
+                    # For other tables, insert and update local_id
+                    columns = [col for col in column_names if col not in ['id', 'synced', 'local_id']]
+                    values = [record_dict[col] for col in columns]
+                    placeholders = ','.join(['%s' for _ in columns])
+                    
+                    supabase_cursor.execute(f"""
+                        INSERT INTO {table_name} ({','.join(columns)})
+                        VALUES ({placeholders})
+                        RETURNING id
+                    """, values)
+                    
+                    supabase_id = supabase_cursor.fetchone()[0]
+                    
+                    # Update local record with supabase ID and mark as synced
+                    local_cursor.execute(f"""
+                        UPDATE {table_name} 
+                        SET synced=1, local_id=?
+                        WHERE id=?
+                    """, (supabase_id, record_dict['id']))
+            
+            self.supabase_conn.commit()
+            self.local_conn.commit()
+            
+        except Exception as e:
+            logger.error(f"Error syncing {table_name}: {e}")
+            if self.supabase_conn:
+                self.supabase_conn.rollback()
+    
+    def _sync_inventory_to_supabase(self):
+        """Sync inventory to Supabase"""
+        if not self.supabase_conn:
+            return
+        
+        try:
+            local_cursor = self.local_conn.cursor()
+            local_cursor.execute("SELECT * FROM inventory")
+            inventory_records = local_cursor.fetchall()
+            column_names = [desc[0] for desc in local_cursor.description]
+            
+            supabase_cursor = self.supabase_conn.cursor()
+            
+            for record in inventory_records:
+                record_dict = dict(zip(column_names, record))
+                
+                supabase_cursor.execute("""
+                    INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type, category)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (vegetable) DO UPDATE 
+                    SET quantity=EXCLUDED.quantity,
+                        cost_price=EXCLUDED.cost_price,
+                        selling_price=EXCLUDED.selling_price,
+                        unit_type=EXCLUDED.unit_type,
+                        category=EXCLUDED.category,
+                        last_updated=CURRENT_TIMESTAMP
+                """, (
+                    record_dict['vegetable'],
+                    record_dict['quantity'],
+                    record_dict['cost_price'],
+                    record_dict['selling_price'],
+                    record_dict.get('image_url', ''),
+                    record_dict['unit_type'],
+                    record_dict['category']
+                ))
+            
+            self.supabase_conn.commit()
+            
+        except Exception as e:
+            logger.error(f"Error syncing inventory: {e}")
+            if self.supabase_conn:
+                self.supabase_conn.rollback()
+    
+    def _sync_item_to_supabase(self, item):
+        """Sync a single item to Supabase"""
+        try:
+            table_name = item['table']
+            record_id = item['record_id']
+            
+            local_cursor = self.local_conn.cursor()
+            local_cursor.execute(f"SELECT * FROM {table_name} WHERE id=?", (record_id,))
+            record = local_cursor.fetchone()
+            
+            if not record:
+                return
+            
+            column_names = [desc[0] for desc in local_cursor.description]
+            record_dict = dict(zip(column_names, record))
+            
+            supabase_cursor = self.supabase_conn.cursor()
+            
+            if table_name == "inventory":
+                supabase_cursor.execute("""
+                    INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, image_url, unit_type, category)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (vegetable) DO UPDATE 
+                    SET quantity=EXCLUDED.quantity,
+                        cost_price=EXCLUDED.cost_price,
+                        selling_price=EXCLUDED.selling_price,
+                        unit_type=EXCLUDED.unit_type,
+                        category=EXCLUDED.category,
+                        last_updated=CURRENT_TIMESTAMP
+                """, (
+                    record_dict['vegetable'],
+                    record_dict['quantity'],
+                    record_dict['cost_price'],
+                    record_dict['selling_price'],
+                    record_dict.get('image_url', ''),
+                    record_dict['unit_type'],
+                    record_dict['category']
+                ))
+            else:
+                # For other tables
+                columns = [col for col in column_names if col not in ['id', 'synced', 'local_id']]
+                values = [record_dict[col] for col in columns]
+                placeholders = ','.join(['%s' for _ in columns])
+                
+                supabase_cursor.execute(f"""
+                    INSERT INTO {table_name} ({','.join(columns)})
+                    VALUES ({placeholders})
+                    RETURNING id
+                """, values)
+                
+                supabase_id = supabase_cursor.fetchone()[0]
+                
+                # Update local record
+                local_cursor.execute(f"""
+                    UPDATE {table_name} 
+                    SET synced=1, local_id=?
+                    WHERE id=?
+                """, (supabase_id, record_id))
+            
+            self.supabase_conn.commit()
+            self.local_conn.commit()
+            
+            logger.debug(f"Synced {table_name} record {record_id} to Supabase")
+            
+        except Exception as e:
+            logger.error(f"Error syncing item {item}: {e}")
+            if self.supabase_conn:
+                self.supabase_conn.rollback()
+    
+    def execute_local(self, sql, params=()):
+        """Execute SQL on local database and queue for sync"""
+        try:
+            c = self.local_conn.cursor()
+            c.execute(sql, params)
+            self.local_conn.commit()
+            
+            # Get last inserted id if applicable
+            last_id = c.lastrowid
+            
+            # Determine table name from SQL
+            table_name = self._extract_table_name(sql)
+            
+            # Queue for sync if we have a table name and last_id
+            if table_name and last_id and table_name != "inventory":
+                self.queue_sync_to_supabase(table_name, last_id)
+            elif table_name == "inventory":
+                # For inventory updates, we need to handle differently
+                # Queue a full inventory sync
+                self.queue_sync_to_supabase("inventory", 0)
+            
+            return c
+        except Exception as e:
+            logger.error(f"Error executing local SQL: {e}")
+            raise
+    
+    def _extract_table_name(self, sql):
+        """Extract table name from SQL statement"""
+        sql_lower = sql.lower().strip()
+        
+        if sql_lower.startswith("insert into"):
+            parts = sql_lower.split()
+            if len(parts) >= 3:
+                return parts[2]
+        elif sql_lower.startswith("update"):
+            parts = sql_lower.split()
+            if len(parts) >= 2:
+                return parts[1]
+        elif sql_lower.startswith("delete from"):
+            parts = sql_lower.split()
+            if len(parts) >= 3:
+                return parts[2]
+        
         return None
+    
+    def get_local_cursor(self):
+        """Get cursor for local database"""
+        return self.local_conn.cursor()
+    
+    def close(self):
+        """Close all database connections"""
+        self.stop_sync_thread()
+        
+        if self.local_conn:
+            # Final sync before closing
+            if self.supabase_conn:
+                self.sync_pending_records()
+            
+            self.local_conn.close()
+        
+        if self.supabase_conn:
+            self.supabase_conn.close()
 
-# Initialize database manager
-db_manager = ExternalDatabaseManager()
+# Initialize dual database manager
+db_manager = DualDatabaseManager()
 
 # ========================== USER AUTHENTICATION ==========================
 USERS_FILE = "users.json"
@@ -519,13 +888,13 @@ def login_page():
     return False
 
 # ========================== INITIALIZE DATABASE ==========================
-if not db_manager.init_database():
-    st.error("❌ Failed to initialize database system. Please configure Supabase.")
+if not db_manager.init_databases():
+    st.error("❌ Failed to initialize database system.")
     st.stop()
 
 def get_db_connection():
-    """Get database connection"""
-    return db_manager.get_connection()
+    """Get database connection - always uses local for speed"""
+    return db_manager.local_conn
 
 # ========================== INITIALIZE SESSION STATE ==========================
 if 'logged_in' not in st.session_state:
@@ -603,6 +972,9 @@ st.markdown("""
     .db-status-success {background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%); color: white; padding: 10px; border-radius: 10px; margin: 5px 0;}
     .db-status-warning {background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%); color: white; padding: 10px; border-radius: 10px; margin: 5px 0;}
     .db-status-error {background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%); color: white; padding: 10px; border-radius: 10px; margin: 5px 0;}
+    
+    .sync-status {background: linear-gradient(135deg, #3498db 0%, #2980b9 100%); color: white; padding: 8px 12px; border-radius: 8px; margin: 5px 0; font-size: 0.9em;}
+    .sync-status-offline {background: linear-gradient(135deg, #95a5a6 0%, #7f8c8d 100%);}
 </style>
 """, unsafe_allow_html=True)
 
@@ -621,20 +993,26 @@ if conn is None:
     st.stop()
 
 # ========================== OPTIMIZED HELPER FUNCTIONS ==========================
-@st.cache_data(ttl=10)  # Reduced from 30 to 10 seconds for faster updates
+@st.cache_data(ttl=5)  # Reduced to 5 seconds for faster updates
 def get_inventory_data():
     """Get all inventory data with caching"""
     try:
-        return db_cache.get_inventory(conn)
+        c = conn.cursor()
+        c.execute("SELECT vegetable, quantity, cost_price, selling_price, unit_type, category FROM inventory ORDER BY vegetable")
+        rows = c.fetchall()
+        return {row[0]: row[1:] for row in rows}
     except Exception as e:
         logger.error(f"Error getting inventory data: {e}")
         return {}
 
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=5)
 def get_inventory_df():
     """Get inventory as DataFrame with caching"""
     try:
-        return db_cache.get_inventory_df(conn)
+        c = conn.cursor()
+        c.execute("SELECT vegetable, quantity, cost_price, selling_price, unit_type, category FROM inventory ORDER BY vegetable")
+        rows = c.fetchall()
+        return pd.DataFrame(rows, columns=['vegetable', 'quantity', 'cost_price', 'selling_price', 'unit_type', 'category'])
     except Exception as e:
         logger.error(f"Error getting inventory DataFrame: {e}")
         return pd.DataFrame()
@@ -647,7 +1025,7 @@ def get_stock(veg):
         return qty or 0.0, cost or 0.0, sell or 0.0, unit_type or 'kg', category or 'vegetable'
     return 0.0, 0.0, 0.0, 'kg', 'vegetable'
 
-@st.cache_data(ttl=15)  # Reduced from 60 to 15 seconds
+@st.cache_data(ttl=10)  # Reduced to 10 seconds
 def get_available_items():
     """Get items available for sale with caching"""
     inventory_df = get_inventory_df()
@@ -789,10 +1167,10 @@ def process_sale_simple(cust_name, cust_phone):
             
             c.execute("""
                 INSERT INTO sales (date, vegetable, quantity_sold, sale_price, total, customer, unit_type, customer_name, customer_phone, bill_no) 
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
             """, (d, veg, qty, price, total, cust, unit_type, cust_name, cust_phone, bill_no))
             
-            c.execute("UPDATE inventory SET quantity = quantity - %s WHERE vegetable=%s", (qty, veg))
+            c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
             
             sale_details.append({
                 "item": veg,
@@ -808,11 +1186,11 @@ def process_sale_simple(cust_name, cust_phone):
             try:
                 c.execute("""
                     INSERT INTO customers (phone, name, points, total_spent, last_visit) 
-                    VALUES (%s,%s,%s,%s,%s)
+                    VALUES (?,?,?,?,?)
                     ON CONFLICT (phone, name) DO UPDATE 
-                    SET points = customers.points + %s, 
-                        total_spent = customers.total_spent + %s,
-                        last_visit = %s
+                    SET points = customers.points + ?, 
+                        total_spent = customers.total_spent + ?,
+                        last_visit = ?
                 """, (cust_phone, cust_name, int(total_amount // 10), total_amount, d, int(total_amount // 10), total_amount, d))
             except Exception as e:
                 logger.error(f"Error updating customer: {e}")
@@ -1002,45 +1380,76 @@ with st.sidebar:
     
     try:
         # Get database statistics
-        db_status_class = "db-status-success"
-        db_status_text = "✅ Connected"
+        db_type = "Dual System" if db_manager.supabase_conn else "Local SQLite"
+        db_status_class = "db-status-success" if db_manager.supabase_conn else "db-status-warning"
+        db_status_text = "✅ Dual System (Fast + No Data Loss)" if db_manager.supabase_conn else "⚠️ Local Only (Fast)"
         
-        if db_manager.db_type == "supabase":
-            db_type_text = "Supabase PostgreSQL"
-            db_status_class = "db-status-success"
-            db_status_text = "✅ Supabase PostgreSQL (Permanent Storage)"
-        elif db_manager.db_type == "postgresql":
-            db_type_text = "PostgreSQL"
-            db_status_class = "db-status-success"
-            db_status_text = "✅ PostgreSQL (Permanent Storage)"
-        else:
-            db_type_text = "Local SQLite"
-            db_status_text = "⚠️ Local SQLite (Not Recommended)"
+        sync_status = "🔄 Syncing Active" if db_manager.supabase_conn and db_manager.sync_running else "⚫️ Sync Offline"
+        sync_class = "sync-status" if db_manager.supabase_conn and db_manager.sync_running else "sync-status sync-status-offline"
         
-        # Get counts with caching
+        # Get counts
         c = conn.cursor()
         c.execute("SELECT COUNT(*) FROM inventory")
         inv_count = c.fetchone()[0]
         
+        # Get pending sync count
+        c.execute("SELECT COUNT(*) FROM sales WHERE synced=0")
+        pending_sales = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM purchases WHERE synced=0")
+        pending_purchases = c.fetchone()[0]
+        pending_total = pending_sales + pending_purchases
+        
         st.markdown(f"""
         <div style="background: white; padding: 15px; border-radius: 10px; margin: 10px 0;">
             <p style="margin: 5px 0; font-size: 0.9em;">
-                <strong>🗄️ Type:</strong> {db_type_text}
+                <strong>🗄️ Type:</strong> {db_type}
             </p>
             <p style="margin: 5px 0; font-size: 0.9em;">
                 <strong>📦 Items:</strong> {inv_count}
             </p>
+            <p style="margin: 5px 0; font-size: 0.9em;">
+                <strong>📤 Pending Sync:</strong> {pending_total}
+            </p>
             <div class="{db_status_class}" style="margin: 10px 0; padding: 8px; border-radius: 8px;">
                 <strong>{db_status_text}</strong>
-                {"🛡️ No Data Loss" if db_manager.db_type != "local" else "⚠️ Local (Backup Active)"}
+            </div>
+            <div class="{sync_class}" style="margin: 10px 0; padding: 8px; border-radius: 8px;">
+                <strong>{sync_status}</strong>
+                {f"{pending_total} pending" if pending_total > 0 else "All synced"}
             </div>
         </div>
         """, unsafe_allow_html=True)
         
+        # Manual sync button
+        if db_manager.supabase_conn:
+            if st.button("🔄 Manual Sync Now", use_container_width=True, key="manual_sync"):
+                with st.spinner("Syncing to Supabase..."):
+                    db_manager.sync_pending_records()
+                    st.success("✅ Sync completed!")
+                    st.rerun()
+        
         # Download backup button
         if st.button("📥 Download Data", use_container_width=True, key="download_backup"):
-            json_file = db_manager.export_database()
-            if json_file and os.path.exists(json_file):
+            try:
+                export_data = {}
+                tables = ["inventory", "purchases", "sales", "waste", "customers", "expenses"]
+                
+                for table in tables:
+                    try:
+                        c.execute(f"SELECT * FROM {table}")
+                        rows = c.fetchall()
+                        column_names = [description[0] for description in c.description]
+                        df = pd.DataFrame(rows, columns=column_names)
+                        export_data[table] = df.to_dict('records')
+                    except Exception as e:
+                        logger.error(f"Error exporting {table}: {e}")
+                        export_data[table] = []
+                
+                # Save as JSON
+                json_file = os.path.join(tempfile.gettempdir(), f"freshbasket_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+                with open(json_file, 'w') as f:
+                    json.dump(export_data, f, indent=2, default=str)
+                
                 with open(json_file, 'rb') as f:
                     st.download_button(
                         label="📥 Download All Data",
@@ -1050,6 +1459,8 @@ with st.sidebar:
                         use_container_width=True,
                         key="download_data_btn"
                     )
+            except Exception as e:
+                st.error(f"Export failed: {e}")
     
     except Exception as e:
         st.error(f"Database error: {e}")
@@ -1104,7 +1515,7 @@ if menu == "📊 Dashboard":
         """, unsafe_allow_html=True)
     
     with col2:
-        c.execute("SELECT COALESCE(SUM(total),0) as total FROM sales WHERE date=%s", 
+        c.execute("SELECT COALESCE(SUM(total),0) as total FROM sales WHERE date=?", 
                  (selected_date.strftime("%Y-%m-%d"),))
         today_sales = c.fetchone()[0]
         st.markdown(f"""
@@ -1116,7 +1527,7 @@ if menu == "📊 Dashboard":
         """, unsafe_allow_html=True)
     
     with col3:
-        c.execute("SELECT COUNT(DISTINCT customer_name) as count FROM sales WHERE date=%s AND customer_name IS NOT NULL", 
+        c.execute("SELECT COUNT(DISTINCT customer_name) as count FROM sales WHERE date=? AND customer_name IS NOT NULL", 
                  (selected_date.strftime("%Y-%m-%d"),))
         today_customers_df = c.fetchone()[0]
         
@@ -1130,7 +1541,7 @@ if menu == "📊 Dashboard":
     
     with col4:
         threshold = st.session_state.shortage_threshold
-        c.execute("SELECT COUNT(*) as count FROM inventory WHERE quantity > 0 AND quantity < %s", 
+        c.execute("SELECT COUNT(*) as count FROM inventory WHERE quantity > 0 AND quantity < ?", 
                  (threshold,))
         low_stock_count = c.fetchone()[0]
         st.markdown(f"""
@@ -1326,14 +1737,14 @@ elif menu == "🛒 Add Purchase":
                         amount = row['amount']
                         supplier = row['supplier']
                         
-                        c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (%s,%s,%s,%s,%s)", 
+                        c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (?,?,?,?,?)", 
                                  (d, veg, qty, amount, supplier))
                         
                         if qty > 0:
                             old_qty = inventory_data[veg][0]
                             new_qty = old_qty + qty
                             unit_cost = (amount / qty) if qty > 0 else inventory_data[veg][1]
-                            c.execute("UPDATE inventory SET quantity=%s, cost_price=%s WHERE vegetable=%s", 
+                            c.execute("UPDATE inventory SET quantity=?, cost_price=? WHERE vegetable=?", 
                                      (new_qty, unit_cost, veg))
                         
                         purchases_made += 1
@@ -1384,14 +1795,14 @@ elif menu == "🛒 Add Purchase":
                             d = selected_date.strftime("%Y-%m-%d")
                             c = conn.cursor()
                             
-                            c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (%s,%s,%s,%s,%s)", 
+                            c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (?,?,?,?,?)", 
                                      (d, veg_choice, qty_kg, amount, supplier))
                             
                             old_qty = inventory_data[veg_choice][0]
                             new_qty = old_qty + qty_kg
                             unit_cost = (amount / qty_kg) if qty_kg > 0 else inventory_data[veg_choice][1]
                             
-                            c.execute("UPDATE inventory SET quantity=%s, cost_price=%s WHERE vegetable=%s", 
+                            c.execute("UPDATE inventory SET quantity=?, cost_price=? WHERE vegetable=?", 
                                      (new_qty, unit_cost, veg_choice))
                             
                             conn.commit()
@@ -1433,14 +1844,14 @@ elif menu == "🛒 Add Purchase":
                             d = selected_date.strftime("%Y-%m-%d")
                             c = conn.cursor()
                             
-                            c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (%s,%s,%s,%s,%s)", 
+                            c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (?,?,?,?,?)", 
                                      (d, veg_choice, total_qty, amount, supplier))
                             
                             old_qty = inventory_data[veg_choice][0]
                             new_qty = old_qty + total_qty
                             unit_cost = (amount / total_qty) if total_qty > 0 else inventory_data[veg_choice][1]
                             
-                            c.execute("UPDATE inventory SET quantity=%s, cost_price=%s WHERE vegetable=%s", 
+                            c.execute("UPDATE inventory SET quantity=?, cost_price=? WHERE vegetable=?", 
                                      (new_qty, unit_cost, veg_choice))
                             
                             conn.commit()
@@ -1484,14 +1895,14 @@ elif menu == "🛒 Add Purchase":
                             d = selected_date.strftime("%Y-%m-%d")
                             c = conn.cursor()
                             
-                            c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (%s,%s,%s,%s,%s)", 
+                            c.execute("INSERT INTO purchases (date, vegetable, quantity, amount, supplier) VALUES (?,?,?,?,?)", 
                                      (d, fruit_choice, qty_kg, amount, supplier))
                             
                             old_qty = inventory_data[fruit_choice][0]
                             new_qty = old_qty + qty_kg
                             unit_cost = (amount / qty_kg) if qty_kg > 0 else inventory_data[fruit_choice][1]
                             
-                            c.execute("UPDATE inventory SET quantity=%s, cost_price=%s WHERE vegetable=%s", 
+                            c.execute("UPDATE inventory SET quantity=?, cost_price=? WHERE vegetable=?", 
                                      (new_qty, unit_cost, fruit_choice))
                             
                             conn.commit()
@@ -1502,7 +1913,7 @@ elif menu == "🛒 Add Purchase":
     st.markdown(f"### 📊 Today's Purchases ({selected_date.strftime('%d %B %Y')})")
     
     c = conn.cursor()
-    c.execute("SELECT vegetable, quantity, amount, supplier FROM purchases WHERE date=%s ORDER BY id DESC", 
+    c.execute("SELECT vegetable, quantity, amount, supplier FROM purchases WHERE date=? ORDER BY id DESC", 
               (selected_date.strftime("%Y-%m-%d"),))
     today_purchases_rows = c.fetchall()
     today_purchases = pd.DataFrame(today_purchases_rows, columns=["vegetable", "quantity", "amount", "supplier"])
@@ -1562,7 +1973,7 @@ elif menu == "🏷 Set Prices":
                     c = conn.cursor()
                     c.execute("""
                         INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type, category) 
-                        VALUES (%s, 0, 0, %s, %s, %s)
+                        VALUES (?, 0, 0, ?, ?, ?)
                         ON CONFLICT (vegetable) DO NOTHING
                     """, (new_item.strip(), new_price, unit_type, category))
                     conn.commit()
@@ -1636,12 +2047,12 @@ elif menu == "🏷 Set Prices":
             c = conn.cursor()
             if 'edited_df' in locals():
                 for _, row in edited_df.iterrows():
-                    c.execute("UPDATE inventory SET selling_price=%s WHERE vegetable=%s", 
+                    c.execute("UPDATE inventory SET selling_price=? WHERE vegetable=?", 
                              (row['selling_price'], row['vegetable']))
                     changes += 1
             if 'edited_df2' in locals():
                 for _, row in edited_df2.iterrows():
-                    c.execute("UPDATE inventory SET selling_price=%s WHERE vegetable=%s", 
+                    c.execute("UPDATE inventory SET selling_price=? WHERE vegetable=?", 
                              (row['selling_price'], row['vegetable']))
                     changes += 1
             
@@ -1679,7 +2090,7 @@ elif menu == "🏷 Set Prices":
             
             if st.button("💾 Update Price", type="primary", use_container_width=True):
                 c = conn.cursor()
-                c.execute("UPDATE inventory SET selling_price=%s WHERE vegetable=%s", (new_price, selected_item))
+                c.execute("UPDATE inventory SET selling_price=? WHERE vegetable=?", (new_price, selected_item))
                 conn.commit()
                 st.cache_data.clear()  # Clear cache
                 if current_unit == 'kg':
@@ -2113,7 +2524,7 @@ elif menu == "📦 Inventory":
                     c = conn.cursor()
                     c.execute("""
                         INSERT INTO inventory (vegetable, quantity, cost_price, selling_price, unit_type, category) 
-                        VALUES (%s,%s,%s,%s,%s,%s)
+                        VALUES (?,?,?,?,?,?)
                         ON CONFLICT (vegetable) DO NOTHING
                     """, (new_item_name.strip(), initial_qty, 0.0, initial_price, unit_type, category))
                     conn.commit()
@@ -2135,7 +2546,7 @@ elif menu == "📦 Inventory":
                         st.error(f"Cannot remove {item_to_remove} - it still has {stock:.2f} in stock")
                     else:
                         c = conn.cursor()
-                        c.execute("DELETE FROM inventory WHERE vegetable=%s", (item_to_remove,))
+                        c.execute("DELETE FROM inventory WHERE vegetable=?", (item_to_remove,))
                         conn.commit()
                         st.cache_data.clear()  # Clear cache
                         st.success(f"✅ Removed {item_to_remove} from inventory")
@@ -2250,7 +2661,7 @@ elif menu == "📦 Inventory":
             if 'edited_veg' in locals():
                 for _, row in edited_veg.iterrows():
                     try:
-                        c.execute("UPDATE inventory SET quantity=%s, selling_price=%s WHERE vegetable=%s", 
+                        c.execute("UPDATE inventory SET quantity=?, selling_price=? WHERE vegetable=?", 
                                  (row['quantity'], row['selling_price'], row['vegetable']))
                         changes_made += 1
                     except Exception as e:
@@ -2259,7 +2670,7 @@ elif menu == "📦 Inventory":
             if 'edited_fruit' in locals():
                 for _, row in edited_fruit.iterrows():
                     try:
-                        c.execute("UPDATE inventory SET quantity=%s, selling_price=%s WHERE vegetable=%s", 
+                        c.execute("UPDATE inventory SET quantity=?, selling_price=? WHERE vegetable=?", 
                                  (row['quantity'], row['selling_price'], row['vegetable']))
                         changes_made += 1
                     except Exception as e:
@@ -2296,7 +2707,7 @@ elif menu == "📋 Purchases":
         purchases_rows = c.fetchall()
         purchases_df = pd.DataFrame(purchases_rows, columns=['id', 'date', 'vegetable', 'quantity', 'amount', 'supplier'])
     else:
-        c.execute("SELECT * FROM purchases WHERE date=%s ORDER BY id DESC", 
+        c.execute("SELECT * FROM purchases WHERE date=? ORDER BY id DESC", 
                   (view_date.strftime("%Y-%m-%d"),))
         purchases_rows = c.fetchall()
         purchases_df = pd.DataFrame(purchases_rows, columns=['id', 'date', 'vegetable', 'quantity', 'amount', 'supplier'])
@@ -2346,7 +2757,7 @@ elif menu == "🧾 Sales":
         sales_df = pd.DataFrame(sales_rows, columns=['id', 'date', 'vegetable', 'quantity_sold', 'sale_price', 'total', 
                                                      'customer', 'unit_type', 'customer_name', 'customer_phone', 'bill_no'])
     else:
-        c.execute("SELECT * FROM sales WHERE date=%s ORDER BY id DESC", 
+        c.execute("SELECT * FROM sales WHERE date=? ORDER BY id DESC", 
                   (view_date.strftime("%Y-%m-%d"),))
         sales_rows = c.fetchall()
         sales_df = pd.DataFrame(sales_rows, columns=['id', 'date', 'vegetable', 'quantity_sold', 'sale_price', 'total',
@@ -2421,14 +2832,14 @@ elif menu == "💸 Expenses":
             else:
                 d = selected_date.strftime("%Y-%m-%d")
                 c = conn.cursor()
-                c.execute("INSERT INTO expenses (date, category, amount, description) VALUES (%s,%s,%s,%s)", 
+                c.execute("INSERT INTO expenses (date, category, amount, description) VALUES (?,?,?,?)", 
                          (d, category, amount, description))
                 conn.commit()
                 st.success(f"✅ Expense recorded: {category} - ₹{amount:.2f}")
     
     st.markdown("### Today's Expenses")
     c = conn.cursor()
-    c.execute("SELECT * FROM expenses WHERE date=%s", (selected_date.strftime("%Y-%m-%d"),))
+    c.execute("SELECT * FROM expenses WHERE date=?", (selected_date.strftime("%Y-%m-%d"),))
     expenses_rows = c.fetchall()
     expenses_df = pd.DataFrame(expenses_rows, columns=['id', 'date', 'category', 'amount', 'description'])
     
@@ -2525,7 +2936,7 @@ elif menu == "👥 Customers":
                     MAX(customer_name) as customer_name,
                     MAX(customer_phone) as customer_phone
                 FROM sales 
-                WHERE date=%s AND customer_name IS NOT NULL AND customer_name != ''
+                WHERE date=? AND customer_name IS NOT NULL AND customer_name != ''
                 GROUP BY COALESCE(customer_phone, 'No Phone'), COALESCE(customer_name, 'Guest')
                 ORDER BY total_spent DESC
             """
@@ -2618,9 +3029,9 @@ elif menu == "🗑 Waste":
                         else:
                             d = selected_date.strftime("%Y-%m-%d")
                             c = conn.cursor()
-                            c.execute("INSERT INTO waste (date, vegetable, quantity, reason) VALUES (%s,%s,%s,%s)", 
+                            c.execute("INSERT INTO waste (date, vegetable, quantity, reason) VALUES (?,?,?,?)", 
                                      (d, veg, qty, f"{reason}: {description}"))
-                            c.execute("UPDATE inventory SET quantity = quantity - %s WHERE vegetable=%s", (qty, veg))
+                            c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
                             conn.commit()
                             st.cache_data.clear()  # Clear cache
                             st.success(f"✅ Recorded waste: {qty} kg of {veg}")
@@ -2659,9 +3070,9 @@ elif menu == "🗑 Waste":
                         else:
                             d = selected_date.strftime("%Y-%m-%d")
                             c = conn.cursor()
-                            c.execute("INSERT INTO waste (date, vegetable, quantity, reason) VALUES (%s,%s,%s,%s)", 
+                            c.execute("INSERT INTO waste (date, vegetable, quantity, reason) VALUES (?,?,?,?)", 
                                      (d, veg, qty, f"{reason}: {description}"))
-                            c.execute("UPDATE inventory SET quantity = quantity - %s WHERE vegetable=%s", (qty, veg))
+                            c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
                             conn.commit()
                             st.cache_data.clear()  # Clear cache
                             st.success(f"✅ Recorded waste: {qty} pieces of {veg}")
@@ -2700,9 +3111,9 @@ elif menu == "🗑 Waste":
                         else:
                             d = selected_date.strftime("%Y-%m-%d")
                             c = conn.cursor()
-                            c.execute("INSERT INTO waste (date, vegetable, quantity, reason) VALUES (%s,%s,%s,%s)", 
+                            c.execute("INSERT INTO waste (date, vegetable, quantity, reason) VALUES (?,?,?,?)", 
                                      (d, veg, qty, f"{reason}: {description}"))
-                            c.execute("UPDATE inventory SET quantity = quantity - %s WHERE vegetable=%s", (qty, veg))
+                            c.execute("UPDATE inventory SET quantity = quantity - ? WHERE vegetable=?", (qty, veg))
                             conn.commit()
                             st.cache_data.clear()  # Clear cache
                             st.success(f"✅ Recorded waste: {qty} kg of {veg}")
@@ -2710,7 +3121,7 @@ elif menu == "🗑 Waste":
     st.markdown("---")
     st.markdown(f"### Today's Waste ({selected_date.strftime('%d %B %Y')})")
     c = conn.cursor()
-    c.execute("SELECT * FROM waste WHERE date=%s", (selected_date.strftime("%Y-%m-%d"),))
+    c.execute("SELECT * FROM waste WHERE date=?", (selected_date.strftime("%Y-%m-%d"),))
     waste_rows = c.fetchall()
     waste_df = pd.DataFrame(waste_rows, columns=['id', 'date', 'vegetable', 'quantity', 'reason'])
     
@@ -2738,16 +3149,16 @@ elif menu == "⬇ Download":
         d = selected_date.strftime("%Y-%m-%d")
         c = conn.cursor()
         
-        c.execute("SELECT COALESCE(SUM(total),0) as total_sales FROM sales WHERE date=%s", (d,))
+        c.execute("SELECT COALESCE(SUM(total),0) as total_sales FROM sales WHERE date=?", (d,))
         daily_sales = c.fetchone()[0]
         
-        c.execute("SELECT COALESCE(SUM(amount),0) as total_purchases FROM purchases WHERE date=%s", (d,))
+        c.execute("SELECT COALESCE(SUM(amount),0) as total_purchases FROM purchases WHERE date=?", (d,))
         daily_purchases = c.fetchone()[0]
         
-        c.execute("SELECT COALESCE(SUM(amount),0) as total_expenses FROM expenses WHERE date=%s", (d,))
+        c.execute("SELECT COALESCE(SUM(amount),0) as total_expenses FROM expenses WHERE date=?", (d,))
         daily_expenses = c.fetchone()[0]
         
-        c.execute("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE date=%s", (d,))
+        c.execute("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE date=?", (d,))
         daily_waste = c.fetchone()[0]
         
         # Get customer details
@@ -2759,7 +3170,7 @@ elif menu == "⬇ Download":
                     SUM(total) as total_spent,
                     COUNT(*) as total_visits
                 FROM sales 
-                WHERE date=%s
+                WHERE date=?
                 GROUP BY COALESCE(customer_name, 'Guest'), COALESCE(customer_phone, '')
                 ORDER BY total_spent DESC
             """, (d,))
@@ -2800,7 +3211,7 @@ elif menu == "⬇ Download":
         
         for table_name, display_name, description in tables:
             with st.expander(f"{display_name} - {description}"):
-                c.execute(f"SELECT * FROM {table_name} WHERE date=%s", (d,))
+                c.execute(f"SELECT * FROM {table_name} WHERE date=?", (d,))
                 df_rows = c.fetchall()
                 
                 if table_name == "purchases":
@@ -2829,12 +3240,12 @@ elif menu == "⬇ Download":
     with tab2:
         st.markdown("### 📊 Monthly Reports")
         
-        # FIXED: Use TO_CHAR with date::timestamp for Supabase compatibility
+        # Get distinct months from sales and purchases
         c.execute("""
-            SELECT DISTINCT TO_CHAR(date::timestamp, 'YYYY-MM') as month 
+            SELECT DISTINCT strftime('%Y-%m', date) as month 
             FROM sales 
             UNION 
-            SELECT DISTINCT TO_CHAR(date::timestamp, 'YYYY-MM') as month 
+            SELECT DISTINCT strftime('%Y-%m', date) as month 
             FROM purchases 
             ORDER BY month DESC
         """)
@@ -2846,22 +3257,20 @@ elif menu == "⬇ Download":
         else:
             selected_month = st.selectbox("Select Month", months['month'].tolist(), index=0)
             
-            # FIXED: Use TO_CHAR with date::timestamp
-            c.execute("SELECT COALESCE(SUM(total),0) as total_sales FROM sales WHERE TO_CHAR(date::timestamp, 'YYYY-MM')=%s", (selected_month,))
+            c.execute("SELECT COALESCE(SUM(total),0) as total_sales FROM sales WHERE strftime('%Y-%m', date)=?", (selected_month,))
             monthly_sales = c.fetchone()[0]
             
-            c.execute("SELECT COALESCE(SUM(amount),0) as total_purchases FROM purchases WHERE TO_CHAR(date::timestamp, 'YYYY-MM')=%s", (selected_month,))
+            c.execute("SELECT COALESCE(SUM(amount),0) as total_purchases FROM purchases WHERE strftime('%Y-%m', date)=?", (selected_month,))
             monthly_purchases = c.fetchone()[0]
             
-            c.execute("SELECT COALESCE(SUM(amount),0) as total_expenses FROM expenses WHERE TO_CHAR(date::timestamp, 'YYYY-MM')=%s", (selected_month,))
+            c.execute("SELECT COALESCE(SUM(amount),0) as total_expenses FROM expenses WHERE strftime('%Y-%m', date)=?", (selected_month,))
             monthly_expenses = c.fetchone()[0]
             
-            c.execute("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE TO_CHAR(date::timestamp, 'YYYY-MM')=%s", (selected_month,))
+            c.execute("SELECT COALESCE(SUM(quantity),0) as total_waste FROM waste WHERE strftime('%Y-%m', date)=?", (selected_month,))
             monthly_waste = c.fetchone()[0]
             
             # Get monthly customer details
             try:
-                # FIXED: Use TO_CHAR with date::timestamp
                 c.execute("""
                     SELECT 
                         date,
@@ -2870,7 +3279,7 @@ elif menu == "⬇ Download":
                         SUM(total) as total_spent,
                         COUNT(*) as total_visits
                     FROM sales 
-                    WHERE TO_CHAR(date::timestamp, 'YYYY-MM')=%s
+                    WHERE strftime('%Y-%m', date)=?
                     GROUP BY date, COALESCE(customer_name, 'Guest'), COALESCE(customer_phone, '')
                     ORDER BY date DESC, total_spent DESC
                 """, (selected_month,))
@@ -3002,13 +3411,13 @@ elif menu == "💰 Financials":
     d = selected_date.strftime("%Y-%m-%d")
     c = conn.cursor()
     
-    c.execute("SELECT COALESCE(SUM(total),0) AS total FROM sales WHERE date=%s", (d,))
+    c.execute("SELECT COALESCE(SUM(total),0) AS total FROM sales WHERE date=?", (d,))
     sales_data = c.fetchone()[0]
     
-    c.execute("SELECT COALESCE(SUM(amount),0) AS total FROM purchases WHERE date=%s", (d,))
+    c.execute("SELECT COALESCE(SUM(amount),0) AS total FROM purchases WHERE date=?", (d,))
     cost_data = c.fetchone()[0]
     
-    c.execute("SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE date=%s", (d,))
+    c.execute("SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE date=?", (d,))
     expense_data = c.fetchone()[0]
     
     profit = sales_data - cost_data - expense_data
@@ -3058,7 +3467,7 @@ elif menu == "💰 Financials":
     
     c.execute("""
         SELECT vegetable, SUM(quantity_sold) as qty, SUM(total) as revenue 
-        FROM sales WHERE date=%s 
+        FROM sales WHERE date=? 
         GROUP BY vegetable 
         ORDER BY revenue DESC
     """, (d,))
@@ -3081,7 +3490,7 @@ elif menu == "💰 Financials":
             st.bar_chart(chart_data)
     
     st.markdown("### Recent Transactions")
-    c.execute("SELECT * FROM sales WHERE date=%s ORDER BY id DESC LIMIT 10", (d,))
+    c.execute("SELECT * FROM sales WHERE date=? ORDER BY id DESC LIMIT 10", (d,))
     recent_sales_rows = c.fetchall()
     recent_sales = pd.DataFrame(recent_sales_rows, columns=['id', 'date', 'vegetable', 'quantity_sold', 'sale_price', 'total', 
                                                           'customer', 'unit_type', 'customer_name', 'customer_phone', 'bill_no'])
@@ -3111,115 +3520,122 @@ elif menu == "🔧 Database Tools":
     st.markdown("""
     <div style="text-align:center; margin-bottom:30px;">
         <h2>🔧 Enhanced Database Tools</h2>
-        <div class="subtitle">Permanent Data Storage System</div>
+        <div class="subtitle">Dual Database System (Fast + No Data Loss)</div>
     </div>
     """, unsafe_allow_html=True)
     
     st.markdown("### 📍 Database Configuration")
     
-    db_status_class = "db-status-success"
-    db_status_text = f"✅ Connected to {db_manager.db_type.upper()}"
+    if db_manager.supabase_conn:
+        db_status_class = "db-status-success"
+        db_status_text = "✅ Dual System Active"
+        sync_status = "🔄 Syncing Active" if db_manager.sync_running else "⚫️ Sync Paused"
+        sync_class = "sync-status" if db_manager.sync_running else "sync-status sync-status-offline"
+    else:
+        db_status_class = "db-status-warning"
+        db_status_text = "⚠️ Local SQLite Only"
+        sync_status = "⚫️ Supabase Not Configured"
+        sync_class = "sync-status sync-status-offline"
     
     st.markdown(f"""
     <div class="{db_status_class}" style="padding:15px; border-radius:10px; margin-bottom:20px;">
         <h4 style="margin:0;">{db_status_text}</h4>
         <p style="margin:5px 0 0 0;">
-            🛡️ No data loss when app sleeps
+            ⚡ Fast Local Operations + 🛡️ No Data Loss
         </p>
+        <div class="{sync_class}" style="margin:10px 0 0 0; padding:8px; border-radius:8px;">
+            <strong>{sync_status}</strong>
+        </div>
     </div>
     """, unsafe_allow_html=True)
     
     # Database setup instructions
-    with st.expander("⚙️ Setup External Database (Recommended)"):
+    with st.expander("⚙️ Setup Supabase for Permanent Storage"):
         st.markdown("""
         ### **For Permanent Data Storage (No Data Loss)**
         
-        **Step 1: Choose a Database Service**
+        **Step 1: Create Supabase Account**
         
-        1. **Supabase (Recommended & Free)**
-           - Sign up at [supabase.com](https://supabase.com)
-           - Create a new project
-           - Go to Settings > Database to get connection details
-        
-        2. **PostgreSQL on Railway (Free)**
-           - Sign up at [railway.app](https://railway.app)
-           - Create PostgreSQL service
-           - Get connection URL
-        
-        3. **Neon PostgreSQL (Free)**
-           - Sign up at [neon.tech](https://neon.tech)
-           - Create PostgreSQL database
+        1. Sign up at [supabase.com](https://supabase.com) (Free tier available)
+        2. Create a new project
+        3. Go to Settings > Database to get connection details
         
         **Step 2: Configure Streamlit Secrets**
         
-        Create `.streamlit/secrets.toml` file with your database details:
+        Create `.streamlit/secrets.toml` file with your Supabase details:
         
         ```toml
-        # For Supabase
+        # Supabase Configuration
         [supabase]
         url = "your-project-url.supabase.co"
         key = "your-anon-key"
         db_url = "postgresql://postgres:[password]@[host]:5432/postgres"
-        
-        # OR for PostgreSQL
-        [postgresql]
-        host = "your-host"
-        port = 5432
-        database = "your-db"
-        user = "your-user"
-        password = "your-password"
         ```
         
         **Step 3: Restart Your App**
         
-        The app will automatically detect and use the external database!
+        The app will automatically:
+        - Use SQLite for fast local operations
+        - Sync data to Supabase in background
+        - No data loss if app sleeps or crashes
         """)
     
     st.markdown("---")
-    st.markdown("### 💾 Backup & Recovery")
+    st.markdown("### 🔄 Sync Management")
     
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     
     with col1:
-        if st.button("📤 Export to JSON", use_container_width=True):
-            json_file = db_manager.export_database()
-            if json_file:
-                st.success(f"✅ Exported to: {json_file}")
-                with open(json_file, 'rb') as f:
-                    st.download_button(
-                        label="📥 Download JSON",
-                        data=f,
-                        file_name=os.path.basename(json_file),
-                        mime="application/json",
-                        use_container_width=True
-                    )
+        if st.button("🔄 Manual Sync Now", use_container_width=True, key="manual_sync_tools"):
+            if db_manager.supabase_conn:
+                with st.spinner("Syncing to Supabase..."):
+                    db_manager.sync_pending_records()
+                    st.success("✅ Sync completed!")
+                    st.rerun()
+            else:
+                st.warning("Supabase not configured")
     
     with col2:
-        if st.button("🔍 Check Database Health", use_container_width=True):
+        if st.button("📤 Pull from Supabase", use_container_width=True, key="pull_from_supabase"):
+            if db_manager.supabase_conn:
+                with st.spinner("Pulling data from Supabase..."):
+                    db_manager.sync_from_supabase_to_local()
+                    st.success("✅ Data pulled from Supabase!")
+                    st.cache_data.clear()
+                    st.rerun()
+            else:
+                st.warning("Supabase not configured")
+    
+    with col3:
+        if st.button("📊 Check Sync Status", use_container_width=True, key="check_sync_status"):
             try:
                 c = conn.cursor()
-                c.execute("SELECT COUNT(*) FROM inventory")
-                inv_count = c.fetchone()[0]
+                c.execute("SELECT COUNT(*) FROM sales WHERE synced=0")
+                pending_sales = c.fetchone()[0]
+                c.execute("SELECT COUNT(*) FROM purchases WHERE synced=0")
+                pending_purchases = c.fetchone()[0]
+                c.execute("SELECT COUNT(*) FROM expenses WHERE synced=0")
+                pending_expenses = c.fetchone()[0]
                 
-                c.execute("SELECT COUNT(*) FROM sales")
-                sales_count = c.fetchone()[0]
+                total_pending = pending_sales + pending_purchases + pending_expenses
                 
-                c.execute("SELECT COUNT(*) FROM purchases")
-                purchases_count = c.fetchone()[0]
-                
-                if inv_count > 0 and sales_count >= 0 and purchases_count >= 0:
-                    st.success(f"""
-                    ✅ Database Healthy!
-                    - Items: {inv_count}
-                    - Sales: {sales_count}
-                    - Purchases: {purchases_count}
-                    """)
-                    
+                if db_manager.supabase_conn:
+                    if total_pending == 0:
+                        st.success("✅ All data synced!")
+                    else:
+                        st.info(f"""
+                        📤 Pending Sync: {total_pending} records
+                        - Sales: {pending_sales}
+                        - Purchases: {pending_purchases}
+                        - Expenses: {pending_expenses}
+                        """)
+                else:
+                    st.warning("⚠️ Local Only Mode - No Supabase connection")
             except Exception as e:
-                st.error(f"❌ Database check failed: {e}")
+                st.error(f"Error checking sync status: {e}")
     
     st.markdown("---")
-    st.markdown("### 📈 Detailed Statistics")
+    st.markdown("### 📈 Database Statistics")
     
     try:
         stats_data = []
@@ -3328,12 +3744,44 @@ elif menu == "🔍 Secrets Debug":
                 st.error(f"Error reading file: {e}")
         else:
             st.error(f"❌ {secrets_path} does not exist")
+    
+    with st.expander("🗄️ Database Status", expanded=True):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### Local SQLite")
+            try:
+                c = conn.cursor()
+                c.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                tables = c.fetchall()
+                st.success(f"✅ Connected: {len(tables)} tables")
+                st.write("Tables:", [t[0] for t in tables])
+            except Exception as e:
+                st.error(f"Local DB error: {e}")
+        
+        with col2:
+            st.markdown("#### Supabase")
+            if db_manager.supabase_conn:
+                try:
+                    supabase_cursor = db_manager.supabase_conn.cursor()
+                    supabase_cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public'")
+                    supabase_tables = supabase_cursor.fetchall()
+                    st.success(f"✅ Connected: {len(supabase_tables)} tables")
+                except Exception as e:
+                    st.error(f"Supabase error: {e}")
+            else:
+                st.warning("❌ Not connected")
 
 # ========================== ENHANCED BACKUP ON EXIT ==========================
 @atexit.register
 def cleanup():
-    """Create final backup on exit"""
-    db_manager.export_database()
+    """Create final backup and sync on exit"""
+    try:
+        if db_manager.supabase_conn:
+            db_manager.sync_pending_records()
+            logger.info("Final sync completed before exit")
+    except:
+        pass
 
 # Footer
 st.markdown("---")
@@ -3341,14 +3789,21 @@ st.markdown(f"""
 <div class="footer">
     <p>🌿 Fresh Basket — Freshness You Can Feel | Quality Vegetables Daily ✅</p>
     <p style="font-size:0.8em; color:#95a5a6;">
-        Database: {db_manager.db_type.upper()} | 
-        {"🛡️ No Data Loss" if db_manager.db_type != "local" else "⚠️ Local Storage with Backups"}
+        Database: {"⚡ SQLite + 🛡️ Supabase" if db_manager.supabase_conn else "⚡ SQLite Only"} | 
+        {"🔄 Auto-sync Active" if db_manager.supabase_conn and db_manager.sync_running else "⚫️ Local Mode"}
     </p>
 </div>
 """, unsafe_allow_html=True)
 
 # Close database connection properly
-try:
-    conn.close()
-except:
-    pass
+@st.cache_resource
+def cleanup_resources():
+    """Cleanup resources on app shutdown"""
+    try:
+        db_manager.close()
+    except:
+        pass
+
+# Register cleanup
+import atexit
+atexit.register(cleanup_resources)
